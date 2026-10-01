@@ -69,11 +69,15 @@ func OpenSerial(cfg SerialConfig) (*Serial, error) {
 	return &Serial{port: p}, nil
 }
 
-// Linux 用户不在 dialout 组时打开失败，直接给出处理办法（设计文档 3.2）。
+// Linux 用户不在 dialout 组时打开失败，直接给出处理办法（设计文档 3.2）；
+// 串口被占用时说明可能是谁占着。
 func explainSerialError(port string, err error) error {
 	var pe *serial.PortError
 	if runtime.GOOS == "linux" && errors.As(err, &pe) && pe.Code() == serial.PermissionDenied {
 		return fmt.Errorf("transport: 没有权限打开 %s，执行 sudo usermod -aG dialout $USER 后重新登录：%w", port, err)
+	}
+	if errors.As(err, &pe) && (pe.Code() == serial.PortBusy || (runtime.GOOS == "windows" && pe.Code() == serial.PermissionDenied)) {
+		return fmt.Errorf("transport: %s 被占用，可能已被其他串口工具或另一个 Modbus AI Studio 进程打开：%w", port, err)
 	}
 	return fmt.Errorf("transport: 打开 %s 失败：%w", port, err)
 }
