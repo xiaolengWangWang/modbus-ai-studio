@@ -1,4 +1,4 @@
-// Package detect 实现协议自动识别：只知道 IP 和端口时，判断设备是 Modbus TCP 还是 RTU over TCP（设计文档 5.8）。
+// Package detect 实现协议自动识别：只知道 IP 和端口时，判断设备是 Modbus TCP、RTU over TCP 还是 ASCII over TCP（设计文档 5.8）。
 package detect
 
 import (
@@ -39,7 +39,7 @@ type Result struct {
 // ErrUnknown 表示两种格式都没有得到可解析的响应。
 var ErrUnknown = errors.New("detect: 未识别出协议")
 
-// Detect 先发 MBAP 格式请求，无响应则重新连接再发 RTU 格式请求，逐个尝试 Slave ID。
+// Detect 依次发 MBAP、RTU、ASCII 格式的请求，每次都重新连接，逐个尝试 Slave ID。
 func Detect(ctx context.Context, dial Dialer, opts Options) (Result, error) {
 	if len(opts.Slaves) == 0 {
 		opts.Slaves = []byte{1, 255}
@@ -55,7 +55,7 @@ func Detect(ctx context.Context, dial Dialer, opts Options) (Result, error) {
 	}
 	var res Result
 	for _, slave := range opts.Slaves {
-		for _, mode := range []modbus.Mode{modbus.ModeTCP, modbus.ModeRTUOverTCP} {
+		for _, mode := range []modbus.Mode{modbus.ModeTCP, modbus.ModeRTUOverTCP, modbus.ModeASCIIOverTCP} {
 			err := probe(ctx, dial, mode, slave, opts)
 			res.Attempts = append(res.Attempts, Attempt{Mode: mode, Slave: slave, Err: err})
 			_, isExc := modbus.AsException(err)

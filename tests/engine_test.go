@@ -116,7 +116,7 @@ func writeFloat(t *testing.T, c *modbus.Client, addr uint16, v float64) error {
 	return err
 }
 
-var modes = []modbus.Mode{modbus.ModeTCP, modbus.ModeRTUOverTCP}
+var modes = []modbus.Mode{modbus.ModeTCP, modbus.ModeRTUOverTCP, modbus.ModeASCIIOverTCP}
 
 // 模拟器初值读出的报文必须与设计文档 13.3 的快照逐字节一致。
 func TestHeatStationSnapshotMatchesDocument(t *testing.T) {
@@ -405,10 +405,105 @@ func TestDetect(t *testing.T) {
 	if err != nil || res.Mode != modbus.ModeRTUOverTCP || !res.ByException {
 		t.Errorf("异常响应也应确认协议：%+v %v", res, err)
 	}
-	// 始终不响应：两种格式、两个 Slave 共 4 次尝试后报告未识别
+	// 始终不响应：三种格式、两个 Slave 共 6 次尝试后报告未识别
 	_, addr = startServer(t, modbus.ModeTCP, simulator.Faults{DropRate: 1})
 	res, err = detect.Detect(context.Background(), dialer(addr), detect.Options{Timeout: 100 * time.Millisecond})
-	if !errors.Is(err, detect.ErrUnknown) || len(res.Attempts) != 4 {
-		t.Errorf("应报告未识别并列出 4 次尝试：%+v %v", res, err)
+	if !errors.Is(err, detect.ErrUnknown) || len(res.Attempts) != 6 {
+		t.Errorf("应报告未识别并列出 6 次尝试：%+v %v", res, err)
+	}
+}
+
+// 自定义请求：任意 PDU 原样发送，响应只按事务号 / Slave 和功能码关联，不按功能码校验内容。
+func TestDoRaw(t *testing.T) {
+	for _, mode := range modes {
+		t.Run(string(mode), func(t *testing.T) {
+			_, addr := startServer(t, mode, simulator.Faults{})
+			c, rec := newClient(t, addr, modbus.Options{Mode: mode})
+			resp, err := c.DoRaw(context.Background(), 1, []byte{0x03, 0x01, 0x5A, 0x00, 0x02})
+			if err != nil || hexOf(resp) != "03 04 00 00 41 70" {
+				t.Fatalf("读温差设定：响应 %s，错误 %v", hexOf(resp), err)
+			}
+			// 用户自定义功能码 65 模拟器不支持，应返回异常 01，同时返回异常 PDU
+			resp, err = c.DoRaw(context.Background(), 1, []byte{0x41, 0x00})
+			ex, ok := modbus.AsException(err)
+			if !ok || ex.Code != modbus.ExceptionIllegalFunction || hexOf(resp) != "C1 01" {
+				t.Fatalf("FC65：响应 %s，错误 %v", hexOf(resp), err)
+			}
+			if n := rec.count(modbus.StatusException); n != 1 {
+				t.Errorf("应记录 1 条异常响应，得到 %d", n)
+			}
+			if _, err := c.DoRaw(context.Background(), 1, nil); !errors.Is(err, modbus.ErrInvalidRequest) {
+				t.Errorf("空 PDU 应拒绝发送，得到 %v", err)
+			}
+		})
+	}
+}
+
+// 运行中修改超时：从下一条请求起生效，不需要重新连接。
+func TestSetTimeoutAtRuntime(t *testing.T) {
+	_, addr := startServer(t, modbus.ModeRTUOverTCP, simulator.Faults{Slow: []simulator.SlowRange{{AddrRange: simulator.AddrRange{Start: 600, Count: 4}, Delay: 300 * time.Millisecond}}})
+	c, _ := newClient(t, addr, modbus.Options{Mode: modbus.ModeRTUOverTCP, Timeout: 150 * time.Millisecond, Guard: 20 * time.Millisecond})
+	if _, err := readRegs(t, c, 600, 4); !errors.Is(err, modbus.ErrTimeout) {
+		t.Fatalf("超时 150 ms 应超时，得到 %v", err)
+	}
+	time.Sleep(300 * time.Millisecond) // 让晚到响应落地并在下一次请求前被清掉
+	c.SetTimeout(time.Second)
+	if c.Timeout() != time.Second {
+		t.Fatalf("Timeout() = %v", c.Timeout())
+	}
+	if _, err := readRegs(t, c, 600, 4); err != nil {
+		t.Fatalf("超时改为 1000 ms 后应成功，得到 %v", err)
+	}
+}
+
+// 新增功能码：模拟器按规范应答，三种模式都走得通（FC08、FC43 没有长度字段，RTU 靠字符间隔分帧）。
+func TestExtraFunctionCodes(t *testing.T) {
+	for _, mode := range modes {
+		t.Run(string(mode), func(t *testing.T) {
+			_, addr := startServer(t, mode, simulator.Faults{})
+			c, _ := newClient(t, addr, modbus.Options{Mode: mode})
+			do := func(pdu ...byte) string {
+				t.Helper()
+				resp, err := c.DoRaw(context.Background(), 1, pdu)
+				if err != nil {
+					t.Fatalf("% X：%v", pdu, err)
+				}
+				return hexOf(resp)
+			}
+			cases := []struct{ name, got, want string }{
+				{"FC07 读异常状态", do(0x07), "07 00"},
+				{"FC08 回送", do(0x08, 0x00, 0x00, 0x12, 0x34), "08 00 00 12 34"},
+				{"FC11 报告从站 ID", do(0x11), "11 08 4D 41 53 2D 53 49 4D FF"},
+				// 40352 阀门手动开度原值 0x028A：(0x028A AND 0x00F2) OR (0x0025 AND NOT 0x00F2) = 0x0087
+				{"FC22 掩码写", do(0x16, 0x01, 0x5F, 0x00, 0xF2, 0x00, 0x25), "16 01 5F 00 F2 00 25"},
+				{"FC03 回读掩码写结果", do(0x03, 0x01, 0x5F, 0x00, 0x01), "03 02 00 87"},
+				// 先把 40352 写成 0x0290，再读 40351–40352
+				{"FC23 读写多个", do(0x17, 0x01, 0x5E, 0x00, 0x02, 0x01, 0x5F, 0x00, 0x01, 0x02, 0x02, 0x90), "17 04 13 88 02 90"},
+				{"FC08 服务器报文计数", do(0x08, 0x00, 0x0E), "08 00 0E 00 07"},
+			}
+			for _, c := range cases {
+				if c.got != c.want {
+					t.Errorf("%s：%s，期望 %s", c.name, c.got, c.want)
+				}
+			}
+			if id := do(0x2B, 0x0E, 0x01, 0x00); !strings.HasPrefix(id, "2B 0E 01 82 00 00 03 00 10") {
+				t.Errorf("FC43 读设备标识：%s", id)
+			}
+			if _, err := c.DoRaw(context.Background(), 1, []byte{0x08, 0x00, 0x04, 0x00, 0x00}); err == nil {
+				t.Error("FC08 只听模式模拟器不支持，应回异常")
+			}
+		})
+	}
+}
+
+// ASCII 模式下的 LRC 错误和 RTU 的 CRC 错误一样：读请求重试，报文记为 CRC_ERROR。
+func TestASCIILRCError(t *testing.T) {
+	_, addr := startServer(t, modbus.ModeASCIIOverTCP, simulator.Faults{CRCRate: 1})
+	c, rec := newClient(t, addr, modbus.Options{Mode: modbus.ModeASCIIOverTCP, ReadRetries: 1})
+	if _, err := readRegs(t, c, 346, 2); !errors.Is(err, modbus.ErrLRC) {
+		t.Fatalf("应报 LRC 错误，得到 %v", err)
+	}
+	if n := rec.count(modbus.StatusCRCError); n != 2 {
+		t.Errorf("读请求应重试 1 次，共 2 条校验错误，得到 %d", n)
 	}
 }

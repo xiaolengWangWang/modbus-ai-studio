@@ -34,7 +34,8 @@ var (
 	baud    = flag.Int("baud", 9600, "波特率")
 	parity  = flag.String("parity", "N", "校验位：N、E、O")
 	stop    = flag.Int("stop", 1, "停止位：1 或 2")
-	modeArg = flag.String("mode", "", "协议：tcp、rtu-over-tcp、rtu（默认 TCP 地址用 tcp，串口用 rtu）")
+	modeArg = flag.String("mode", "", "协议：tcp、rtu-over-tcp、ascii-over-tcp、rtu、ascii（默认 TCP 地址用 tcp，串口用 rtu）")
+	dataBit = flag.Int("databits", 8, "数据位：8，Modbus ASCII 常用 7")
 	slave   = flag.Uint("slave", 1, "Slave ID")
 	timeout = flag.Duration("timeout", time.Second, "响应超时")
 	typ     = flag.String("type", "uint16", "数据类型：int16、uint16、int32、uint32、float32")
@@ -88,6 +89,10 @@ func mode() modbus.Mode {
 		return modbus.ModeRTUOverTCP
 	case "rtu":
 		return modbus.ModeRTU
+	case "ascii-over-tcp":
+		return modbus.ModeASCIIOverTCP
+	case "ascii":
+		return modbus.ModeASCII
 	case "":
 		if *port != "" {
 			return modbus.ModeRTU
@@ -109,7 +114,7 @@ func connect(ctx context.Context) *modbus.Client {
 	var err error
 	switch {
 	case *port != "":
-		t, err = transport.OpenSerial(transport.SerialConfig{Port: *port, BaudRate: *baud, Parity: *parity, StopBits: *stop})
+		t, err = transport.OpenSerial(transport.SerialConfig{Port: *port, BaudRate: *baud, DataBits: *dataBit, Parity: *parity, StopBits: *stop})
 	case *target != "":
 		t, err = transport.DialTCP(ctx, *target, *timeout)
 	default:
@@ -127,7 +132,11 @@ func printPacket(p modbus.Packet) {
 	if p.Dir == modbus.DirTX {
 		tag = "Tx"
 	}
-	line := fmt.Sprintf("%s:%06d-%s", tag, p.RequestID, hexs(p.Raw))
+	data := hexs(p.Raw)
+	if p.Mode.IsASCII() {
+		data = strings.TrimSuffix(string(p.Raw), "\r\n") // ASCII 帧本身就是可读字符
+	}
+	line := fmt.Sprintf("%s:%06d-%s", tag, p.RequestID, data)
 	if p.Raw == nil {
 		line = fmt.Sprintf("%s:%06d-（无数据）", tag, p.RequestID)
 	}
@@ -290,7 +299,7 @@ func runDetect(ctx context.Context) {
 		if at.Err != nil {
 			outcome = at.Err.Error()
 		}
-		fmt.Printf("  %-13s Slave %-3d %s\n", at.Mode, at.Slave, outcome)
+		fmt.Printf("  %-15s Slave %-3d %s\n", at.Mode, at.Slave, outcome)
 	}
 	if err != nil {
 		fail("%v：连接成功但两种格式都没有得到可解析的响应", err)
