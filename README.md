@@ -10,7 +10,7 @@
 | M2 | Fyne 桌面界面（连接栏、Modbus Poll 式读取窗口、通信报文、写入验证、多开）；待在 VM / 远程桌面 / 工控机上验证 | 进行中 |
 | M3 | 调试页 + 报文监控 + Session（调试页、报文监控、工作区文件、SQLite 报文记录与历史查看） | 已完成 |
 | M4 | 控制验证 + 诊断 + 安全层（写入验证、自动诊断、只读模式） | 已完成 |
-| M5 | CSV 点表 + 打包发布（CSV 点表导入已完成；Windows 打包未开始） | 进行中 |
+| M5 | CSV 点表 + 打包发布（CSV 点表导入、macOS DMG、Windows x64 绿色版、GitHub Releases） | 已完成 |
 
 ## 目录
 
@@ -20,7 +20,7 @@ cmd/modbus-sim/        命令行模拟从站（换热站示例点表）
 cmd/modbus-cli/        命令行主站：读、写并回读、协议识别
 internal/ui/           桌面界面
 internal/control/      写入与控制验证：多次回读、PASS / 未生效 / 被覆盖 / 值不符
-scripts/               macOS 打包脚本与图标生成
+scripts/               macOS / Windows 打包脚本与图标生成
 internal/modbus/       协议核心：PDU、MBAP / RTU / ASCII 分帧、客户端、数据类型与字节序、地址解析
 internal/detect/       协议自动识别（Modbus TCP / RTU over TCP / ASCII over TCP）
 internal/recorder/     报文记录：会话和收发记录存进本机 SQLite
@@ -29,6 +29,13 @@ internal/simulator/    模拟从站与故障注入
 tests/                 基于模拟器的集成测试
 examples/              CSV 点表模板（换热站示例，与内置点表一致）
 ```
+
+## 下载
+
+[GitHub Releases](https://github.com/xiaolengWangWang/modbus-ai-studio/releases) 提供：
+
+- Windows x64 绿色版 zip：解压后双击 `ModbusAIStudio.exe`，不用安装。需要 Windows 10 / 11 64 位（不支持 Windows 7 / 8）和支持 OpenGL 2.1 的显卡；远程桌面或虚拟机里窗口空白时，把 [Mesa3D](https://github.com/pal1000/mesa-dist-win) 软件渲染版的 `opengl32.dll` 放到 exe 同一目录。附带命令行工具 `modbus-sim.exe`、`modbus-cli.exe`。
+- macOS DMG：Intel 和 Apple Silicon 各一个，最低 macOS 12。ad-hoc 签名，第一次打开要在“系统设置 → 隐私与安全性”里允许。
 
 ## 只读模式（0.8.0）
 
@@ -81,7 +88,8 @@ examples/              CSV 点表模板（换热站示例，与内置点表一�
 
 ```sh
 go run ./cmd/modbus-ai              # 运行桌面应用（启动时为空；“读取 → 打开换热站示例”加载示例并连接内置模拟器）
-VERSION=0.8.0 scripts/build-macos.sh  # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
+VERSION=0.8.1 scripts/build-macos.sh    # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
+VERSION=0.8.1 scripts/build-windows.sh  # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
 
 go test ./...                       # 单元测试 + 集成测试
 go test -race -count=3 ./...        # 并发与稳定性
