@@ -29,7 +29,6 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -88,6 +87,7 @@ type Workspace struct {
 	path       string // 工作区文件，未保存时为空
 	timeout    time.Duration
 	windows    []*readWindow
+	cur        *readWindow // 当前读取窗口（tiles.go 的 current），读取窗口的快捷键作用于它
 	nextWin    int
 	tiles      *fyne.Container
 	traffic    *trafficPanel
@@ -265,43 +265,60 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 		nil, nil, main)
 }
 
+// setMenu 设置菜单和快捷键（macOS 用 ⌘，Windows、Linux 用 Ctrl）。Fyne 先按主菜单匹配快捷键，
+// 焦点在输入框里也能用；“读取”菜单里定义、写入、暂停这几项作用于当前读取窗口。
+// 不能用的组合：Ctrl+A / C / V / X / Z / Y 在 Windows、Linux 上被 Fyne 当成编辑快捷键，到不了菜单；
+// ⌘H、⌘M、⌘Q 是 macOS 系统的。
 func (ws *Workspace) setMenu() {
-	short := func(k fyne.KeyName) fyne.Shortcut {
-		return &desktop.CustomShortcut{KeyName: k, Modifier: fyne.KeyModifierShortcutDefault}
+	key := func(it *fyne.MenuItem, k fyne.KeyName, shift bool) *fyne.MenuItem {
+		mod := fyne.KeyModifierShortcutDefault
+		if shift {
+			mod |= fyne.KeyModifierShift
+		}
+		it.Shortcut = &desktop.CustomShortcut{KeyName: k, Modifier: mod}
+		return it
 	}
-	ws.roItem = fyne.NewMenuItem("只读模式（禁止写入）", func() { ws.setReadOnly(!ws.readOnly) })
-	newWin := fyne.NewMenuItem("新建窗口", func() { ws.openNew() })
-	newWin.Shortcut = short(fyne.KeyN)
-	newRead := fyne.NewMenuItem("新建读取窗口", ws.addReadWindow)
-	newRead.Shortcut = short(fyne.KeyT)
-	custom := fyne.NewMenuItem("自定义请求…", ws.openRequestTool)
-	custom.Shortcut = short(fyne.KeyR)
-	conn := fyne.NewMenuItem("连接 / 断开", ws.toggleConnect)
-	conn.Shortcut = short(fyne.KeyK)
-	closeWin := fyne.NewMenuItem("关闭窗口", ws.win.Close)
-	closeWin.Shortcut = short(fyne.KeyW)
-	openWs := fyne.NewMenuItem("打开工作区…", ws.openWorkspace)
-	openWs.Shortcut = short(fyne.KeyO)
-	saveWs := fyne.NewMenuItem("保存工作区", ws.saveWorkspace)
-	saveWs.Shortcut = short(fyne.KeyS)
-	items := []*fyne.MenuItem{newWin, closeWin, openWs, saveWs, newRead, custom, conn}
-	ws.win.SetMainMenu(fyne.NewMainMenu(
-		fyne.NewMenu("文件", newWin, openWs, saveWs, fyne.NewMenuItem("工作区另存为…", ws.saveWorkspaceAs), fyne.NewMenuItemSeparator(), closeWin),
-		fyne.NewMenu("连接", conn, fyne.NewMenuItem("识别协议", ws.detectProtocol), fyne.NewMenuItem("扫描串口参数…", ws.scanSerialDialog),
-			fyne.NewMenuItemSeparator(), ws.roItem),
-		fyne.NewMenu("读取", newRead, fyne.NewMenuItem("导入点表…", ws.importPoints), fyne.NewMenuItem("打开换热站示例", ws.loadDemo), fyne.NewMenuItemSeparator(),
-			fyne.NewMenuItem("全部暂停", func() { ws.pauseAll(true) }),
-			fyne.NewMenuItem("全部继续", func() { ws.pauseAll(false) })),
-		fyne.NewMenu("调试", custom, fyne.NewMenuItem("扫描从站地址…", ws.scanSlavesDialog), fyne.NewMenuItem("读取诊断计数器…", ws.diagCountersDialog),
-			fyne.NewMenuItemSeparator(), fyne.NewMenuItem("历史报文…", ws.openHistory), fyne.NewMenuItem("清空通信报文", ws.traffic.clear)),
-	))
-	// macOS 的原生菜单自己处理快捷键；其他平台的菜单栏只显示快捷键，需要另外注册
-	if runtime.GOOS != "darwin" {
-		for _, it := range items {
-			it := it
-			ws.win.Canvas().AddShortcut(it.Shortcut, func(fyne.Shortcut) { it.Action() })
+	item := fyne.NewMenuItem
+	cur := func(fn func(*readWindow)) func() {
+		return func() {
+			if w := ws.current(); w != nil {
+				fn(w)
+			}
 		}
 	}
+	ws.roItem = item("只读模式（禁止写入）", func() { ws.setReadOnly(!ws.readOnly) })
+	ws.win.SetMainMenu(fyne.NewMainMenu(
+		fyne.NewMenu("文件",
+			key(item("新建窗口", func() { ws.openNew() }), fyne.KeyN, false),
+			key(item("打开工作区…", ws.openWorkspace), fyne.KeyO, false),
+			key(item("保存工作区", ws.saveWorkspace), fyne.KeyS, false),
+			key(item("工作区另存为…", ws.saveWorkspaceAs), fyne.KeyS, true),
+			fyne.NewMenuItemSeparator(),
+			key(item("关闭窗口", ws.win.Close), fyne.KeyW, false)),
+		fyne.NewMenu("连接",
+			key(item("连接 / 断开", ws.toggleConnect), fyne.KeyK, false),
+			key(item("识别协议", ws.detectProtocol), fyne.KeyD, false),
+			item("扫描串口参数…", ws.scanSerialDialog),
+			fyne.NewMenuItemSeparator(), ws.roItem),
+		fyne.NewMenu("读取",
+			key(item("新建读取窗口", ws.addReadWindow), fyne.KeyT, false),
+			key(item("读取定义…", cur(ws.showDefinition)), fyne.KeyE, false),
+			key(item("写入选中的值…", cur(ws.showWrite)), fyne.KeyReturn, false),
+			key(item("暂停 / 继续", cur(func(w *readWindow) { w.setPaused(!w.paused) })), fyne.KeyP, false),
+			item("关闭读取窗口", cur(ws.removeWindow)),
+			fyne.NewMenuItemSeparator(),
+			key(item("导入点表…", ws.importPoints), fyne.KeyI, false),
+			item("打开换热站示例", ws.loadDemo),
+			fyne.NewMenuItemSeparator(),
+			key(item("全部暂停", func() { ws.pauseAll(true) }), fyne.KeyP, true),
+			key(item("全部继续", func() { ws.pauseAll(false) }), fyne.KeyR, true)),
+		fyne.NewMenu("调试",
+			key(item("自定义请求…", ws.openRequestTool), fyne.KeyR, false),
+			item("扫描从站地址…", ws.scanSlavesDialog), item("读取诊断计数器…", ws.diagCountersDialog),
+			fyne.NewMenuItemSeparator(),
+			key(item("历史报文…", ws.openHistory), fyne.KeyH, true),
+			key(item("清空通信报文", ws.traffic.clear), fyne.KeyL, false)),
+	))
 }
 
 // openNew 新建一个主窗口，协议和目标沿用当前窗口，方便连同一网段的另一台设备。

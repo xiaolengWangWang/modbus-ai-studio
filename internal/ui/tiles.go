@@ -3,6 +3,7 @@ package ui
 import (
 	"math"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -35,8 +36,36 @@ func (ws *Workspace) addWindow(d readDef) *readWindow {
 	w := newReadWindow(ws, ws.nextWin, d)
 	ws.windows = append(ws.windows, w)
 	ws.relayout()
+	ws.setCurrent(w)
 	w.start()
 	return w
+}
+
+// current 返回当前读取窗口：最近点过、新建或改过定义的那个；它被关掉后取第一个。没有读取窗口时为 nil。
+func (ws *Workspace) current() *readWindow {
+	if slices.Contains(ws.windows, ws.cur) {
+		return ws.cur
+	}
+	if len(ws.windows) > 0 {
+		return ws.windows[0]
+	}
+	return nil
+}
+
+// setCurrent 设为当前读取窗口。有多个读取窗口时当前窗口的标题高亮，看得出快捷键作用于哪个。
+func (ws *Workspace) setCurrent(w *readWindow) {
+	ws.cur = w
+	cur := ws.current()
+	for _, x := range ws.windows {
+		imp := widget.MediumImportance
+		if x == cur && len(ws.windows) > 1 {
+			imp = widget.HighImportance
+		}
+		if x.title.Importance != imp {
+			x.title.Importance = imp
+			x.title.Refresh()
+		}
+	}
 }
 
 // addReadWindow 按最后一个窗口的 Slave 和功能码新建读取窗口，并直接打开读取定义。
@@ -62,6 +91,7 @@ func (ws *Workspace) removeWindow(w *readWindow) {
 		ws.inspect.clear()
 	}
 	ws.relayout()
+	ws.setCurrent(ws.cur)
 }
 
 // redefine 修改读取定义后重新开始轮询，诊断里的一键处理也走这里。

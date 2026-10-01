@@ -76,6 +76,7 @@ func newReadWindow(ws *Workspace, no int, d readDef) *readWindow {
 		l.SetText("")
 	}
 	w.table.OnSelected = func(id widget.TableCellID) {
+		ws.setCurrent(w)
 		i := w.indexOf(id)
 		if i < 0 {
 			w.sel = -1
@@ -94,10 +95,10 @@ func newReadWindow(ws *Workspace, no int, d readDef) *readWindow {
 
 	w.title = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	w.title.Truncation = fyne.TextTruncateEllipsis
-	w.writeBtn = widget.NewButtonWithIcon("写入", theme.DocumentCreateIcon(), func() { ws.showWrite(w) })
-	w.pauseBtn = widget.NewButtonWithIcon("", theme.MediaPauseIcon(), func() { w.setPaused(!w.paused) })
+	w.writeBtn = widget.NewButtonWithIcon("写入", theme.DocumentCreateIcon(), func() { ws.setCurrent(w); ws.showWrite(w) })
+	w.pauseBtn = widget.NewButtonWithIcon("", theme.MediaPauseIcon(), func() { ws.setCurrent(w); w.setPaused(!w.paused) })
 	closeBtn := widget.NewButtonWithIcon("", theme.WindowCloseIcon(), func() { ws.removeWindow(w) })
-	defBtn := widget.NewButtonWithIcon("定义", theme.SettingsIcon(), func() { ws.showDefinition(w) })
+	defBtn := widget.NewButtonWithIcon("定义", theme.SettingsIcon(), func() { ws.setCurrent(w); ws.showDefinition(w) })
 	for _, b := range []*widget.Button{w.writeBtn, w.pauseBtn, closeBtn, defBtn} {
 		b.Importance = widget.LowImportance
 	}
@@ -188,6 +189,7 @@ func (w *readWindow) align(i int) int {
 }
 
 func (w *readWindow) tapCell(id widget.TableCellID) {
+	w.ws.setCurrent(w)
 	if c := fyne.CurrentApp().Driver().CanvasForObject(w.table); c != nil {
 		c.Focus(w.table)
 	}
