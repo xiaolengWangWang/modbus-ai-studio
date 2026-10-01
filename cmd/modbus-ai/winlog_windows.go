@@ -1,0 +1,46 @@
+//go:build windows
+
+package main
+
+import (
+	"io"
+	"log"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+
+	"golang.org/x/sys/windows"
+)
+
+// Windows 版没有控制台窗口，日志写到 %AppData%\ModbusAIStudio\app.log。
+// 界面因为 OpenGL 起不来时 Fyne 只写一行日志就退出，用户看到的是“双击没反应”，
+// 所以截住这行日志，先弹窗说明怎么处理。
+func init() {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return
+	}
+	dir = filepath.Join(dir, "ModbusAIStudio")
+	if os.MkdirAll(dir, 0o755) != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return
+	}
+	log.SetOutput(glWatch{f})
+}
+
+type glWatch struct{ io.Writer }
+
+var glWarned atomic.Bool
+
+func (w glWatch) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	if glFailed(p) && glWarned.CompareAndSwap(false, true) {
+		text, _ := windows.UTF16PtrFromString(glHelp)
+		title, _ := windows.UTF16PtrFromString("Modbus AI Studio")
+		windows.MessageBox(0, text, title, windows.MB_OK|windows.MB_ICONERROR)
+	}
+	return n, err
+}
