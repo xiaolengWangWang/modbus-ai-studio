@@ -179,7 +179,9 @@ type Workspace struct {
 	connecting bool
 	recID      atomic.Int64 // 正在记录的会话 ID，收发回调里读；0 表示不记录
 	points     pointTable   // 本窗口的点表，初始为空
-	path       string       // 工作区文件，未保存时为空
+	readOnly   bool         // 只读模式，禁止一切写入（readonly.go）
+	roItem     *fyne.MenuItem
+	path       string // 工作区文件，未保存时为空
 	timeout    time.Duration
 	windows    []*readWindow
 	nextWin    int
@@ -384,6 +386,7 @@ func (ws *Workspace) setMenu() {
 	short := func(k fyne.KeyName) fyne.Shortcut {
 		return &desktop.CustomShortcut{KeyName: k, Modifier: fyne.KeyModifierShortcutDefault}
 	}
+	ws.roItem = fyne.NewMenuItem("只读模式（禁止写入）", func() { ws.setReadOnly(!ws.readOnly) })
 	newWin := fyne.NewMenuItem("新建窗口", func() { ws.openNew() })
 	newWin.Shortcut = short(fyne.KeyN)
 	newRead := fyne.NewMenuItem("新建读取窗口", ws.addReadWindow)
@@ -401,7 +404,8 @@ func (ws *Workspace) setMenu() {
 	items := []*fyne.MenuItem{newWin, closeWin, openWs, saveWs, newRead, custom, conn}
 	ws.win.SetMainMenu(fyne.NewMainMenu(
 		fyne.NewMenu("文件", newWin, openWs, saveWs, fyne.NewMenuItem("工作区另存为…", ws.saveWorkspaceAs), fyne.NewMenuItemSeparator(), closeWin),
-		fyne.NewMenu("连接", conn, fyne.NewMenuItem("识别协议", ws.detectProtocol), fyne.NewMenuItem("扫描串口参数…", ws.scanSerialDialog)),
+		fyne.NewMenu("连接", conn, fyne.NewMenuItem("识别协议", ws.detectProtocol), fyne.NewMenuItem("扫描串口参数…", ws.scanSerialDialog),
+			fyne.NewMenuItemSeparator(), ws.roItem),
 		fyne.NewMenu("读取", newRead, fyne.NewMenuItem("导入点表 CSV…", ws.importPoints), fyne.NewMenuItem("打开换热站示例", ws.loadDemo), fyne.NewMenuItemSeparator(),
 			fyne.NewMenuItem("全部暂停", func() { ws.pauseAll(true) }),
 			fyne.NewMenuItem("全部继续", func() { ws.pauseAll(false) })),
@@ -426,6 +430,7 @@ func (ws *Workspace) openNew() *Workspace {
 	n.timeoutE.SetText(ws.timeoutE.Text)
 	n.baud.SetText(ws.baud.Text)
 	n.frameFmt.SetSelected(ws.frameFmt.Selected)
+	n.setReadOnly(ws.readOnly)
 	return n
 }
 
@@ -838,6 +843,9 @@ func (ws *Workspace) refreshStatus() {
 	pts := ""
 	if n := len(ws.points); n > 0 {
 		pts = fmt.Sprintf(" · 点表 %d 点", n)
+	}
+	if ws.readOnly {
+		pts += " · 只读模式"
 	}
 	if ws.session == nil {
 		ws.status.SetText(fmt.Sprintf("○ 未连接 · Modbus AI Studio %s · 窗口 %d%s", ws.Version, ws.no, pts))

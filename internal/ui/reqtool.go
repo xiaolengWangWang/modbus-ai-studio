@@ -228,6 +228,11 @@ func (t *requestTool) send() {
 		t.showError(err.Error())
 		return
 	}
+	if t.ws.readOnly && !readOnlyPDU(pdu) {
+		t.stopLoop()
+		t.showError(fmt.Sprintf("只读模式下不发送 %s：它可能改变设备状态。要发送，先在主窗口“连接”菜单里关掉只读模式。", modbus.FunctionCode(pdu[0])))
+		return
+	}
 	t.sending = true
 	timeout := t.ws.timeout
 	go func() {

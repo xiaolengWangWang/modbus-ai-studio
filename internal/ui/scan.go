@@ -358,6 +358,12 @@ func (ws *Workspace) showDiagCounters(s *session, slave byte, counts []diagCount
 	lines = append(lines, "", "通信错误计数一直在涨，说明总线上有干扰或波特率 / 校验位不一致；无响应计数涨说明设备收到了但没回（多为广播或只听模式）。")
 	body := widget.NewLabel(strings.Join(lines, "\n"))
 	body.Wrapping = fyne.TextWrapWord
+	if ws.readOnly { // 清零会改设备里的计数器
+		dlg := dialog.NewCustom(fmt.Sprintf("诊断计数器 · Slave %d", slave), "关闭", body, ws.win)
+		dlg.Resize(fyne.NewSize(520, 0))
+		dlg.Show()
+		return
+	}
 	dlg := dialog.NewCustomConfirm(fmt.Sprintf("诊断计数器 · Slave %d", slave), "计数器清零", "关闭", body, func(clear bool) {
 		if !clear {
 			return

@@ -27,6 +27,7 @@ type workspaceFile struct {
 	TimeoutMS int64       `json:"timeoutMs"`
 	Windows   []readDef   `json:"windows"`
 	Points    []point     `json:"points,omitempty"`
+	ReadOnly  bool        `json:"readOnly,omitempty"`
 }
 
 const recentKey = "recentWorkspaces"
@@ -34,7 +35,7 @@ const recentKey = "recentWorkspaces"
 func (ws *Workspace) encodeWorkspace() ([]byte, error) {
 	f := workspaceFile{Mode: protoModes[ws.proto.Selected], Target: ws.target.Text, UseSim: ws.useSim.Checked,
 		Port: ws.port.Selected, Baud: ws.baud.Text, Format: ws.frameFmt.Selected, TimeoutMS: ws.timeout.Milliseconds(),
-		Points: ws.points.list()}
+		Points: ws.points.list(), ReadOnly: ws.readOnly}
 	for _, w := range ws.windows {
 		f.Windows = append(f.Windows, w.def)
 	}
@@ -76,6 +77,7 @@ func (ws *Workspace) applyWorkspace(data []byte) error {
 		ws.setTimeout(time.Duration(f.TimeoutMS) * time.Millisecond)
 	}
 	ws.points = newPointTable(f.Points)
+	ws.setReadOnly(f.ReadOnly)
 	for _, d := range f.Windows {
 		ws.addWindow(d)
 	}

@@ -326,8 +326,11 @@ func (w *readWindow) tapCell(id widget.TableCellID) {
 
 func (w *readWindow) doubleTapCell(id widget.TableCellID) {
 	w.tapCell(id)
-	if w.canWrite() {
+	switch {
+	case w.canWrite():
 		w.ws.showWrite(w)
+	case w.ws.readOnly && w.ws.session != nil && (w.def.Function == modbus.FuncReadCoils || w.def.Function == modbus.FuncReadHoldingRegisters):
+		w.ws.showReadOnlyInfo() // 双击没反应会让人以为坏了，说清楚原因
 	}
 }
 
@@ -436,7 +439,7 @@ func (w *readWindow) valueText(i int) (string, widget.Importance) {
 // canWrite：线圈和保持寄存器可写；点表模式下点表标为只读的点不可写。
 func (w *readWindow) canWrite() bool {
 	d := w.def
-	if w.ws.session == nil || w.sel < 0 {
+	if w.ws.session == nil || w.sel < 0 || w.ws.readOnly {
 		return false
 	}
 	switch d.Function {

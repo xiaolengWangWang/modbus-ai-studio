@@ -36,6 +36,10 @@ func (s writeSpec) show(v float64) string {
 // showWrite 打开选中单元的写入对话框：点表里的可写点按工程值写入；其他保持寄存器按窗口的显示格式写入；
 // 线圈写 ON / OFF。确认后都会多次回读验证（设计文档 13.4、第 11 章）。
 func (ws *Workspace) showWrite(w *readWindow) {
+	if ws.readOnly {
+		ws.showReadOnlyInfo()
+		return
+	}
 	if !w.canWrite() {
 		return
 	}
