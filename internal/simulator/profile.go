@@ -46,6 +46,24 @@ var HeatStationPoints = []Point{
 	{603, "气象站通讯", modbus.TypeUint16, modbus.OrderAB, 1, "", false},
 }
 
+// HeatStationEnums 是状态类点的取值含义。
+var HeatStationEnums = map[uint16]map[int]string{
+	18:  {0: "停止", 1: "运行"}, // 补水泵状态
+	19:  {0: "无故障"},         // 故障代码
+	352: {0: "手动", 1: "自动"}, // 运行模式
+	353: {0: "本地", 1: "远程"}, // 控制权
+	603: {0: "中断", 1: "正常"}, // 气象站通讯
+}
+
+// HeatStationLimits 是可写点允许的工程值范围（点表 min / max）。
+var HeatStationLimits = map[uint16][2]float64{
+	346: {5, 25},  // 温差设定 ℃
+	348: {30, 70}, // 供水温度设定 ℃
+	350: {20, 50}, // 泵频率上限 Hz
+	351: {0, 100}, // 阀门手动开度 %
+	352: {0, 1},   // 运行模式 0 手动 / 1 自动
+}
+
 const (
 	heatSupply     = 45.2
 	heatReturn     = 32.0

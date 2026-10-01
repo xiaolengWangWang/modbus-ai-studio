@@ -19,7 +19,7 @@ import (
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:1502", "监听地址")
-	modeName := flag.String("mode", "tcp", "协议：tcp 或 rtu-over-tcp")
+	modeName := flag.String("mode", "tcp", "协议：tcp、rtu-over-tcp 或 ascii-over-tcp")
 	slave := flag.Uint("slave", 1, "Slave ID，0 表示响应任意 ID")
 	delay := flag.Duration("delay", 0, "固定响应延迟，例如 20ms")
 	drop := flag.Float64("drop", 0, "不响应的比例，0–1")
@@ -38,8 +38,10 @@ func main() {
 		mode = modbus.ModeTCP
 	case "rtu-over-tcp":
 		mode = modbus.ModeRTUOverTCP
+	case "ascii-over-tcp":
+		mode = modbus.ModeASCIIOverTCP
 	default:
-		fail("不支持的协议 %q，可选 tcp、rtu-over-tcp", *modeName)
+		fail("不支持的协议 %q，可选 tcp、rtu-over-tcp、ascii-over-tcp", *modeName)
 	}
 	if *slave > 247 {
 		fail("Slave ID 应为 0–247")

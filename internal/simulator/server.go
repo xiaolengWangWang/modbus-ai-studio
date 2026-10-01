@@ -2,6 +2,7 @@ package simulator
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -54,11 +55,16 @@ type Faults struct {
 	Exceptions    []ExceptionRange // 固定返回异常的地址段
 	IgnoreWrites  []AddrRange      // 写入返回成功但值不变
 	RevertWrites  []RevertRange    // 写入后被改回原值
+
+	// 断开连接类故障：真实设备不回异常、直接断开 TCP 的几种情况
+	DisconnectOnAccept bool          // 接受连接后立即断开（连接数已满、IP 白名单）
+	DisconnectOn       []AddrRange   // 收到读写这些地址的请求后不应答、直接断开（设备不接受这条请求）
+	IdleTimeout        time.Duration // 连接空闲超过这么久就断开
 }
 
 // Server 是模拟从站。
 type Server struct {
-	Mode  modbus.Mode // ModeTCP 或 ModeRTUOverTCP
+	Mode  modbus.Mode // ModeTCP、ModeRTUOverTCP 或 ModeASCIIOverTCP
 	Slave byte        // 只响应这个 Slave ID；0 表示响应任意 ID
 	Store *Store
 
@@ -68,6 +74,7 @@ type Server struct {
 	ln     net.Listener
 	conns  map[net.Conn]struct{}
 	wg     sync.WaitGroup
+	diag   diagCounters
 }
 
 // NewServer 创建模拟从站。
@@ -114,6 +121,10 @@ func (s *Server) Serve(ln net.Listener) error {
 			}
 			return err
 		}
+		if s.snapshot().DisconnectOnAccept {
+			conn.Close()
+			continue
+		}
 		s.mu.Lock()
 		s.conns[conn] = struct{}{}
 		s.mu.Unlock()
@@ -149,6 +160,11 @@ func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
 	r := bufio.NewReader(conn)
 	for {
+		if idle := s.snapshot().IdleTimeout; idle > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(idle)) // 空闲超时：到点没收到请求就断开
+		} else {
+			_ = conn.SetReadDeadline(time.Time{})
+		}
 		txID, slave, pdu, err := s.readRequest(conn, r)
 		if errors.Is(err, errSkip) {
 			continue
@@ -156,20 +172,33 @@ func (s *Server) handle(conn net.Conn) {
 		if err != nil {
 			return
 		}
+		s.diag.bus.Add(1)
 		if s.Slave != 0 && slave != s.Slave {
 			continue // 不是本站地址，不响应
 		}
+		s.diag.served.Add(1)
 		f := s.snapshot()
 		var resp []byte
 		req, perr := modbus.ParseRequestPDU(slave, pdu)
-		if ex, ok := modbus.AsException(perr); ok {
+		for _, dr := range f.DisconnectOn {
+			if perr == nil && dr.Overlaps(req.Address, req.Count()) {
+				return // 不应答，直接断开
+			}
+		}
+		if extra, ok := s.processExtra(pdu); ok {
+			resp = extra
+		} else if ex, ok := modbus.AsException(perr); ok {
 			resp = modbus.ExceptionPDU(ex.Function, ex.Code)
 		} else if perr != nil {
 			continue
 		} else {
 			resp = s.process(req, f)
 		}
+		if resp[0]&0x80 != 0 {
+			s.diag.excs.Add(1)
+		}
 		if s.chance(f.DropRate) {
+			s.diag.noResp.Add(1)
 			continue
 		}
 		delay := f.Delay
@@ -220,19 +249,48 @@ func (s *Server) readRequest(conn net.Conn, r *bufio.Reader) (uint16, byte, []by
 		}
 		return binary.BigEndian.Uint16(head), head[6], pdu, nil
 	}
-	head, err := r.Peek(2)
-	if err != nil {
-		return 0, 0, nil, err
+	if s.Mode.IsASCII() {
+		line, err := r.ReadBytes('\n')
+		if err != nil {
+			return 0, 0, nil, err
+		}
+		if i := bytes.IndexByte(line, ':'); i > 0 {
+			line = line[i:] // 冒号前的噪声丢掉
+		}
+		data, _, err := modbus.ParseASCII(line)
+		if err != nil {
+			s.diag.busErr.Add(1)
+			return 0, 0, nil, errSkip
+		}
+		return 0, data[0], data[1:], nil
 	}
-	n := modbus.RTURequestLength(head)
-	if n == 0 {
-		if head, err = r.Peek(7); err != nil {
+	n := 0
+	for need := 2; n == 0; need++ {
+		head, err := r.Peek(need)
+		if err != nil {
 			return 0, 0, nil, err
 		}
 		n = modbus.RTURequestLength(head)
 	}
-	if n < 0 || n > 256 {
-		// 长度无法确定：丢掉当前已到达的字节，等下一帧
+	if n < 0 {
+		// 功能码未知，长度无法从报文算出：和真实设备一样按字符间隔分帧，20 ms 内没有新字节就算一帧结束。
+		// 这样不支持的功能码也能回异常 01，而不是不应答。
+		_ = conn.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+		for {
+			if _, err := r.Peek(r.Buffered() + 1); err != nil {
+				break
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+		}
+		_ = conn.SetReadDeadline(time.Time{})
+		n = r.Buffered()
+		if n < 4 {
+			r.Discard(n)
+			return 0, 0, nil, errSkip
+		}
+	}
+	if n > 256 {
+		// 长度不合理：丢掉当前已到达的字节，等下一帧
 		r.Discard(r.Buffered())
 		return 0, 0, nil, errSkip
 	}
@@ -241,6 +299,7 @@ func (s *Server) readRequest(conn net.Conn, r *bufio.Reader) (uint16, byte, []by
 		return 0, 0, nil, err
 	}
 	if !modbus.CheckCRC(frame) {
+		s.diag.busErr.Add(1)
 		r.Discard(r.Buffered())
 		return 0, 0, nil, errSkip
 	}
@@ -303,7 +362,16 @@ func (s *Server) encode(txID uint16, slave byte, pdu []byte, f Faults) []byte {
 	}
 	out := modbus.EncodeADU(s.Mode, slave, 0, pdu)
 	if s.chance(f.CRCRate) {
-		out[len(out)-1] ^= 0xFF
+		if s.Mode.IsASCII() {
+			i := len(out) - 3 // LRC 的最后一个字符，换成另一个十六进制字符
+			if out[i] == '0' {
+				out[i] = '1'
+			} else {
+				out[i] = '0'
+			}
+		} else {
+			out[len(out)-1] ^= 0xFF
+		}
 	}
 	return out
 }
