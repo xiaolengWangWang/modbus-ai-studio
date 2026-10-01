@@ -1,9 +1,15 @@
 package ui
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"html"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -182,4 +188,211 @@ func Test64BitPoints(t *testing.T) {
 	}
 	snapshotPNG(t, ws.win, "modbus-ai-64bit.png")
 	tap(ws.connBtn)
+}
+
+// makeXLSX 生成最小的 xlsx：第一个工作表是说明，第二个是 rows。文字放共享字符串，数字按 Excel 的写法存成 2.0 这种。
+func makeXLSX(t *testing.T, rows [][]string) []byte {
+	t.Helper()
+	var shared []string
+	var sheet strings.Builder
+	sheet.WriteString(`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>`)
+	for r, row := range rows {
+		fmt.Fprintf(&sheet, `<row r="%d">`, r+1)
+		for c, v := range row {
+			if v == "" {
+				continue // 空单元格不写，测试按引用补齐
+			}
+			ref := fmt.Sprintf("%c%d", 'A'+c, r+1)
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				fmt.Fprintf(&sheet, `<c r="%s"><v>%s</v></c>`, ref, strconv.FormatFloat(f, 'f', 1, 64))
+				continue
+			}
+			fmt.Fprintf(&sheet, `<c r="%s" t="s"><v>%d</v></c>`, ref, len(shared))
+			shared = append(shared, v)
+		}
+		sheet.WriteString(`</row>`)
+	}
+	sheet.WriteString(`</sheetData></worksheet>`)
+	var sst strings.Builder
+	sst.WriteString(`<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`)
+	for _, s := range shared {
+		fmt.Fprintf(&sst, `<si><t>%s</t></si>`, html.EscapeString(s))
+	}
+	sst.WriteString(`</sst>`)
+	files := map[string]string{
+		"xl/workbook.xml": `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+			`<sheets><sheet name="说明" sheetId="1" r:id="rId3"/><sheet name="设备类属性信息" sheetId="2" r:id="rId4"/></sheets></workbook>`,
+		"xl/_rels/workbook.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			`<Relationship Id="rId3" Target="worksheets/sheet1.xml"/><Relationship Id="rId4" Target="worksheets/sheet2.xml"/></Relationships>`,
+		"xl/worksheets/sheet1.xml": `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>` +
+			`<row r="1"><c r="A1" t="inlineStr"><is><t>导出说明：数据类型说明，整数(1)，浮点数(2)</t></is></c></row></sheetData></worksheet>`,
+		"xl/worksheets/sheet2.xml": sheet.String(),
+		"xl/sharedStrings.xml":     sst.String(),
+	}
+	var buf bytes.Buffer
+	z := zip.NewWriter(&buf)
+	for name, body := range files {
+		w, err := z.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Write([]byte(body))
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// 物联网平台（Telegraf 采集）导出的设备属性表：地址和类型写在属性标识里，没有字节序；
+// 虚拟点位、布尔、线圈地址等表示不了的行跳过并说明，其他照常导入。
+func TestImportAttrTable(t *testing.T) {
+	head := []string{"属性ID", "属性标识", "属性名称", "标准化名称", "读写模式", "单位", "计算公式", "数据类型", "排列顺序", "模式"}
+	rows := [][]string{head,
+		{"198617", "4x0001:REAL", "一次供温", "m_001t", "1", "℃", "", "2", "0", "0"},
+		{"198618", "4x0003:REAL", "一次回温", "m_002t", "1", "℃", "", "2", "1", "0"},
+		{"198619", "4x0005:INT", "补水泵频率", "", "2", "Hz", "x*0.01", "1", "2", "0"},
+		{"198620", "4x0006", "温差", "", "1", "℃", "/10", "1", "3", "0"},
+		{"198621", "", "日均温度", "", "1", "℃", "", "2", "4", "1"},
+		{"198622", "4x0007:BOOL", "报警", "", "1", "", "", "6", "5", "0"},
+		{"198623", "0x0001:REAL", "线圈", "", "1", "", "", "2", "6", "0"},
+		{"198624", "4x0002:REAL", "重叠", "", "1", "", "", "2", "7", "0"},
+		{"198625", "3x0011:DOUBLE", "累计热量", "", "1", "GJ", "x*0.1+5", "3", "8", "0"},
+	}
+	imp, err := parsePointsFile("热力站A型属性列表.xlsx", makeXLSX(t, rows))
+	if err != nil {
+		t.Fatal(err)
+	}
+	type want struct {
+		area  modbus.Area
+		off   uint16
+		name  string
+		typ   modbus.DataType
+		order modbus.ByteOrder
+		scale float64
+		rw    bool
+	}
+	wants := []want{
+		{modbus.AreaHoldingRegisters, 0, "一次供温", modbus.TypeFloat32, modbus.OrderABCD, 1, false},
+		{modbus.AreaHoldingRegisters, 2, "一次回温", modbus.TypeFloat32, modbus.OrderABCD, 1, false},
+		{modbus.AreaHoldingRegisters, 4, "补水泵频率", modbus.TypeInt16, modbus.OrderAB, 0.01, true},
+		{modbus.AreaHoldingRegisters, 5, "温差", modbus.TypeInt16, modbus.OrderAB, 0.1, false},
+		{modbus.AreaInputRegisters, 10, "累计热量", modbus.TypeFloat64, modbus.OrderABCDEFGH, 1, false},
+	}
+	if imp.format != "设备属性表" || !imp.noOrder || len(imp.points) != len(wants) {
+		t.Fatalf("得到 %s %v %d 个点：%+v\n跳过：%v", imp.format, imp.noOrder, len(imp.points), imp.points, imp.skipped)
+	}
+	for i, w := range wants {
+		p := imp.points[i]
+		if p.Area != w.area || p.Offset != w.off || p.Name != w.name || p.Type != w.typ || p.Order != w.order || p.Scale != w.scale || p.RW != w.rw {
+			t.Errorf("第 %d 个点 %+v，期望 %+v", i, p, w)
+		}
+	}
+	skipped := strings.Join(imp.skipped, "\n")
+	for _, s := range []string{"日均温度：虚拟点位", "报警：类型“BOOL”不认识", "线圈：", "重叠：地址 40002"} {
+		if !strings.Contains(skipped, s) {
+			t.Errorf("跳过说明缺少“%s”：\n%s", s, skipped)
+		}
+	}
+	if len(imp.notes) != 1 || !strings.Contains(imp.notes[0], "x*0.1+5") {
+		t.Errorf("计算公式提示 %v", imp.notes)
+	}
+
+	// 属性标识带字节序时按它来；另存成 CSV 的属性表同样能识别
+	csvData := "属性标识,属性名称,数据类型\n4x0001:REAL:CDAB,一次供温,2\n"
+	imp, err = parsePointsFile("a.csv", []byte(csvData))
+	if err != nil || imp.noOrder || imp.points[0].Order != modbus.OrderCDAB {
+		t.Fatalf("CSV 属性表：%+v %v", imp, err)
+	}
+	// 本程序格式的点表存成 xlsx 也能导入；数字单元格存成 40005.0 这种写法时按整数识别
+	imp, err = parsePointsFile("p.xlsx", makeXLSX(t, [][]string{{"地址", "名称", "类型", "倍率", "长度"},
+		{"40005", "二次温差", "INT16", "0.1", ""}, {"40901", "设备型号", "STRING", "", "16"}}))
+	if err != nil || imp.format != "点表" || len(imp.points) != 2 || imp.points[0].Offset != 4 || imp.points[0].Scale != 0.1 || imp.points[1].Len != 16 {
+		t.Fatalf("xlsx 点表：%+v %v", imp, err)
+	}
+	if _, err := parsePointsFile("a.xlsx", makeXLSX(t, [][]string{{"甲", "乙"}, {"1", "2"}})); err == nil || !strings.Contains(err.Error(), "没有找到点表") {
+		t.Errorf("认不出的 xlsx 应报错：%v", err)
+	}
+	if _, err := parsePointsFile("a.xlsx", []byte("not zip")); err == nil {
+		t.Error("坏文件应报错")
+	}
+}
+
+// 按点表新建读取窗口：同一数据区里相近的点合成一个窗口，相隔太远或超过 120 个寄存器另开。
+func TestDefsForPoints(t *testing.T) {
+	ps := []point{
+		{Area: modbus.AreaHoldingRegisters, Offset: 20, Type: modbus.TypeFloat32}, // 与 40001 相隔 18 个寄存器，合并
+		{Area: modbus.AreaHoldingRegisters, Offset: 0, Type: modbus.TypeFloat32},
+		{Area: modbus.AreaHoldingRegisters, Offset: 300, Type: modbus.TypeInt16},
+		{Area: modbus.AreaHoldingRegisters, Offset: 400, Type: modbus.TypeInt16},
+		{Area: modbus.AreaHoldingRegisters, Offset: 418, Type: modbus.TypeInt16},
+		{Area: modbus.AreaHoldingRegisters, Offset: 530, Type: modbus.TypeUint64},
+		{Area: modbus.AreaInputRegisters, Offset: 0, Type: modbus.TypeInt16},
+	}
+	var got []string
+	for _, d := range defsForPoints(ps) {
+		got = append(got, fmt.Sprintf("%02X %s", byte(d.Function), refSpan(d.area(), d.Start, d.Qty)))
+	}
+	want := []string{"04 30001", "03 40001–40022", "03 40301", "03 40401–40419", "03 40531–40534"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("得到 %v，期望 %v", got, want)
+	}
+}
+
+// 点表里的浮点数按 ABCD 解出来不合理、按 CDAB 全部合理：读取窗口建议改字节序，一键改点表。
+func TestPointOrderSuggestion(t *testing.T) {
+	imp, err := parsePointsFile("a.csv", []byte("属性标识,属性名称\n4x0701:REAL,一次供温\n4x0703:REAL,一次回温\n4x0705:INT,状态\n4x0706:DINT,累计\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := test.NewTempApp(t)
+	ws := openWS(t, a, false)
+	var w *readWindow
+	locked(func() {
+		for len(ws.windows) > 0 {
+			ws.removeWindow(ws.windows[0])
+		}
+		msg := ws.applyImport(imp)
+		if !strings.Contains(msg, "新建了读取窗口：40701–40707") || !strings.Contains(msg, "没有字节序") {
+			t.Errorf("导入说明：%s", msg)
+		}
+		w = ws.windows[0]
+	})
+	tap(ws.connBtn)
+	waitFor(t, 5*time.Second, "连接并读到数据", func() bool { return hasData(w) })
+	f1, _ := modbus.EncodeRaw(modbus.TypeFloat32, modbus.OrderCDAB, 85.5)
+	f2, _ := modbus.EncodeRaw(modbus.TypeFloat32, modbus.OrderCDAB, 60.25)
+	n, _ := modbus.EncodeRaw(modbus.TypeInt32, modbus.OrderCDAB, 123456)
+	var c *modbus.Client
+	locked(func() { c = ws.session.client })
+	vals := append(append(append(f1, f2...), 1), n...)
+	if _, err := c.Do(context.Background(), modbus.Request{Slave: 1, Function: modbus.FuncWriteMultipleRegisters, Address: 700, Values: vals}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, "建议点表改用 CDAB", func() bool { return w.actionBtn.Visible() && w.actionBtn.Text == "点表改用 CDAB" })
+	tap(w.actionBtn)
+	waitFor(t, 5*time.Second, "改字节序后显示正确的值", func() bool {
+		v0, _ := w.valueText(0)
+		v2, _ := w.valueText(2)
+		v5, _ := w.valueText(5)
+		return v0 == "85.5" && v2 == "60.25" && v5 == "123456" && !w.actionBtn.Visible()
+	})
+	locked(func() {
+		if p, _ := ws.points.get(modbus.AreaHoldingRegisters, 704); p.Order != modbus.OrderAB {
+			t.Errorf("16 位点不应改字节序：%s", p.Order)
+		}
+	})
+	tap(ws.connBtn)
+}
+
+// parsePointsCSV 按本程序的格式解析 CSV 点表（不识别设备属性表）。
+func parsePointsCSV(data []byte) ([]point, error) {
+	rows, err := readCSV(data)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) < 2 {
+		return nil, errors.New("点表至少要有表头和一行数据")
+	}
+	return parsePointRows(rows)
 }

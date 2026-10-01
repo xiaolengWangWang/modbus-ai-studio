@@ -413,6 +413,11 @@ func (w *readWindow) refresh() {
 			dg.Hint = fmt.Sprintf("按 %s 解出的 %s 多数不合理（灰色），按 %s 全部合理：字节序可能是 %s。", d.Order.For(dt), dt, o, o)
 			dg.Action, dg.Do = "改用 "+string(o), func() { w.ws.redefine(w, func(d *readDef) { d.Order = o }) }
 		}
+	case regs != nil && d.usesPoints():
+		if cur, o, ok := suggestPointOrder(w.ws.points, d, regs); ok {
+			dg.Hint = fmt.Sprintf("点表里的浮点数按 %s 解出多数不合理（灰色），按 %s 全部合理：设备的字节序可能是 %s。", cur, o, o)
+			dg.Action, dg.Do = "点表改用 "+string(o), func() { w.ws.setPointOrder(cur, o) }
+		}
 	}
 	w.setDiagnosis(dg)
 	w.table.Refresh()

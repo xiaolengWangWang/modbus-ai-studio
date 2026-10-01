@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -165,6 +166,50 @@ func (ws *Workspace) diagnose(w *readWindow, err error) diagnosis {
 			Action: "重新连接", Do: ws.reconnect}
 	}
 	return diagnosis{Text: err.Error()}
+}
+
+// suggestPointOrder 检查按点表显示的浮点点：当前字节序下多数不合理、而恰好有一种字节序全部合理时，
+// 返回当前和建议的字节序（都用 32 位写法）。窗口里的浮点点字节序不一致时不判断。
+func suggestPointOrder(pts pointTable, d readDef, regs []uint16) (cur, sug modbus.ByteOrder, ok bool) {
+	type sample struct {
+		t    modbus.DataType
+		regs []uint16
+	}
+	var ss []sample
+	for i := range regs {
+		p, found := pts.get(d.area(), d.Start+uint16(i))
+		if !found || !p.Type.Float() || i+p.regs() > len(regs) || !slices.ContainsFunc(regs[i:i+p.regs()], func(r uint16) bool { return r != 0 }) {
+			continue
+		}
+		o := p.Order.For(modbus.TypeFloat32)
+		if cur != "" && o != cur {
+			return "", "", false
+		}
+		cur = o
+		ss = append(ss, sample{p.Type, regs[i : i+p.regs()]})
+	}
+	good := func(o modbus.ByteOrder) int {
+		n := 0
+		for _, s := range ss {
+			if v, err := modbus.DecodeRaw(s.t, o.For(s.t), s.regs); err == nil && isPlausible(s.t, v) {
+				n++
+			}
+		}
+		return n
+	}
+	if len(ss) == 0 || good(cur)*2 > len(ss) {
+		return "", "", false
+	}
+	var found []modbus.ByteOrder
+	for _, o := range modbus.Orders32 {
+		if o != cur && good(o) == len(ss) {
+			found = append(found, o)
+		}
+	}
+	if len(found) != 1 {
+		return "", "", false
+	}
+	return cur, found[0], true
 }
 
 // suggestFloatOrder 检查 FLOAT32 / FLOAT64 显示：当前字节序下多数非零值不合理、而恰好有一种字节序全部合理时，

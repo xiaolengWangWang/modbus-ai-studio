@@ -18,7 +18,8 @@
 //	decode*.go    报文逐字段解析
 //	reqtool.go    自定义请求窗口
 //	scan.go       总线工具：地址探测、从站扫描、串口参数扫描、诊断计数器
-//	points.go     点表和 CSV 导入
+//	points.go     点表，解析 CSV / xlsx 点表和平台导出的设备属性表
+//	xlsx.go       读取 xlsx 单元格（导入点表用）
 //	workspace.go  工作区文件、最近打开、导入点表
 //	history.go    报文记录（SQLite）和历史报文窗口
 //	format.go     数值、地址、报文的显示格式
@@ -288,7 +289,7 @@ func (ws *Workspace) setMenu() {
 		fyne.NewMenu("文件", newWin, openWs, saveWs, fyne.NewMenuItem("工作区另存为…", ws.saveWorkspaceAs), fyne.NewMenuItemSeparator(), closeWin),
 		fyne.NewMenu("连接", conn, fyne.NewMenuItem("识别协议", ws.detectProtocol), fyne.NewMenuItem("扫描串口参数…", ws.scanSerialDialog),
 			fyne.NewMenuItemSeparator(), ws.roItem),
-		fyne.NewMenu("读取", newRead, fyne.NewMenuItem("导入点表 CSV…", ws.importPoints), fyne.NewMenuItem("打开换热站示例", ws.loadDemo), fyne.NewMenuItemSeparator(),
+		fyne.NewMenu("读取", newRead, fyne.NewMenuItem("导入点表…", ws.importPoints), fyne.NewMenuItem("打开换热站示例", ws.loadDemo), fyne.NewMenuItemSeparator(),
 			fyne.NewMenuItem("全部暂停", func() { ws.pauseAll(true) }),
 			fyne.NewMenuItem("全部继续", func() { ws.pauseAll(false) })),
 		fyne.NewMenu("调试", custom, fyne.NewMenuItem("扫描从站地址…", ws.scanSlavesDialog), fyne.NewMenuItem("读取诊断计数器…", ws.diagCountersDialog),

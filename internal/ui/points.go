@@ -5,6 +5,9 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"math"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -138,20 +141,53 @@ var typeAliases = map[string]modbus.DataType{
 	"UINT64": modbus.TypeUint64, "ULINT": modbus.TypeUint64, "LWORD": modbus.TypeUint64, "QWORD": modbus.TypeUint64,
 	"FLOAT64": modbus.TypeFloat64, "DOUBLE": modbus.TypeFloat64, "LREAL": modbus.TypeFloat64,
 	"STRING": typeString, "STR": typeString, "CHAR": typeString,
+	"FLOAT32-IEEE": modbus.TypeFloat32, "FLOAT64-IEEE": modbus.TypeFloat64, // Telegraf 的写法
 }
 
-// parsePointsCSV 解析 CSV 点表。第一行是表头，按列名取值，列的顺序随意：
-//
-//	地址,名称,类型,字节序,倍率,单位,读写,最小,最大,枚举,长度
-//	40347,温差设定,FLOAT32,CDAB,1,℃,RW,5,25,,
-//	40019,补水泵状态,UINT16,,,,,,,0=停止;1=运行,
-//	40901,设备型号,STRING,,,,,,,,16
-//	40701,累计电能,UINT64,CDAB,0.001,kWh,R,,,
-//
-// 地址支持 40347、4x0347、30001、346（原始 Offset 按保持寄存器）；地址、名称、类型必填；STRING 要填长度（字符数）。
-// 64 位类型的字节序可以写 ABCDEFGH 等 8 个字母，也可以按设备手册写 32 位的 ABCD / CDAB / BADC / DCBA，按同样的规则换算。
-// 兼容 Excel 另存的 UTF-8（带 BOM）和 GBK 编码。
-func parsePointsCSV(data []byte) ([]point, error) {
+// pointImport 是一次导入的结果。
+type pointImport struct {
+	format  string // 文件格式，显示给用户
+	points  []point
+	skipped []string // 跳过的行和原因：平台导出的属性表里可能有布尔、日期、虚拟点位
+	notes   []string // 其他提示，例如计算公式无法换算
+	noOrder bool     // 文件里没有字节序，32 / 64 位点按标准大端（ABCD，也是 Telegraf 的默认值）
+}
+
+// parsePointsFile 解析点表文件。.xlsx 读第一个能识别的工作表，其他按 CSV。两种文件都可以是
+// 本程序的点表格式（表头见 parsePointRows），也可以是物联网平台导出的设备属性表（见 parseAttrRows）。
+func parsePointsFile(name string, data []byte) (pointImport, error) {
+	if strings.EqualFold(filepath.Ext(name), ".xlsx") {
+		sheets, err := readXLSX(data)
+		if err != nil {
+			return pointImport{}, err
+		}
+		for _, sh := range sheets {
+			if len(sh.rows) > 0 && (isAttrTable(sh.rows[0]) || hasColumns(sh.rows[0], "地址", "名称", "类型")) {
+				return parsePointRowsAny(sh.rows)
+			}
+		}
+		return pointImport{}, errors.New("没有找到点表：表头应有“地址、名称、类型”（本程序的点表），或“属性标识、属性名称”（平台导出的设备属性表）")
+	}
+	rows, err := readCSV(data)
+	if err != nil {
+		return pointImport{}, err
+	}
+	return parsePointRowsAny(rows)
+}
+
+func parsePointRowsAny(rows [][]string) (pointImport, error) {
+	if len(rows) < 2 {
+		return pointImport{}, errors.New("点表至少要有表头和一行数据")
+	}
+	if isAttrTable(rows[0]) {
+		return parseAttrRows(rows)
+	}
+	ps, err := parsePointRows(rows)
+	return pointImport{format: "点表", points: ps}, err
+}
+
+// readCSV 读出 CSV 的全部行，兼容 Excel 另存的 UTF-8（带 BOM）和 GBK 编码。
+func readCSV(data []byte) ([][]string, error) {
 	data = bytes.TrimPrefix(data, []byte("\xEF\xBB\xBF"))
 	if !utf8.Valid(data) {
 		d, err := simplifiedchinese.GB18030.NewDecoder().Bytes(data)
@@ -163,17 +199,64 @@ func parsePointsCSV(data []byte) ([]point, error) {
 	r := csv.NewReader(bytes.NewReader(data))
 	r.FieldsPerRecord = -1
 	r.TrimLeadingSpace = true
-	rows, err := r.ReadAll()
-	if err != nil {
-		return nil, err
-	}
-	if len(rows) < 2 {
-		return nil, errors.New("点表至少要有表头和一行数据")
-	}
+	return r.ReadAll()
+}
+
+func columns(header []string) map[string]int {
 	col := map[string]int{}
-	for i, h := range rows[0] {
+	for i, h := range header {
 		col[strings.TrimSpace(h)] = i
 	}
+	return col
+}
+
+func hasColumns(header []string, names ...string) bool {
+	col := columns(header)
+	for _, n := range names {
+		if _, ok := col[n]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func cellGetter(col map[string]int, row []string) func(string) string {
+	return func(name string) string {
+		if i, ok := col[name]; ok && i < len(row) {
+			return strings.TrimSpace(row[i])
+		}
+		return ""
+	}
+}
+
+// add 加入一个点，与已有的点重复或重叠时报错。
+func (t pointTable) add(p point) error {
+	ref := modbus.Reference(p.Area, p.Offset)
+	if _, dup := t.get(p.Area, p.Offset); dup || t.occupied(p.Area, p.Offset) {
+		return fmt.Errorf("地址 %s 与前面的点重复，或被前面的多寄存器点（32 / 64 位、字符串）占用", ref)
+	}
+	for k := 1; k < p.regs(); k++ {
+		if next, ok := t.get(p.Area, p.Offset+uint16(k)); ok {
+			return fmt.Errorf("%s 占用 %d 个寄存器，其中 %s 已经是“%s”", ref, p.regs(), modbus.Reference(p.Area, next.Offset), next.Name)
+		}
+	}
+	t[ptKey{p.Area, p.Offset}] = p
+	return nil
+}
+
+// parsePointRows 解析本程序格式的点表。第一行是表头，按列名取值，列的顺序随意：
+//
+//	地址,名称,类型,字节序,倍率,单位,读写,最小,最大,枚举,长度
+//	40347,温差设定,FLOAT32,CDAB,1,℃,RW,5,25,,
+//	40019,补水泵状态,UINT16,,,,,,,0=停止;1=运行,
+//	40901,设备型号,STRING,,,,,,,,16
+//	40701,累计电能,UINT64,CDAB,0.001,kWh,R,,,
+//
+// 地址支持 40347、4x0347、30001、346（原始 Offset 按保持寄存器）；地址、名称、类型必填；STRING 要填长度（字符数）。
+// 64 位类型的字节序可以写 ABCDEFGH 等 8 个字母，也可以按设备手册写 32 位的 ABCD / CDAB / BADC / DCBA，按同样的规则换算。
+// 这是用户自己维护的文件，第一处错误就报出来让用户改对。
+func parsePointRows(rows [][]string) ([]point, error) {
+	col := columns(rows[0])
 	for _, need := range []string{"地址", "名称", "类型"} {
 		if _, ok := col[need]; !ok {
 			return nil, fmt.Errorf("表头缺少“%s”列。表头应为：地址,名称,类型,字节序,倍率,单位,读写,最小,最大,枚举", need)
@@ -183,32 +266,115 @@ func parsePointsCSV(data []byte) ([]point, error) {
 	seen := pointTable{}
 	for n, row := range rows[1:] {
 		line := n + 2
-		get := func(name string) string {
-			if i, ok := col[name]; ok && i < len(row) {
-				return strings.TrimSpace(row[i])
-			}
-			return ""
-		}
+		get := cellGetter(col, row)
 		if get("地址") == "" && get("名称") == "" {
 			continue // 空行
 		}
 		p, err := parsePoint(get)
+		if err == nil {
+			err = seen.add(p)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("第 %d 行：%w", line, err)
 		}
-		ref := modbus.Reference(p.Area, p.Offset)
-		if _, dup := seen.get(p.Area, p.Offset); dup || seen.occupied(p.Area, p.Offset) {
-			return nil, fmt.Errorf("第 %d 行：地址 %s 与前面的点重复，或被前面的多寄存器点（32 / 64 位、字符串）占用", line, ref)
-		}
-		for k := 1; k < p.regs(); k++ {
-			if next, ok := seen.get(p.Area, p.Offset+uint16(k)); ok {
-				return nil, fmt.Errorf("第 %d 行：%s 占用 %d 个寄存器，其中 %s 已经是“%s”", line, ref, p.regs(), modbus.Reference(p.Area, next.Offset), next.Name)
-			}
-		}
-		seen[ptKey{p.Area, p.Offset}] = p
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+func isAttrTable(header []string) bool { return hasColumns(header, "属性标识", "属性名称") }
+
+// parseAttrRows 解析物联网平台导出的设备属性表（用 Telegraf 采集 Modbus 的平台常见这种格式）：
+//
+//	属性标识        属性名称  读写模式  单位  计算公式  数据类型  模式
+//	4x0021:REAL    二次供温  1        ℃              2        0
+//
+// 属性标识是“地址:类型”，也可以再带字节序（4x0021:REAL:CDAB），类型按点表的类型名和别名识别；
+// 没写类型时按数据类型列：1 整数（按 INT16）、2 浮点、3 双精度，4 字符、5 日期、6 布尔不支持。
+// 读写模式 2 表示可写；模式 1 是虚拟点位，没有 Modbus 地址；计算公式支持 x*0.1、/10 这种倍率。
+// 平台导出的表里常有本程序表示不了的点，这些行跳过并说明原因，其他照常导入。
+func parseAttrRows(rows [][]string) (pointImport, error) {
+	col := columns(rows[0])
+	imp := pointImport{format: "设备属性表", noOrder: true}
+	seen := pointTable{}
+	for n, row := range rows[1:] {
+		get := cellGetter(col, row)
+		id, name := strings.ReplaceAll(get("属性标识"), "：", ":"), get("属性名称")
+		if id == "" && name == "" {
+			continue
+		}
+		where := fmt.Sprintf("第 %d 行 %s", n+2, name)
+		skip := func(why string) { imp.skipped = append(imp.skipped, where+"："+why) }
+		if intText(get("模式")) == "1" {
+			skip("虚拟点位，没有 Modbus 地址")
+			continue
+		}
+		addr, rest, _ := strings.Cut(id, ":")
+		typ, order, _ := strings.Cut(rest, ":")
+		if typ == "" {
+			typ = map[string]string{"1": "INT16", "2": "FLOAT32", "3": "FLOAT64"}[intText(get("数据类型"))]
+			if typ == "" {
+				skip("没有类型，或数据类型是字符、日期、布尔，暂不支持")
+				continue
+			}
+		}
+		if order != "" {
+			imp.noOrder = false
+		}
+		scale, ok := formulaScale(get("计算公式"))
+		if !ok {
+			imp.notes = append(imp.notes, fmt.Sprintf("%s：计算公式“%s”无法换算，按原始值显示", where, get("计算公式")))
+		}
+		rw := ""
+		if intText(get("读写模式")) == "2" {
+			rw = "RW"
+		}
+		fields := map[string]string{"地址": addr, "名称": name, "类型": typ, "字节序": order, "倍率": scale, "单位": get("单位"), "读写": rw}
+		p, err := parsePoint(func(k string) string { return fields[k] })
+		if err == nil {
+			err = seen.add(p)
+		}
+		if err != nil {
+			skip(err.Error())
+			continue
+		}
+		imp.points = append(imp.points, p)
+	}
+	if len(imp.points) == 0 {
+		return imp, fmt.Errorf("设备属性表里没有可以导入的点。%s", strings.Join(imp.skipped, "；"))
+	}
+	return imp, nil
+}
+
+// intText 把 Excel 里的数字（常带 .0，例如 2.0）规范成整数文字。
+func intText(s string) string {
+	if f, err := strconv.ParseFloat(s, 64); err == nil && f == math.Trunc(f) {
+		return strconv.FormatFloat(f, 'f', 0, 64)
+	}
+	return s
+}
+
+var formulaRe = regexp.MustCompile(`^(?:[A-Za-z_$][A-Za-z0-9_${}]*)?([*/])([0-9]+(?:\.[0-9]+)?)$`)
+
+// formulaScale 把 x*0.1、value/10、*0.01 这种计算公式换成倍率；空公式返回空（倍率 1）。
+// 其他公式（带偏移、函数）ok 为 false。
+func formulaScale(f string) (scale string, ok bool) {
+	f = strings.NewReplacer(" ", "", "×", "*", "÷", "/").Replace(f)
+	if f == "" || f == "x" || f == "X" {
+		return "", true
+	}
+	m := formulaRe.FindStringSubmatch(f)
+	if m == nil {
+		return "", false
+	}
+	k, err := strconv.ParseFloat(m[2], 64)
+	if err != nil || k == 0 {
+		return "", false
+	}
+	if m[1] == "/" {
+		k = 1 / k
+	}
+	return strconv.FormatFloat(k, 'g', -1, 64), true
 }
 
 func parsePoint(get func(string) string) (point, error) {

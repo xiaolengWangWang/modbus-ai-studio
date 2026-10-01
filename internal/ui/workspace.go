@@ -7,11 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/storage"
+	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/internal/modbus"
 )
@@ -177,6 +180,7 @@ func (ws *Workspace) setPoints(pts pointTable) {
 	ws.refreshStatus()
 }
 
+// importPoints 导入点表：本程序的 CSV / xlsx 点表，或物联网平台导出的设备属性表（xlsx / CSV）。
 func (ws *Workspace) importPoints() {
 	d := dialog.NewFileOpen(func(rc fyne.URIReadCloser, err error) {
 		if err != nil || rc == nil {
@@ -184,27 +188,117 @@ func (ws *Workspace) importPoints() {
 		}
 		defer rc.Close()
 		data, err := io.ReadAll(rc)
-		var ps []point
+		var imp pointImport
 		if err == nil {
-			ps, err = parsePointsCSV(data)
+			imp, err = parsePointsFile(rc.URI().Name(), data)
 		}
 		if err != nil {
 			dialog.ShowError(fmt.Errorf("导入点表失败：%w", err), ws.win)
 			return
 		}
-		ws.setPoints(newPointTable(ps))
-		// 已有的寄存器读取窗口直接改成按点表显示，省得逐个改显示格式
-		for _, w := range ws.windows {
-			if !w.def.bits() && w.def.Kind != kindPoint {
-				d := w.def
-				d.Kind = kindPoint
-				ws.applyDef(w, d)
+		ws.showImportResult(ws.applyImport(imp))
+	}, ws.win)
+	d.SetFilter(storage.NewExtensionFileFilter([]string{".csv", ".xlsx"}))
+	d.Show()
+}
+
+// applyImport 换上导入的点表，返回给用户看的说明。已有的寄存器读取窗口改成按点表显示，省得逐个改显示格式；
+// 还没有寄存器读取窗口时，按点表的地址新建。
+func (ws *Workspace) applyImport(imp pointImport) string {
+	ws.setPoints(newPointTable(imp.points))
+	lines := []string{fmt.Sprintf("从%s导入了 %d 个点。", imp.format, len(imp.points))}
+	converted := false
+	for _, w := range ws.windows {
+		if w.def.bits() {
+			continue
+		}
+		converted = true
+		if w.def.Kind != kindPoint {
+			d := w.def
+			d.Kind = kindPoint
+			ws.applyDef(w, d)
+		}
+	}
+	if converted {
+		lines = append(lines, "读取窗口按点表显示名称、单位和工程值。")
+	} else {
+		var spans []string
+		for _, d := range defsForPoints(imp.points) {
+			ws.addWindow(d)
+			spans = append(spans, refSpan(d.area(), d.Start, d.Qty))
+		}
+		lines = append(lines, "按点表新建了读取窗口："+strings.Join(spans, "、")+"。")
+	}
+	if imp.noOrder && slices.ContainsFunc(imp.points, func(p point) bool { return p.Type != typeString && p.regs() > 1 }) {
+		lines = append(lines, "文件里没有字节序，32 / 64 位点先按 ABCD（Telegraf 的默认值）解码；数值不对时读取窗口会提示改用哪种，一键改好。")
+	}
+	if n := len(imp.skipped); n > 0 {
+		lines = append(lines, fmt.Sprintf("\n跳过 %d 行：", n))
+		lines = append(lines, imp.skipped[:min(n, 12)]...)
+		if n > 12 {
+			lines = append(lines, "……")
+		}
+	}
+	if len(imp.notes) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, imp.notes...)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (ws *Workspace) showImportResult(msg string) {
+	l := widget.NewLabel(msg)
+	l.Wrapping = fyne.TextWrapWord
+	l.Resize(fyne.NewSize(480, 0)) // 自动换行的标签要先定宽度，MinSize 才是换行后的高度
+	scroll := container.NewVScroll(l)
+	scroll.SetMinSize(fyne.NewSize(480, min(l.MinSize().Height, 360)))
+	dialog.NewCustom("导入点表", "好", scroll, ws.win).Show()
+}
+
+// defsForPoints 按点表的地址生成读取定义：同一数据区里相近的点合成一个窗口，一次最多读 120 个寄存器，
+// 相隔 20 个寄存器以上另开窗口；最多 8 个窗口。
+func defsForPoints(ps []point) []readDef {
+	sorted := slices.Clone(ps)
+	slices.SortFunc(sorted, func(a, b point) int {
+		if a.Area != b.Area {
+			return int(a.Area) - int(b.Area)
+		}
+		return int(a.Offset) - int(b.Offset)
+	})
+	var out []readDef
+	for _, p := range sorted {
+		end := int(p.Offset) + p.regs()
+		if n := len(out); n > 0 {
+			d := &out[n-1]
+			if d.area() == p.Area && end-int(d.Start) <= 120 && int(p.Offset)-(int(d.Start)+d.Qty) <= 20 {
+				d.Qty = max(d.Qty, end-int(d.Start))
+				continue
 			}
 		}
-		dialog.ShowInformation("导入点表", fmt.Sprintf("已导入 %d 个点，读取窗口按点表显示名称、单位和工程值。", len(ps)), ws.win)
-	}, ws.win)
-	d.SetFilter(storage.NewExtensionFileFilter([]string{".csv"}))
-	d.Show()
+		if len(out) == 8 {
+			break
+		}
+		d := defaultDef()
+		d.Function = modbus.FuncReadHoldingRegisters
+		if p.Area == modbus.AreaInputRegisters {
+			d.Function = modbus.FuncReadInputRegisters
+		}
+		d.Start, d.Qty, d.Kind = p.Offset, p.regs(), kindPoint
+		out = append(out, d)
+	}
+	return out
+}
+
+// setPointOrder 把点表里按 from 解码的 32 / 64 位数值点全部改成 to（都用 32 位写法），用于一键改正字节序。
+func (ws *Workspace) setPointOrder(from, to modbus.ByteOrder) {
+	pts := pointTable{}
+	for k, p := range ws.points {
+		if p.Type != typeString && p.regs() > 1 && p.Order == from.For(p.Type) {
+			p.Order = to.For(p.Type)
+		}
+		pts[k] = p
+	}
+	ws.setPoints(pts)
 }
 
 // recent 返回最近打开过、且文件还在的工作区，最多 5 个。
