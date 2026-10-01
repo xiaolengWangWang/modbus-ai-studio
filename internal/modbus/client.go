@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -80,12 +81,13 @@ func DefaultOptions(mode Mode) Options {
 // Client 是 Modbus 主站。同一时刻只有一个未完成请求（设计文档 5.5），
 // 响应必须通过严格校验才与请求匹配，校验不过的字节只记录、不采用。
 type Client struct {
-	mu    sync.Mutex
-	t     Transport
-	r     frameReader
-	opts  Options
-	txID  uint16
-	reqID uint64
+	mu      sync.Mutex
+	t       Transport
+	r       frameReader
+	opts    Options
+	timeout atomic.Int64 // 响应超时（纳秒），可在运行中修改
+	txID    uint16
+	reqID   uint64
 }
 
 // NewClient 在已建立的连接上创建客户端。零值参数使用默认值（ReadRetries 除外）。
@@ -98,15 +100,27 @@ func NewClient(t Transport, opts Options) *Client {
 	}
 	if opts.Guard <= 0 {
 		opts.Guard = 100 * time.Millisecond
-		if opts.Mode == ModeRTU {
+		if opts.Mode.Serial() {
 			opts.Guard = 50 * time.Millisecond
 		}
 	}
 	if opts.CharGap <= 0 {
 		opts.CharGap = 20 * time.Millisecond
 	}
-	return &Client{t: t, r: frameReader{t: t}, opts: opts}
+	c := &Client{t: t, r: frameReader{t: t}, opts: opts}
+	c.timeout.Store(int64(opts.Timeout))
+	return c
 }
+
+// SetTimeout 修改响应超时，从下一条请求起生效。不等待正在进行的请求，可以在界面线程直接调用。
+func (c *Client) SetTimeout(d time.Duration) {
+	if d > 0 {
+		c.timeout.Store(int64(d))
+	}
+}
+
+// Timeout 返回当前响应超时。
+func (c *Client) Timeout() time.Duration { return time.Duration(c.timeout.Load()) }
 
 // Mode 返回连接模式。
 func (c *Client) Mode() Mode { return c.opts.Mode }
@@ -125,7 +139,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	for i := 0; i < attempts; i++ {
 		var resp *Response
 		resp, err = c.roundTrip(ctx, req)
-		if err == nil || !(errors.Is(err, ErrTimeout) || errors.Is(err, ErrCRC)) || ctx.Err() != nil {
+		if err == nil || !(errors.Is(err, ErrTimeout) || errors.Is(err, ErrCRC) || errors.Is(err, ErrLRC)) || ctx.Err() != nil {
 			return resp, err
 		}
 	}
@@ -144,6 +158,47 @@ func (c *Client) roundTrip(ctx context.Context, req Request) (*Response, error) 
 	if err != nil {
 		return nil, err
 	}
+	base := Packet{Slave: req.Slave, Function: req.Function, Address: req.Address, Count: uint16(req.Count())}
+	var resp *Response
+	_, err = c.exchange(ctx, base, pdu, req.Timeout, func(p []byte) error {
+		var err error
+		resp, err = ParseResponsePDU(req, p)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil { // RTU 广播
+		resp = &Response{Function: req.Function}
+	}
+	return resp, nil
+}
+
+// DoRaw 发送任意 PDU（功能码 + 数据），返回第一帧通过 Transaction ID（TCP）或 Slave（RTU）校验、
+// 且功能码与请求相同的响应 PDU，内容不做功能码级校验。用于调试 FC08、FC2B 等不常用功能码。
+// 不重试；异常响应返回 *ExceptionError，同时返回异常 PDU。
+func (c *Client) DoRaw(ctx context.Context, slave byte, pdu []byte) ([]byte, error) {
+	if len(pdu) == 0 || len(pdu) > 253 {
+		return nil, fmt.Errorf("%w：PDU 长度应为 1–253 字节", ErrInvalidRequest)
+	}
+	base := Packet{Slave: slave, Function: FunctionCode(pdu[0])}
+	if len(pdu) >= 5 {
+		base.Address = uint16(pdu[1])<<8 | uint16(pdu[2])
+	}
+	return c.exchange(ctx, base, pdu, 0, func(p []byte) error {
+		switch {
+		case p[0] == pdu[0]|0x80 && len(p) >= 2:
+			return &ExceptionError{Function: FunctionCode(pdu[0]), Code: ExceptionCode(p[1])}
+		case p[0] != pdu[0]:
+			return fmt.Errorf("%w：功能码 %02X，期望 %02X", ErrMismatch, p[0], pdu[0])
+		}
+		return nil
+	})
+}
+
+// exchange 发送一帧并等待匹配的响应，返回响应 PDU。parse 决定响应内容是否属于本次请求：
+// 返回 *ExceptionError 表示异常响应（结束），其他错误表示对不上（记录后继续等待）。
+func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout time.Duration, parse func([]byte) error) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -151,8 +206,7 @@ func (c *Client) roundTrip(ctx context.Context, req Request) (*Response, error) 
 	}
 	c.txID++
 	c.reqID++
-	base := Packet{RequestID: c.reqID, Mode: c.opts.Mode, Slave: req.Slave, Function: req.Function,
-		Address: req.Address, Count: uint16(req.Count())}
+	base.RequestID, base.Mode = c.reqID, c.opts.Mode
 	if c.opts.Mode.mbap() {
 		base.TxID = c.txID
 	}
@@ -171,7 +225,7 @@ func (c *Client) roundTrip(ctx context.Context, req Request) (*Response, error) 
 		result(stale, StatusLate, nil)
 	}
 
-	adu := EncodeADU(c.opts.Mode, req.Slave, c.txID, pdu)
+	adu := EncodeADU(c.opts.Mode, base.Slave, c.txID, pdu)
 	start := time.Now()
 	if _, err := c.t.Write(adu); err != nil {
 		p := base
@@ -184,12 +238,15 @@ func (c *Client) roundTrip(ctx context.Context, req Request) (*Response, error) 
 	c.emit(tx)
 
 	// RTU 广播（Slave 0）没有响应，等待转向延迟即可
-	if req.Slave == 0 && !c.opts.Mode.mbap() {
+	if base.Slave == 0 && !c.opts.Mode.mbap() {
 		time.Sleep(c.opts.Guard)
-		return &Response{Function: req.Function}, nil
+		return nil, nil
 	}
 
-	deadline := start.Add(c.opts.Timeout)
+	if timeout <= 0 {
+		timeout = c.Timeout()
+	}
+	deadline := start.Add(timeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
@@ -201,9 +258,9 @@ func (c *Client) roundTrip(ctx context.Context, req Request) (*Response, error) 
 		f, err := c.r.readFrame(c.opts.Mode, deadline, c.opts.CharGap)
 		switch {
 		case err == nil:
-		case errors.Is(err, ErrCRC):
+		case errors.Is(err, ErrCRC), errors.Is(err, ErrLRC):
 			result(f.Raw, StatusCRCError, err)
-			return nil, ErrCRC
+			return nil, err
 		case errors.Is(err, ErrFraming):
 			result(f.Raw, StatusParseError, err)
 			continue
@@ -224,16 +281,20 @@ func (c *Client) roundTrip(ctx context.Context, req Request) (*Response, error) 
 			result(f.Raw, StatusLate, nil)
 			continue
 		}
-		if !c.opts.Mode.mbap() && f.Slave != req.Slave {
+		if !c.opts.Mode.mbap() && f.Slave != base.Slave {
 			result(f.Raw, StatusUnexpected, nil)
 			continue
 		}
-		resp, err := ParseResponsePDU(req, f.PDU)
+		if len(f.PDU) == 0 {
+			result(f.Raw, StatusParseError, ErrMalformed)
+			continue
+		}
+		err = parse(f.PDU)
 		if ex, ok := AsException(err); ok {
 			p := base
 			p.Dir, p.Raw, p.Status, p.Err, p.RTT = DirRX, f.Raw, StatusException, ex, time.Since(start)
 			c.emit(p)
-			return nil, ex
+			return f.PDU, ex
 		}
 		if err != nil {
 			result(f.Raw, StatusUnexpected, err)
@@ -242,7 +303,7 @@ func (c *Client) roundTrip(ctx context.Context, req Request) (*Response, error) 
 		p := base
 		p.Dir, p.Raw, p.Status, p.RTT = DirRX, f.Raw, StatusSuccess, time.Since(start)
 		c.emit(p)
-		return resp, nil
+		return f.PDU, nil
 	}
 }
 

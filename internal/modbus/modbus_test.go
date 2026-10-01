@@ -3,8 +3,10 @@ package modbus
 import (
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"math"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -274,3 +276,80 @@ func TestRTUResponseLength(t *testing.T) {
 		}
 	}
 }
+
+// Modbus ASCII：规范里的经典例子 Slave 17 读 40108 起 3 个寄存器，LRC 为 7E。
+func TestASCIIFrames(t *testing.T) {
+	req := EncodeADU(ModeASCII, 0x11, 0, []byte{0x03, 0x00, 0x6B, 0x00, 0x03})
+	if string(req) != ":1103006B00037E\r\n" {
+		t.Fatalf("ASCII 请求 %q", req)
+	}
+	data, lrc, err := ParseASCII([]byte(":1103006b00037e\r\n")) // 小写也接受
+	if err != nil || lrc != 0x7E || data[0] != 0x11 || len(data) != 6 {
+		t.Fatalf("解析 %X %X %v", data, lrc, err)
+	}
+	if _, _, err := ParseASCII([]byte(":1103006B00037F\r\n")); err != ErrLRC {
+		t.Errorf("LRC 错误应报 ErrLRC，得到 %v", err)
+	}
+	for _, bad := range []string{"1103006B00037E\r\n", ":1103006B00037E", ":11030\r\n", ":11G3006B00037E\r\n"} {
+		if _, _, err := ParseASCII([]byte(bad)); err != ErrFraming {
+			t.Errorf("%q 应报格式错误，得到 %v", bad, err)
+		}
+	}
+	// 帧前的噪声和被新冒号打断的半截帧都丢弃，后面完整的帧照常读出
+	r := frameReader{t: &fakeConn{data: []byte("xx:0103\r:010302000AF0\r\n")}}
+	var got []string
+	for i := 0; i < 3; i++ {
+		f, err := r.readASCII(time.Now().Add(time.Second))
+		got = append(got, fmt.Sprintf("%q %v", f.Raw, err))
+	}
+	want := []string{`"xx" ` + ErrFraming.Error(), `":0103\r" ` + ErrFraming.Error(), `":010302000AF0\r\n" <nil>`}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("分帧\n得到 %v\n期望 %v", got, want)
+	}
+}
+
+func TestNewFunctionCodeLengths(t *testing.T) {
+	cases := []struct {
+		head []byte
+		resp bool
+		want int
+	}{
+		{[]byte{1, 0x07}, true, 5},
+		{[]byte{1, 0x0B}, true, 8},
+		{[]byte{1, 0x16}, true, 10},
+		{[]byte{1, 0x11, 9}, true, 14},
+		{[]byte{1, 0x17, 4}, true, 9},
+		{[]byte{1, 0x18, 0, 6}, true, 12},
+		{[]byte{1, 0x18, 0}, true, 0},
+		{[]byte{1, 0x08}, true, -1},
+		{[]byte{1, 0x17, 0, 0, 0, 2, 0, 0, 0, 1, 2}, false, 15},
+		{[]byte{1, 0x11}, false, 4},
+	}
+	for _, c := range cases {
+		got := RTURequestLength(c.head)
+		if c.resp {
+			got = RTUResponseLength(c.head)
+		}
+		if got != c.want {
+			t.Errorf("% X（响应 %v）长度 %d，期望 %d", c.head, c.resp, got, c.want)
+		}
+	}
+	if FuncReadWriteMultipleRegs.String() != "23 读写多个寄存器" || FunctionCode(0x41).String() != "功能码 65（0x41）" {
+		t.Error("功能码名称")
+	}
+}
+
+// fakeConn 一次给出全部数据，读完后按超时处理。
+type fakeConn struct{ data []byte }
+
+func (c *fakeConn) Read(p []byte) (int, error) {
+	if len(c.data) == 0 {
+		return 0, os.ErrDeadlineExceeded
+	}
+	n := copy(p, c.data)
+	c.data = c.data[n:]
+	return n, nil
+}
+func (c *fakeConn) Write(p []byte) (int, error)     { return len(p), nil }
+func (c *fakeConn) Close() error                    { return nil }
+func (c *fakeConn) SetReadDeadline(time.Time) error { return nil }

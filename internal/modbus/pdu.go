@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // FunctionCode 是 Modbus 功能码。
@@ -19,6 +20,19 @@ const (
 	FuncWriteSingleRegister    FunctionCode = 0x06
 	FuncWriteMultipleCoils     FunctionCode = 0x0F
 	FuncWriteMultipleRegisters FunctionCode = 0x10
+
+	// 以下功能码不做结构化请求，由自定义请求（Client.DoRaw）发送，报文解析和模拟器支持
+	FuncReadExceptionStatus   FunctionCode = 0x07 // 仅串口
+	FuncDiagnostics           FunctionCode = 0x08 // 仅串口，带子功能码
+	FuncGetCommEventCounter   FunctionCode = 0x0B // 仅串口
+	FuncGetCommEventLog       FunctionCode = 0x0C // 仅串口
+	FuncReportServerID        FunctionCode = 0x11 // 仅串口
+	FuncReadFileRecord        FunctionCode = 0x14
+	FuncWriteFileRecord       FunctionCode = 0x15
+	FuncMaskWriteRegister     FunctionCode = 0x16
+	FuncReadWriteMultipleRegs FunctionCode = 0x17
+	FuncReadFIFOQueue         FunctionCode = 0x18
+	FuncEncapsulatedInterface FunctionCode = 0x2B // MEI 0E：读设备标识
 )
 
 // 单次请求的数量上限（Modbus 规范）。超过上限的读取由上层拆分。
@@ -29,26 +43,34 @@ const (
 	MaxWriteRegisters = 123
 )
 
+// 功能码名称前面的数字是十进制功能码，和 Modbus 规范、Modbus Poll 一致（0x10 写作 16）。
+var funcNames = map[FunctionCode]string{
+	FuncReadCoils:              "01 读线圈",
+	FuncReadDiscreteInputs:     "02 读离散输入",
+	FuncReadHoldingRegisters:   "03 读保持寄存器",
+	FuncReadInputRegisters:     "04 读输入寄存器",
+	FuncWriteSingleCoil:        "05 写单个线圈",
+	FuncWriteSingleRegister:    "06 写单个寄存器",
+	FuncReadExceptionStatus:    "07 读异常状态",
+	FuncDiagnostics:            "08 诊断",
+	FuncGetCommEventCounter:    "11 读通信事件计数",
+	FuncGetCommEventLog:        "12 读通信事件记录",
+	FuncWriteMultipleCoils:     "15 写多个线圈",
+	FuncWriteMultipleRegisters: "16 写多个寄存器",
+	FuncReportServerID:         "17 报告从站 ID",
+	FuncReadFileRecord:         "20 读文件记录",
+	FuncWriteFileRecord:        "21 写文件记录",
+	FuncMaskWriteRegister:      "22 掩码写寄存器",
+	FuncReadWriteMultipleRegs:  "23 读写多个寄存器",
+	FuncReadFIFOQueue:          "24 读 FIFO 队列",
+	FuncEncapsulatedInterface:  "43 封装接口（读设备标识）",
+}
+
 func (f FunctionCode) String() string {
-	switch f {
-	case FuncReadCoils:
-		return "01 读线圈"
-	case FuncReadDiscreteInputs:
-		return "02 读离散输入"
-	case FuncReadHoldingRegisters:
-		return "03 读保持寄存器"
-	case FuncReadInputRegisters:
-		return "04 读输入寄存器"
-	case FuncWriteSingleCoil:
-		return "05 写单个线圈"
-	case FuncWriteSingleRegister:
-		return "06 写单个寄存器"
-	case FuncWriteMultipleCoils:
-		return "15 写多个线圈"
-	case FuncWriteMultipleRegisters:
-		return "16 写多个寄存器"
+	if s, ok := funcNames[f]; ok {
+		return s
 	}
-	return fmt.Sprintf("%02X", byte(f))
+	return fmt.Sprintf("功能码 %d（0x%02X）", byte(f), byte(f))
 }
 
 // IsRead 表示读功能码（01–04）。
@@ -75,9 +97,10 @@ type Request struct {
 	Slave    byte
 	Function FunctionCode
 	Address  uint16
-	Quantity uint16   // 读请求的数量；写请求由 Values / Bits 决定
-	Values   []uint16 // FC06、FC16 的寄存器值
-	Bits     []bool   // FC05、FC15 的线圈值
+	Quantity uint16        // 读请求的数量；写请求由 Values / Bits 决定
+	Values   []uint16      // FC06、FC16 的寄存器值
+	Bits     []bool        // FC05、FC15 的线圈值
+	Timeout  time.Duration // 本次请求的响应超时，0 表示用客户端的超时；扫描从站时用较短的值
 }
 
 // Count 返回请求涉及的寄存器或线圈个数。

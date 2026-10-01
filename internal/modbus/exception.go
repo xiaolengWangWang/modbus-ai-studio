@@ -15,6 +15,7 @@ const (
 	ExceptionSlaveDeviceFailure     ExceptionCode = 0x04
 	ExceptionAcknowledge            ExceptionCode = 0x05
 	ExceptionSlaveDeviceBusy        ExceptionCode = 0x06
+	ExceptionMemoryParityError      ExceptionCode = 0x08
 	ExceptionGatewayPathUnavailable ExceptionCode = 0x0A
 	ExceptionGatewayTargetFailed    ExceptionCode = 0x0B
 )
@@ -27,6 +28,7 @@ var exceptionInfo = map[ExceptionCode]struct{ name, tip string }{
 	ExceptionSlaveDeviceFailure:     {"Slave Device Failure", "设备内部错误，检查设备状态"},
 	ExceptionAcknowledge:            {"Acknowledge", "设备已接受请求但需要较长处理时间，稍后再读"},
 	ExceptionSlaveDeviceBusy:        {"Slave Device Busy", "设备忙，降低轮询频率后重试"},
+	ExceptionMemoryParityError:      {"Memory Parity Error", "设备读扩展文件区（FC20 / FC21）时存储校验出错，检查设备存储"},
 	ExceptionGatewayPathUnavailable: {"Gateway Path Unavailable", "网关未配置到该 Slave 的路由"},
 	ExceptionGatewayTargetFailed:    {"Gateway Target Device Failed to Respond", "网关到串口设备这段不通：检查 Slave ID、波特率、485 接线"},
 }

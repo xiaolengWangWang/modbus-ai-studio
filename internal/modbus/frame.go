@@ -14,15 +14,20 @@ import (
 type Mode string
 
 const (
-	ModeTCP        Mode = "MODBUS_TCP"   // MBAP + TCP
-	ModeRTU        Mode = "MODBUS_RTU"   // RTU + 串口
-	ModeRTUOverTCP Mode = "RTU_OVER_TCP" // RTU + TCP
+	ModeTCP          Mode = "MODBUS_TCP"     // MBAP + TCP
+	ModeRTU          Mode = "MODBUS_RTU"     // RTU + 串口
+	ModeRTUOverTCP   Mode = "RTU_OVER_TCP"   // RTU + TCP
+	ModeASCII        Mode = "MODBUS_ASCII"   // ASCII + 串口
+	ModeASCIIOverTCP Mode = "ASCII_OVER_TCP" // ASCII + TCP
 )
 
 func (m Mode) mbap() bool { return m == ModeTCP }
 
-// Valid 表示受支持的模式。
-func (m Mode) Valid() bool { return m == ModeTCP || m == ModeRTU || m == ModeRTUOverTCP }
+// IsASCII 表示 ASCII 编码（冒号、十六进制字符、LRC、CR LF）。
+func (m Mode) IsASCII() bool { return m == ModeASCII || m == ModeASCIIOverTCP }
+
+// Serial 表示走串口的模式。
+func (m Mode) Serial() bool { return m == ModeRTU || m == ModeASCII }
 
 // Transport 是底层字节通道：TCP 连接或串口。net.Conn 直接满足该接口。
 type Transport interface {
@@ -43,8 +48,11 @@ var (
 	ErrConnection = errors.New("modbus: 连接错误")
 )
 
-// EncodeADU 把 PDU 打包成完整报文：Modbus TCP 加 MBAP 头，RTU 类加 Slave 和 CRC。
+// EncodeADU 把 PDU 打包成完整报文：Modbus TCP 加 MBAP 头，RTU 类加 Slave 和 CRC，ASCII 类编成字符帧。
 func EncodeADU(mode Mode, slave byte, txID uint16, pdu []byte) []byte {
+	if mode.IsASCII() {
+		return EncodeASCII(append([]byte{slave}, pdu...))
+	}
 	if mode.mbap() {
 		adu := make([]byte, 7, 7+len(pdu))
 		binary.BigEndian.PutUint16(adu[0:], txID)
@@ -71,9 +79,24 @@ func RTUResponseLength(head []byte) int {
 			return 0
 		}
 		return 5 + int(head[2])
-	case FuncWriteSingleCoil, FuncWriteSingleRegister, FuncWriteMultipleCoils, FuncWriteMultipleRegisters:
+	case FuncWriteSingleCoil, FuncWriteSingleRegister, FuncWriteMultipleCoils, FuncWriteMultipleRegisters, FuncGetCommEventCounter:
 		return 8
+	case FuncReadExceptionStatus:
+		return 5
+	case FuncMaskWriteRegister:
+		return 10
+	case FuncGetCommEventLog, FuncReportServerID, FuncReadFileRecord, FuncWriteFileRecord, FuncReadWriteMultipleRegs:
+		if len(head) < 3 {
+			return 0
+		}
+		return 5 + int(head[2])
+	case FuncReadFIFOQueue:
+		if len(head) < 4 {
+			return 0
+		}
+		return 6 + int(binary.BigEndian.Uint16(head[2:4]))
 	}
+	// FC08 回送的数据长度随请求而定，FC43 没有长度字段：按字符间隔分帧
 	return -1
 }
 
@@ -91,6 +114,17 @@ func RTURequestLength(head []byte) int {
 			return 0
 		}
 		return 9 + int(head[6])
+	case FuncReadExceptionStatus, FuncGetCommEventCounter, FuncGetCommEventLog, FuncReportServerID:
+		return 4
+	case FuncReadFIFOQueue:
+		return 6
+	case FuncMaskWriteRegister:
+		return 10
+	case FuncReadWriteMultipleRegs:
+		if len(head) < 11 {
+			return 0
+		}
+		return 13 + int(head[10])
 	}
 	return -1
 }
@@ -205,12 +239,12 @@ func (r *frameReader) readFrame(mode Mode, deadline time.Time, gap time.Duration
 		raw := r.take(6 + length)
 		return Frame{Raw: raw, TxID: binary.BigEndian.Uint16(raw[0:2]), Slave: raw[6], PDU: raw[7:]}, nil
 	}
-	if err := r.fill(2, deadline); err != nil {
-		return Frame{}, err
+	if mode.IsASCII() {
+		return r.readASCII(deadline)
 	}
-	n := RTUResponseLength(r.buf)
-	if n == 0 {
-		if err := r.fill(3, deadline); err != nil {
+	n := 0
+	for need := 2; n == 0; need++ {
+		if err := r.fill(need, deadline); err != nil {
 			return Frame{}, err
 		}
 		n = RTUResponseLength(r.buf)
