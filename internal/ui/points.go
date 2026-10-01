@@ -134,6 +134,9 @@ var typeAliases = map[string]modbus.DataType{
 	"INT32": modbus.TypeInt32, "DINT": modbus.TypeInt32, "LONG": modbus.TypeInt32,
 	"UINT32": modbus.TypeUint32, "UDINT": modbus.TypeUint32, "DWORD": modbus.TypeUint32,
 	"FLOAT32": modbus.TypeFloat32, "FLOAT": modbus.TypeFloat32, "REAL": modbus.TypeFloat32,
+	"INT64": modbus.TypeInt64, "LINT": modbus.TypeInt64,
+	"UINT64": modbus.TypeUint64, "ULINT": modbus.TypeUint64, "LWORD": modbus.TypeUint64, "QWORD": modbus.TypeUint64,
+	"FLOAT64": modbus.TypeFloat64, "DOUBLE": modbus.TypeFloat64, "LREAL": modbus.TypeFloat64,
 	"STRING": typeString, "STR": typeString, "CHAR": typeString,
 }
 
@@ -143,8 +146,10 @@ var typeAliases = map[string]modbus.DataType{
 //	40347,温差设定,FLOAT32,CDAB,1,℃,RW,5,25,,
 //	40019,补水泵状态,UINT16,,,,,,,0=停止;1=运行,
 //	40901,设备型号,STRING,,,,,,,,16
+//	40701,累计电能,UINT64,CDAB,0.001,kWh,R,,,
 //
 // 地址支持 40347、4x0347、30001、346（原始 Offset 按保持寄存器）；地址、名称、类型必填；STRING 要填长度（字符数）。
+// 64 位类型的字节序可以写 ABCDEFGH 等 8 个字母，也可以按设备手册写 32 位的 ABCD / CDAB / BADC / DCBA，按同样的规则换算。
 // 兼容 Excel 另存的 UTF-8（带 BOM）和 GBK 编码。
 func parsePointsCSV(data []byte) ([]point, error) {
 	data = bytes.TrimPrefix(data, []byte("\xEF\xBB\xBF"))
@@ -193,7 +198,7 @@ func parsePointsCSV(data []byte) ([]point, error) {
 		}
 		ref := modbus.Reference(p.Area, p.Offset)
 		if _, dup := seen.get(p.Area, p.Offset); dup || seen.occupied(p.Area, p.Offset) {
-			return nil, fmt.Errorf("第 %d 行：地址 %s 与前面的点重复，或被前面的多寄存器点（32 位、字符串）占用", line, ref)
+			return nil, fmt.Errorf("第 %d 行：地址 %s 与前面的点重复，或被前面的多寄存器点（32 / 64 位、字符串）占用", line, ref)
 		}
 		for k := 1; k < p.regs(); k++ {
 			if next, ok := seen.get(p.Area, p.Offset+uint16(k)); ok {
@@ -230,15 +235,15 @@ func parsePoint(get func(string) string) (point, error) {
 	}
 	t, ok := typeAliases[strings.ToUpper(get("类型"))]
 	if !ok {
-		return p, fmt.Errorf("类型“%s”不认识，应为 INT16、UINT16、INT32、UINT32、FLOAT32、STRING", get("类型"))
+		return p, fmt.Errorf("类型“%s”不认识，应为 INT16、UINT16、INT32、UINT32、FLOAT32、INT64、UINT64、FLOAT64、STRING", get("类型"))
 	}
 	p.Type = t
 	p.Order = modbus.ByteOrder(strings.ToUpper(get("字节序")))
-	if p.Order == "" {
-		p.Order = modbus.OrderAB
-		if t.Registers() == 2 && t != typeString {
-			p.Order = modbus.OrderABCD
-		}
+	switch {
+	case p.Order == "":
+		p.Order = modbus.OrderAB.For(t)
+	case t.Registers() == 4:
+		p.Order = p.Order.For(t)
 	}
 	if t == typeString {
 		p.Len, err = strconv.Atoi(get("长度"))

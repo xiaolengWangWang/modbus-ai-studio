@@ -31,7 +31,7 @@ Linux 版目前没有专用代码和安装包：同一份代码可以在 Linux �
 
 | 里程碑 | 内容 | 状态 |
 | --- | --- | --- |
-| M1 | 协议核心 + 模拟器 + 自动化测试（无 GUI）；0.5.0 补上 Modbus ASCII 和 07/08/11/12/17/20–24/43 功能码 | 已完成 |
+| M1 | 协议核心 + 模拟器 + 自动化测试（无 GUI）；0.5.0 补上 Modbus ASCII 和 07/08/11/12/17/20–24/43 功能码，0.9.0 补上 64 位数据类型 | 已完成 |
 | M2 | Fyne 桌面界面（连接栏、Modbus Poll 式读取窗口、通信报文、写入验证、多开）；待在 VM / 远程桌面 / 工控机上验证 | 进行中 |
 | M3 | 调试页 + 报文监控 + Session（调试页、报文监控、工作区文件、SQLite 报文记录与历史查看） | 已完成 |
 | M4 | 控制验证 + 诊断 + 安全层（写入验证、自动诊断、只读模式） | 已完成 |
@@ -41,8 +41,8 @@ Linux 版目前没有专用代码和安装包：同一份代码可以在 Linux �
 
 ```sh
 go run ./cmd/modbus-ai              # 运行桌面应用（启动时为空；“读取 → 打开换热站示例”加载示例并连接内置模拟器）
-VERSION=0.8.2 build/macos.sh        # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
-VERSION=0.8.2 build/windows.sh      # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
+VERSION=0.9.0 build/macos.sh        # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
+VERSION=0.9.0 build/windows.sh      # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
 
 go test ./...                       # 单元测试 + 集成测试
 go test -race -count=3 ./...        # 并发与稳定性
@@ -55,6 +55,7 @@ go build -o bin/ ./cmd/...
 ./bin/modbus-cli -target 127.0.0.1:1502 -mode rtu-over-tcp -type float32 -order CDAB -trace read 40001 4
 ./bin/modbus-cli -target 127.0.0.1:1502 -mode rtu-over-tcp -type float32 -order CDAB write 40347 16
 ./bin/modbus-cli -target 127.0.0.1:1502 detect
+./bin/modbus-cli -target 127.0.0.1:1502 -type uint64 -order CDAB write 40701 72623859790382857   # 64 位整型精确写入
 ./bin/modbus-sim -listen 127.0.0.1:1503 -mode ascii-over-tcp
 ./bin/modbus-cli -target 127.0.0.1:1503 -mode ascii-over-tcp -trace read 40001 2
 ./bin/modbus-cli -port /dev/cu.usbserial-110 -mode ascii -databits 7 -parity E read 40001 10

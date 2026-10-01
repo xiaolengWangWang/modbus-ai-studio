@@ -2,11 +2,14 @@ package modbus
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 )
 
-// DataType 是点位数据类型（V1 范围，设计文档 7.1）。
+// DataType 是点位数据类型（设计文档 7.1，另加 64 位）。
 type DataType string
 
 const (
@@ -15,6 +18,9 @@ const (
 	TypeInt32   DataType = "INT32"
 	TypeUint32  DataType = "UINT32"
 	TypeFloat32 DataType = "FLOAT32"
+	TypeInt64   DataType = "INT64"
+	TypeUint64  DataType = "UINT64"
+	TypeFloat64 DataType = "FLOAT64"
 )
 
 // Registers 返回类型占用的寄存器数。
@@ -22,8 +28,26 @@ func (t DataType) Registers() int {
 	switch t {
 	case TypeInt32, TypeUint32, TypeFloat32:
 		return 2
+	case TypeInt64, TypeUint64, TypeFloat64:
+		return 4
 	}
 	return 1
+}
+
+// Float 表示浮点类型。
+func (t DataType) Float() bool { return t == TypeFloat32 || t == TypeFloat64 }
+
+func (t DataType) signed() bool { return t == TypeInt16 || t == TypeInt32 || t == TypeInt64 }
+
+// Orders 返回类型可用的全部字节序。
+func (t DataType) Orders() []ByteOrder {
+	switch t.Registers() {
+	case 2:
+		return Orders32
+	case 4:
+		return Orders64
+	}
+	return []ByteOrder{OrderAB, OrderBA}
 }
 
 // ByteOrder 是字节序。字母 A 表示大端时的最高字节。
@@ -36,10 +60,40 @@ const (
 	OrderCDAB ByteOrder = "CDAB" // 字交换
 	OrderBADC ByteOrder = "BADC" // 字内字节交换
 	OrderDCBA ByteOrder = "DCBA" // 完全小端
+
+	OrderABCDEFGH ByteOrder = "ABCDEFGH" // 64 位标准大端
+	OrderGHEFCDAB ByteOrder = "GHEFCDAB" // 字顺序反转（低字在前）
+	OrderBADCFEHG ByteOrder = "BADCFEHG" // 字内字节交换
+	OrderHGFEDCBA ByteOrder = "HGFEDCBA" // 完全小端
 )
 
 // Orders32 是 32 位类型的全部字节序。
 var Orders32 = []ByteOrder{OrderABCD, OrderCDAB, OrderBADC, OrderDCBA}
+
+// Orders64 是 64 位类型的全部字节序，与 Orders32 一一对应。
+var Orders64 = []ByteOrder{OrderABCDEFGH, OrderGHEFCDAB, OrderBADCFEHG, OrderHGFEDCBA}
+
+// orderFamilies 是同一种字节序在 16 / 32 / 64 位下的写法：标准大端、字内字节交换、字顺序反转、完全小端。
+var orderFamilies = [][3]ByteOrder{
+	{OrderAB, OrderABCD, OrderABCDEFGH},
+	{OrderBA, OrderBADC, OrderBADCFEHG},
+	{OrderAB, OrderCDAB, OrderGHEFCDAB},
+	{OrderBA, OrderDCBA, OrderHGFEDCBA},
+}
+
+// For 把字节序换成类型 t 宽度下的同一种写法，例如 INT64 用 CDAB（低字在前）得到 GHEFCDAB。
+// 设备手册常只写 32 位的字节序，64 位按同样的规则排列。不认识的字节序原样返回，由编码解码报错。
+func (o ByteOrder) For(t DataType) ByteOrder {
+	w := map[int]int{1: 0, 2: 1, 4: 2}[t.Registers()]
+	for _, f := range orderFamilies {
+		for _, x := range f {
+			if x == o {
+				return f[w]
+			}
+		}
+	}
+	return o
+}
 
 // 线上第 i 个字节取大端表示的第 perm[i] 个字节。这些排列都是自逆的，编码和解码共用。
 var perm = map[ByteOrder][]int{
@@ -49,6 +103,11 @@ var perm = map[ByteOrder][]int{
 	OrderCDAB: {2, 3, 0, 1},
 	OrderBADC: {1, 0, 3, 2},
 	OrderDCBA: {3, 2, 1, 0},
+
+	OrderABCDEFGH: {0, 1, 2, 3, 4, 5, 6, 7},
+	OrderGHEFCDAB: {6, 7, 4, 5, 2, 3, 0, 1},
+	OrderBADCFEHG: {1, 0, 3, 2, 5, 4, 7, 6},
+	OrderHGFEDCBA: {7, 6, 5, 4, 3, 2, 1, 0},
 }
 
 func checkOrder(t DataType, o ByteOrder) error {
@@ -86,6 +145,33 @@ func BytesToRegisters(b []byte) []uint16 {
 	return out
 }
 
+// Bits 按字节序把寄存器拼成整数（大端含义），1、2、4 个寄存器分别得到 16、32、64 位。
+// 64 位整型要用它（或 FormatInt）取精确值：DecodeRaw 返回 float64，超过 2^53 的值会丢掉低位。
+func Bits(t DataType, o ByteOrder, regs []uint16) (uint64, error) {
+	if err := checkOrder(t, o); err != nil {
+		return 0, err
+	}
+	if len(regs) != t.Registers() {
+		return 0, fmt.Errorf("modbus: %s 需要 %d 个寄存器，得到 %d 个", t, t.Registers(), len(regs))
+	}
+	var u uint64
+	for _, b := range permute(RegistersToBytes(regs), o) {
+		u = u<<8 | uint64(b)
+	}
+	return u, nil
+}
+
+func fromBits(t DataType, o ByteOrder, u uint64) []uint16 {
+	be := make([]byte, t.Registers()*2)
+	for i := len(be) - 1; i >= 0; i-- {
+		be[i] = byte(u)
+		u >>= 8
+	}
+	return BytesToRegisters(permute(be, o))
+}
+
+// typeRange 返回 float64 能表示的取值范围。64 位整型的上限取 2^63 / 2^64 之下最近的 float64，
+// 否则 2^63 这样的值会通过检查、转换时溢出。
 func typeRange(t DataType) (float64, float64) {
 	switch t {
 	case TypeInt16:
@@ -96,11 +182,18 @@ func typeRange(t DataType) (float64, float64) {
 		return math.MinInt32, math.MaxInt32
 	case TypeUint32:
 		return 0, math.MaxUint32
+	case TypeInt64:
+		return math.MinInt64, math.Nextafter(1<<63, 0)
+	case TypeUint64:
+		return 0, math.Nextafter(1<<64, 0)
+	case TypeFloat64:
+		return -math.MaxFloat64, math.MaxFloat64
 	}
 	return -math.MaxFloat32, math.MaxFloat32
 }
 
 // EncodeRaw 把原始值编码为寄存器。整型必须是整数且在类型范围内。
+// 64 位整型超过 2^53 时 float64 已经丢了低位，要精确写入用 ParseRaw。
 func EncodeRaw(t DataType, o ByteOrder, raw float64) ([]uint16, error) {
 	if err := checkOrder(t, o); err != nil {
 		return nil, err
@@ -112,45 +205,106 @@ func EncodeRaw(t DataType, o ByteOrder, raw float64) ([]uint16, error) {
 	if raw < lo || raw > hi {
 		return nil, fmt.Errorf("modbus: %v 超出 %s 范围 %v…%v", raw, t, lo, hi)
 	}
-	if t != TypeFloat32 && raw != math.Trunc(raw) {
+	if !t.Float() && raw != math.Trunc(raw) {
 		return nil, fmt.Errorf("modbus: %s 只能写整数，得到 %v", t, raw)
 	}
-	var be []byte
-	switch t {
-	case TypeInt16:
-		be = binary.BigEndian.AppendUint16(nil, uint16(int16(raw)))
-	case TypeUint16:
-		be = binary.BigEndian.AppendUint16(nil, uint16(raw))
-	case TypeInt32:
-		be = binary.BigEndian.AppendUint32(nil, uint32(int32(raw)))
-	case TypeUint32:
-		be = binary.BigEndian.AppendUint32(nil, uint32(raw))
-	case TypeFloat32:
-		be = binary.BigEndian.AppendUint32(nil, math.Float32bits(float32(raw)))
+	var u uint64
+	switch {
+	case t == TypeFloat32:
+		u = uint64(math.Float32bits(float32(raw)))
+	case t == TypeFloat64:
+		u = math.Float64bits(raw)
+	case t.signed():
+		u = uint64(int64(raw)) // 补码，fromBits 只取低 16 / 32 位
+	default:
+		u = uint64(raw)
 	}
-	return BytesToRegisters(permute(be, o)), nil
+	return fromBits(t, o, u), nil
 }
 
 // DecodeRaw 按类型和字节序把寄存器解码为原始值。
 func DecodeRaw(t DataType, o ByteOrder, regs []uint16) (float64, error) {
-	if err := checkOrder(t, o); err != nil {
+	u, err := Bits(t, o, regs)
+	if err != nil {
 		return 0, err
 	}
-	if len(regs) != t.Registers() {
-		return 0, fmt.Errorf("modbus: %s 需要 %d 个寄存器，得到 %d 个", t, t.Registers(), len(regs))
-	}
-	be := permute(RegistersToBytes(regs), o)
 	switch t {
 	case TypeInt16:
-		return float64(int16(binary.BigEndian.Uint16(be))), nil
-	case TypeUint16:
-		return float64(binary.BigEndian.Uint16(be)), nil
+		return float64(int16(u)), nil
 	case TypeInt32:
-		return float64(int32(binary.BigEndian.Uint32(be))), nil
-	case TypeUint32:
-		return float64(binary.BigEndian.Uint32(be)), nil
+		return float64(int32(u)), nil
+	case TypeInt64:
+		return float64(int64(u)), nil
+	case TypeFloat32:
+		return float64(math.Float32frombits(uint32(u))), nil
+	case TypeFloat64:
+		return math.Float64frombits(u), nil
 	}
-	return float64(math.Float32frombits(binary.BigEndian.Uint32(be))), nil
+	return float64(u), nil
+}
+
+// FormatInt 精确显示整型的值，64 位整型也不丢位。
+func FormatInt(t DataType, o ByteOrder, regs []uint16) (string, error) {
+	if t.Float() {
+		return "", fmt.Errorf("modbus: %s 不是整型", t)
+	}
+	u, err := Bits(t, o, regs)
+	if err != nil {
+		return "", err
+	}
+	switch t {
+	case TypeInt16:
+		return strconv.FormatInt(int64(int16(u)), 10), nil
+	case TypeInt32:
+		return strconv.FormatInt(int64(int32(u)), 10), nil
+	case TypeInt64:
+		return strconv.FormatInt(int64(u), 10), nil
+	}
+	return strconv.FormatUint(u, 10), nil
+}
+
+// ParseRaw 把输入的原始值编码为寄存器。整型按整数精确解析，64 位整型不经过 float64，不会丢低位；
+// 也接受 15.0、1e3 这种写法。0x 开头的十六进制表示原始字节（大端含义），浮点也可以这样写，
+// 例如 FLOAT32 的 0x41700000 就是 15.0。
+func ParseRaw(t DataType, o ByteOrder, s string) ([]uint16, error) {
+	if err := checkOrder(t, o); err != nil {
+		return nil, err
+	}
+	s = strings.TrimSpace(s)
+	bits := t.Registers() * 16
+	if h, ok := strings.CutPrefix(strings.ToLower(s), "0x"); ok {
+		u, err := strconv.ParseUint(h, 16, bits)
+		if err != nil {
+			return nil, fmt.Errorf("“%s”不是 %d 位以内的十六进制数", s, bits)
+		}
+		return fromBits(t, o, u), nil
+	}
+	if !t.Float() {
+		var u uint64
+		var err error
+		if t.signed() {
+			var v int64
+			v, err = strconv.ParseInt(s, 10, bits)
+			u = uint64(v)
+		} else {
+			u, err = strconv.ParseUint(s, 10, bits)
+		}
+		if err == nil {
+			return fromBits(t, o, u), nil
+		}
+		if errors.Is(err, strconv.ErrRange) || (!t.signed() && strings.HasPrefix(s, "-")) {
+			lo, hi := "0", strconv.FormatUint(1<<bits-1, 10)
+			if t.signed() {
+				lo, hi = strconv.FormatInt(-1<<(bits-1), 10), strconv.FormatInt(1<<(bits-1)-1, 10)
+			}
+			return nil, fmt.Errorf("%s 超出 %s 范围 %s…%s", s, t, lo, hi)
+		}
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return nil, fmt.Errorf("“%s”不是数字", s)
+	}
+	return EncodeRaw(t, o, v)
 }
 
 // Scaling 是工程值换算：工程值 = 原始值 × Scale + Offset。Scale 为 0 时按 1 处理。
@@ -166,6 +320,9 @@ func (s Scaling) factor() float64 {
 	return s.Scale
 }
 
+// Identity 表示不做换算（倍率 1、偏移 0），原始值就是工程值。
+func (s Scaling) Identity() bool { return s.factor() == 1 && s.Offset == 0 }
+
 // Engineering 把原始值换算为工程值。
 func (s Scaling) Engineering(raw float64) float64 { return raw*s.factor() + s.Offset }
 
@@ -173,7 +330,7 @@ func (s Scaling) Engineering(raw float64) float64 { return raw*s.factor() + s.Of
 // 界面应提示“实际将写入 …”。
 func (s Scaling) Raw(t DataType, eng float64) (raw float64, rounded bool) {
 	raw = (eng - s.Offset) / s.factor()
-	if t == TypeFloat32 {
+	if t.Float() {
 		return raw, false
 	}
 	r := math.Round(raw)
@@ -188,6 +345,16 @@ func PlausibleFloat32(v float64) bool {
 	}
 	a := math.Abs(v)
 	return a == 0 || (a >= 1e-4 && a < 1e7)
+}
+
+// PlausibleFloat64 与 PlausibleFloat32 相同，量级放宽到 1e-6 到 1e15：字节序错了的 FLOAT64
+// 指数位被打乱，通常解出 1e-300、1e200 这种量级。
+func PlausibleFloat64(v float64) bool {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return false
+	}
+	a := math.Abs(v)
+	return a == 0 || (a >= 1e-6 && a < 1e15)
 }
 
 // Interpretation 是同一组寄存器在某种字节序下的解读（多解释视图，设计文档 7.3）。

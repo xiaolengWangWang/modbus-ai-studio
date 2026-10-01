@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -150,13 +151,19 @@ func TestEncodeDecodeByteOrders(t *testing.T) {
 		{TypeUint32, OrderCDAB, 9876543, []uint16{0xB43F, 0x0096}},
 		{TypeInt16, OrderAB, -123, []uint16{0xFF85}},
 		{TypeUint16, OrderBA, 0x1234, []uint16{0x3412}},
+		{TypeFloat64, OrderABCDEFGH, 15.0, []uint16{0x402E, 0, 0, 0}},
+		{TypeFloat64, OrderGHEFCDAB, 15.0, []uint16{0, 0, 0, 0x402E}},
+		{TypeFloat64, OrderBADCFEHG, 15.0, []uint16{0x2E40, 0, 0, 0}},
+		{TypeFloat64, OrderHGFEDCBA, 15.0, []uint16{0, 0, 0, 0x2E40}},
+		{TypeInt64, OrderABCDEFGH, -2, []uint16{0xFFFF, 0xFFFF, 0xFFFF, 0xFFFE}},
+		{TypeUint64, OrderGHEFCDAB, 0x0001000200030004, []uint16{0x0004, 0x0003, 0x0002, 0x0001}},
 	}
 	for _, c := range cases {
 		regs, err := EncodeRaw(c.t, c.o, c.raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(regs) != len(c.regs) || regs[0] != c.regs[0] || (len(regs) > 1 && regs[1] != c.regs[1]) {
+		if !slices.Equal(regs, c.regs) {
 			t.Errorf("%s %s %v：编码得到 %04X，期望 %04X", c.t, c.o, c.raw, regs, c.regs)
 		}
 		v, err := DecodeRaw(c.t, c.o, c.regs)
@@ -172,6 +179,102 @@ func TestEncodeDecodeByteOrders(t *testing.T) {
 	}
 	if _, err := EncodeRaw(TypeFloat32, OrderAB, 1); err == nil {
 		t.Error("FLOAT32 不能用 16 位字节序")
+	}
+	if _, err := EncodeRaw(TypeInt64, OrderABCD, 1); err == nil {
+		t.Error("INT64 不能用 32 位字节序")
+	}
+	if _, err := EncodeRaw(TypeInt64, OrderABCDEFGH, 1<<63); err == nil {
+		t.Error("2^63 超出 INT64 范围应报错，不能溢出成负数")
+	}
+}
+
+// 64 位整型超过 2^53 时 float64 存不下全部位数：FormatInt / ParseRaw 按整数精确处理。
+func TestInt64Exact(t *testing.T) {
+	regs := []uint16{0x0102, 0x0304, 0x0506, 0x0709}
+	if s, err := FormatInt(TypeUint64, OrderABCDEFGH, regs); err != nil || s != "72623859790382857" {
+		t.Errorf("UINT64 得到 %s %v", s, err)
+	}
+	if v, _ := DecodeRaw(TypeUint64, OrderABCDEFGH, regs); uint64(v) == 72623859790382857 {
+		t.Error("前提：float64 表示不了这个值")
+	}
+	cases := []struct {
+		t    DataType
+		o    ByteOrder
+		in   string
+		regs []uint16
+		text string // FormatInt 的结果，空表示与 in 相同
+	}{
+		{TypeUint64, OrderABCDEFGH, "72623859790382857", regs, ""},
+		{TypeUint64, OrderGHEFCDAB, "72623859790382857", []uint16{0x0709, 0x0506, 0x0304, 0x0102}, ""},
+		{TypeUint64, OrderABCDEFGH, "18446744073709551615", []uint16{0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF}, ""},
+		{TypeInt64, OrderABCDEFGH, "-9223372036854775808", []uint16{0x8000, 0, 0, 0}, ""},
+		{TypeInt64, OrderABCDEFGH, "0xFFFFFFFFFFFFFFFF", []uint16{0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF}, "-1"},
+		{TypeInt64, OrderABCDEFGH, "15.0", []uint16{0, 0, 0, 15}, "15"},
+		{TypeInt32, OrderCDAB, "-1000", []uint16{0xFC18, 0xFFFF}, ""},
+	}
+	for _, c := range cases {
+		got, err := ParseRaw(c.t, c.o, c.in)
+		if err != nil || !slices.Equal(got, c.regs) {
+			t.Errorf("%s %s “%s”：得到 %04X %v，期望 %04X", c.t, c.o, c.in, got, err, c.regs)
+			continue
+		}
+		want := c.text
+		if want == "" {
+			want = c.in
+		}
+		if s, _ := FormatInt(c.t, c.o, got); s != want {
+			t.Errorf("%s “%s”：显示为 %s，期望 %s", c.t, c.in, s, want)
+		}
+	}
+	if v, err := ParseRaw(TypeFloat32, OrderABCD, "0x41700000"); err != nil || !slices.Equal(v, []uint16{0x4170, 0}) {
+		t.Errorf("FLOAT32 十六进制原始值：%04X %v", v, err)
+	}
+	for _, c := range []struct {
+		t  DataType
+		in string
+	}{
+		{TypeInt64, "9223372036854775808"}, {TypeUint64, "18446744073709551616"}, {TypeUint64, "-1"},
+		{TypeInt64, "1.5"}, {TypeInt64, "abc"}, {TypeUint64, "0x10000000000000000"},
+	} {
+		if _, err := ParseRaw(c.t, OrderABCDEFGH, c.in); err == nil {
+			t.Errorf("%s “%s” 应报错", c.t, c.in)
+		}
+	}
+	if _, err := ParseRaw(TypeUint64, OrderABCDEFGH, "-1"); err == nil || !strings.Contains(err.Error(), "0…18446744073709551615") {
+		t.Errorf("超出范围应给出范围：%v", err)
+	}
+}
+
+func TestByteOrderFor(t *testing.T) {
+	cases := []struct {
+		o    ByteOrder
+		t    DataType
+		want ByteOrder
+	}{
+		{OrderCDAB, TypeInt64, OrderGHEFCDAB}, {OrderABCD, TypeFloat64, OrderABCDEFGH},
+		{OrderBADC, TypeUint64, OrderBADCFEHG}, {OrderDCBA, TypeInt64, OrderHGFEDCBA},
+		{OrderGHEFCDAB, TypeFloat32, OrderCDAB}, {OrderAB, TypeUint64, OrderABCDEFGH},
+		{OrderBA, TypeInt32, OrderBADC}, {OrderHGFEDCBA, TypeInt16, OrderBA},
+		{OrderGHEFCDAB, TypeInt64, OrderGHEFCDAB}, {"XYZ", TypeInt64, "XYZ"},
+	}
+	for _, c := range cases {
+		if got := c.o.For(c.t); got != c.want {
+			t.Errorf("%s 用于 %s 得到 %s，期望 %s", c.o, c.t, got, c.want)
+		}
+	}
+	// 同一种字节序在 32 位和 64 位下排列规则一致：FLOAT64 15.0 的高 32 位与 FLOAT32 的排列方式相同
+	for i, o := range Orders32 {
+		r32, _ := EncodeRaw(TypeUint32, o, 0x01020304)
+		r64, _ := EncodeRaw(TypeUint64, Orders64[i], 0x0102030405060708)
+		b32, b64 := RegistersToBytes(r32), RegistersToBytes(r64)
+		if o == OrderCDAB || o == OrderDCBA { // 低字在前：高 32 位在后半
+			b64 = b64[4:]
+		} else {
+			b64 = b64[:4]
+		}
+		if string(b32) != string(b64) {
+			t.Errorf("%s 与 %s 排列不一致：% X / % X", o, Orders64[i], b32, b64)
+		}
 	}
 }
 

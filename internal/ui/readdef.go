@@ -60,14 +60,11 @@ func (ws *Workspace) showDefinition(w *readWindow) {
 	scan.SetText(strconv.FormatInt(d.Scan.Milliseconds(), 10))
 	kind := widget.NewSelect(kindNames(), nil)
 	kind.SetSelected(string(d.Kind))
-	var orderNames []string
-	for _, o := range modbus.Orders32 {
-		orderNames = append(orderNames, string(o))
-	}
-	order := widget.NewSelect(orderNames, nil)
-	order.SetSelected(string(d.Order))
+	// 字节序的选项随显示格式变：32 位格式列 ABCD 等四种，64 位格式列 ABCDEFGH 等四种，换格式时换成同一种写法
+	order := widget.NewSelect(nil, nil)
+	order.Selected = string(d.Order)
 	if order.Selected == "" {
-		order.SetSelected(string(modbus.OrderABCD))
+		order.Selected = string(modbus.OrderABCD)
 	}
 	var rowNames []string
 	for _, r := range rowOptions {
@@ -180,7 +177,17 @@ func (ws *Workspace) showDefinition(w *readWindow) {
 		} else {
 			kind.Enable()
 		}
-		if !bits && valueKind(kind.Selected).wide() {
+		dt := valueKind(kind.Selected).dataType()
+		if dt.Registers() == 1 {
+			dt = modbus.TypeUint32 // 16 位格式不用字节序，选项保持 32 位的写法
+		}
+		var names []string
+		for _, o := range dt.Orders() {
+			names = append(names, string(o))
+		}
+		order.Options = names
+		order.SetSelected(string(modbus.ByteOrder(order.Selected).For(dt)))
+		if !bits && valueKind(kind.Selected).width() > 1 {
 			order.Enable()
 		} else {
 			order.Disable()
@@ -242,7 +249,7 @@ type readDef struct {
 	Qty      int
 	Scan     time.Duration
 	Kind     valueKind
-	Order    modbus.ByteOrder // 32 位格式的字节序
+	Order    modbus.ByteOrder // 32 / 64 位格式的字节序，用 For 换成格式对应宽度的写法
 	Rows     int              // 每列行数
 }
 
@@ -298,8 +305,8 @@ func (d readDef) format() string {
 	switch {
 	case d.bits():
 		return "位"
-	case d.Kind.wide():
-		return string(d.Kind) + " " + string(d.Order)
+	case d.Kind.width() > 1:
+		return string(d.Kind) + " " + string(d.Order.For(d.Kind.dataType()))
 	}
 	return string(d.Kind)
 }
@@ -322,7 +329,21 @@ func (d readDef) columns(pts pointTable) []colKind {
 	return []colKind{colAddr, colValue}
 }
 
-func (d readDef) colWidth(k colKind) float32 {
+// longInts 表示读取范围内有 64 位整型点：数值最长 20 位，值列要放宽。
+func (d readDef) longInts(pts pointTable) bool {
+	if !d.usesPoints() {
+		return false
+	}
+	for k, p := range pts {
+		if k.area == d.area() && int(k.off) >= int(d.Start) && int(k.off) < int(d.Start)+d.Qty &&
+			(p.Type == modbus.TypeInt64 || p.Type == modbus.TypeUint64) {
+			return true
+		}
+	}
+	return false
+}
+
+func (d readDef) colWidth(k colKind, pts pointTable) float32 {
 	switch k {
 	case colAddr:
 		return 72
@@ -336,6 +357,8 @@ func (d readDef) colWidth(k colKind) float32 {
 		return 56
 	case d.Kind == kindBinary:
 		return 176
+	case d.Kind == kindInt64 || d.Kind == kindUint64 || d.longInts(pts):
+		return 180
 	case d.Kind == kindHex:
 		return 84
 	case d.Kind == kindASCII:

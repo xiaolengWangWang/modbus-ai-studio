@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	"modbus-ai-studio/internal/modbus"
@@ -26,7 +28,8 @@ type Target struct {
 
 func (t Target) coil() bool { return t.Area == modbus.AreaCoils }
 
-func (t Target) writeOrder() modbus.ByteOrder {
+// EncodeOrder 是写入时实际使用的字节序。
+func (t Target) EncodeOrder() modbus.ByteOrder {
 	if t.WriteOrder == "" {
 		return t.ReadOrder
 	}
@@ -60,9 +63,8 @@ type Readback struct {
 type Report struct {
 	Original     float64
 	OriginalRegs []uint16
-	Target       float64
-	Written      []uint16
-	Rounded      bool // 整型取整改变了目标值
+	Target       float64  // 写入寄存器对应的工程值
+	Written      []uint16 // 按写入字节序编码的寄存器
 	WriteErr     error
 	Readbacks    []Readback
 	Result       Result
@@ -79,8 +81,30 @@ func Encode(t Target, value float64) (regs []uint16, rounded bool, err error) {
 		return []uint16{uint16(value)}, false, nil
 	}
 	raw, rounded := t.Scaling.Raw(t.Type, value)
-	regs, err = modbus.EncodeRaw(t.Type, t.writeOrder(), raw)
+	regs, err = modbus.EncodeRaw(t.Type, t.EncodeOrder(), raw)
 	return regs, rounded, err
+}
+
+// EncodeText 把输入的工程值编码为寄存器，value 是输入的数值。64 位整型且没有换算（倍率 1）时按整数精确解析：
+// float64 只有 53 位精度，超过 2^53 的值经过 float64 会丢掉低位。这种情况下也接受 0x 开头的十六进制原始值。
+func EncodeText(t Target, s string) (regs []uint16, value float64, rounded bool, err error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, 0, false, errors.New("请输入数值")
+	}
+	if (t.Type == modbus.TypeInt64 || t.Type == modbus.TypeUint64) && t.Scaling.Identity() && !t.coil() {
+		if regs, err = modbus.ParseRaw(t.Type, t.EncodeOrder(), s); err != nil {
+			return nil, 0, false, err
+		}
+		value, err = modbus.DecodeRaw(t.Type, t.EncodeOrder(), regs)
+		return regs, value, false, err
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("“%s”不是数字", s)
+	}
+	regs, rounded, err = Encode(t, v)
+	return regs, v, rounded, err
 }
 
 // WriteRequest 返回写入请求，界面用它展示完整请求报文。
@@ -143,33 +167,48 @@ func (t Target) write(ctx context.Context, c *modbus.Client, regs []uint16) erro
 	return err
 }
 
-// near 按类型判断是否匹配：整型比较原始值，浮点允许相对 1e-6 或半个最小步长。
-func (t Target) near(a, b float64) bool {
-	tol := math.Max(math.Abs(b)*1e-6, 1e-6)
+// same 判断按 o 解码的回读寄存器是否等于 want（按 wantOrder 编码）。整型和线圈比较原始整数：
+// 64 位整型超出 float64 的 53 位精度，比较工程值会把只差低位的两个值当成相等。
+// 浮点比较工程值，允许相对 1e-6 的误差。
+func (t Target) same(got []uint16, o modbus.ByteOrder, want []uint16, wantOrder modbus.ByteOrder) bool {
 	if t.coil() {
-		tol = 0.5
-	} else if t.Type != modbus.TypeFloat32 {
-		tol = math.Abs(t.Scaling.Engineering(1)-t.Scaling.Engineering(0)) / 2
+		return len(got) == 1 && len(want) == 1 && (got[0] != 0) == (want[0] != 0)
 	}
-	return math.Abs(a-b) <= tol
+	if !t.Type.Float() {
+		a, err1 := modbus.Bits(t.Type, o, got)
+		b, err2 := modbus.Bits(t.Type, wantOrder, want)
+		return err1 == nil && err2 == nil && a == b
+	}
+	a, err1 := modbus.DecodeRaw(t.Type, o, got)
+	b, err2 := modbus.DecodeRaw(t.Type, wantOrder, want)
+	return err1 == nil && err2 == nil && math.Abs(a-b) <= math.Max(math.Abs(b)*1e-6, 1e-6)
 }
 
-// Verify 读原值、写入、按 schedule 多次回读并判定（设计文档 11.4、11.5）。不自动恢复原值。
-func Verify(ctx context.Context, c *modbus.Client, t Target, value float64, schedule []time.Duration) Report {
+// Verify 读原值、写入 regs（Encode / EncodeText 的结果）、按 schedule 多次回读并判定（设计文档 11.4、11.5）。
+// 不自动恢复原值。
+func Verify(ctx context.Context, c *modbus.Client, t Target, regs []uint16, schedule []time.Duration) Report {
 	if len(schedule) == 0 {
 		schedule = DefaultSchedule
 	}
-	rep := Report{Target: value}
-	regs, orig, err := t.read(ctx, c)
+	rep := Report{Written: regs}
+	if len(regs) == 0 {
+		rep.Result, rep.Hint = ResultProtocolError, "没有要写入的值"
+		return rep
+	}
+	if t.coil() {
+		rep.Target = float64(min(regs[0], 1))
+	} else if raw, err := modbus.DecodeRaw(t.Type, t.EncodeOrder(), regs); err == nil {
+		rep.Target = t.Scaling.Engineering(raw)
+	} else {
+		rep.Result, rep.Hint = ResultProtocolError, err.Error()
+		return rep
+	}
+	orig, origVal, err := t.read(ctx, c)
 	if err != nil {
 		rep.Result, rep.Hint = ResultProtocolError, "读取原值失败："+err.Error()
 		return rep
 	}
-	rep.OriginalRegs, rep.Original = regs, orig
-	if rep.Written, rep.Rounded, err = Encode(t, value); err != nil {
-		rep.Result, rep.Hint = ResultProtocolError, err.Error()
-		return rep
-	}
+	rep.OriginalRegs, rep.Original = orig, origVal
 	rep.WriteErr = t.write(ctx, c, rep.Written)
 	ack := false
 	if ex, ok := modbus.AsException(rep.WriteErr); ok {
@@ -207,15 +246,18 @@ func Verify(ctx context.Context, c *modbus.Client, t Target, value float64, sche
 }
 
 func classify(t Target, rep Report) (Result, string) {
+	isTarget := func(rb Readback) bool {
+		return rb.Err == nil && t.same(rb.Registers, t.ReadOrder, rep.Written, t.EncodeOrder())
+	}
+	isOriginal := func(rb Readback) bool {
+		return rb.Err == nil && t.same(rb.Registers, t.ReadOrder, rep.OriginalRegs, t.ReadOrder)
+	}
 	match, back := 0, 0
 	for _, rb := range rep.Readbacks {
-		if rb.Err != nil {
-			continue
-		}
-		if t.near(rb.Value, rep.Target) {
+		if isTarget(rb) {
 			match++
 		}
-		if t.near(rb.Value, rep.Original) {
+		if isOriginal(rb) {
 			back++
 		}
 	}
@@ -226,18 +268,34 @@ func classify(t Target, rep Report) (Result, string) {
 		return ResultPass, ""
 	case back == n:
 		return ResultNotApplied, "回读一直是原值。可能原因：写入地址不对、点位只读、设备处于本地模式或有联锁条件"
-	case first.Err == nil && t.near(first.Value, rep.Target) && last.Err == nil && t.near(last.Value, rep.Original):
+	case isTarget(first) && isOriginal(last):
 		return ResultOverwritten, "写入已生效但随后被改回，疑似 PLC 程序或设备逻辑覆盖了该值"
 	case last.Err != nil && rep.WriteErr != nil:
 		return ResultUnknown, "写入超时且回读失败，无法判断设备是否执行"
 	}
+	if last.Err != nil || t.coil() {
+		return ResultMismatch, "疑似数据类型、Scale 或地址配置错误"
+	}
 	// 值变了但不等于目标：尝试其他字节序，找出是不是写入字节序与采集不一致
-	if last.Err == nil && !t.coil() && t.Type.Registers() == 2 {
-		for _, o := range modbus.Orders32 {
-			raw, err := modbus.DecodeRaw(t.Type, o, last.Registers)
-			if err == nil && o != t.ReadOrder && t.near(t.Scaling.Engineering(raw), rep.Target) {
-				return ResultMismatch, fmt.Sprintf("按 %s 解码回读值正好等于目标：写入用了 %s，采集用 %s，两者不一致", o, t.writeOrder(), t.ReadOrder)
+	if t.Type.Registers() > 1 {
+		for _, o := range t.Type.Orders() {
+			if o != t.ReadOrder && t.same(last.Registers, o, rep.Written, t.EncodeOrder()) {
+				return ResultMismatch, fmt.Sprintf("按 %s 解码回读值正好等于目标：写入用了 %s，采集用 %s，两者不一致", o, t.EncodeOrder(), t.ReadOrder)
 			}
+		}
+	}
+	// 64 位整型只差低位：设备内部用 double 保存，超过 2^53 的值存不下全部位数
+	if t.Type == modbus.TypeInt64 || t.Type == modbus.TypeUint64 {
+		got, _ := modbus.Bits(t.Type, t.ReadOrder, last.Registers)
+		want, _ := modbus.Bits(t.Type, t.EncodeOrder(), rep.Written)
+		asDouble := func(u uint64) float64 {
+			if t.Type == modbus.TypeInt64 {
+				return float64(int64(u))
+			}
+			return float64(u)
+		}
+		if asDouble(got) == asDouble(want) {
+			return ResultMismatch, "回读只有低位与目标不同：设备可能用 double（53 位精度）保存 64 位整数，超过 2^53 的值低位会丢失"
 		}
 	}
 	return ResultMismatch, "疑似数据类型、Scale 或地址配置错误"

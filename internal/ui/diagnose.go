@@ -167,13 +167,17 @@ func (ws *Workspace) diagnose(w *readWindow, err error) diagnosis {
 	return diagnosis{Text: err.Error()}
 }
 
-// suggestFloatOrder 检查 FLOAT32 显示：当前字节序下多数非零值不合理、而恰好有一种字节序全部合理时，
+// suggestFloatOrder 检查 FLOAT32 / FLOAT64 显示：当前字节序下多数非零值不合理、而恰好有一种字节序全部合理时，
 // 返回那种字节序。这是确定性判断，不依赖 AI。
-func suggestFloatOrder(regs []uint16, cur modbus.ByteOrder) (modbus.ByteOrder, bool) {
+func suggestFloatOrder(dt modbus.DataType, regs []uint16, cur modbus.ByteOrder) (modbus.ByteOrder, bool) {
 	var pairs [][]uint16
-	for i := 0; i+1 < len(regs); i += 2 {
-		if regs[i] != 0 || regs[i+1] != 0 {
-			pairs = append(pairs, regs[i:i+2])
+	n := dt.Registers()
+	for i := 0; i+n <= len(regs); i += n {
+		for _, r := range regs[i : i+n] {
+			if r != 0 {
+				pairs = append(pairs, regs[i:i+n])
+				break
+			}
 		}
 	}
 	if len(pairs) == 0 {
@@ -182,7 +186,7 @@ func suggestFloatOrder(regs []uint16, cur modbus.ByteOrder) (modbus.ByteOrder, b
 	good := func(o modbus.ByteOrder) int {
 		n := 0
 		for _, p := range pairs {
-			if v, err := modbus.DecodeRaw(modbus.TypeFloat32, o, p); err == nil && modbus.PlausibleFloat32(v) {
+			if v, err := modbus.DecodeRaw(dt, o, p); err == nil && isPlausible(dt, v) {
 				n++
 			}
 		}
@@ -192,7 +196,7 @@ func suggestFloatOrder(regs []uint16, cur modbus.ByteOrder) (modbus.ByteOrder, b
 		return "", false
 	}
 	var found []modbus.ByteOrder
-	for _, o := range modbus.Orders32 {
+	for _, o := range dt.Orders() {
 		if o != cur && good(o) == len(pairs) {
 			found = append(found, o)
 		}

@@ -10,10 +10,10 @@ import (
 	"modbus-ai-studio/internal/modbus"
 )
 
-// formatEng 格式化工程值：FLOAT32 保留两位小数（整数显示为 45.0 这种形式），
-// 整型按 Scale 的小数位数显示（132 × 0.1 → 13.2）。
+// formatEng 格式化工程值：浮点保留两位小数（整数显示为 45.0 这种形式），
+// 整型按 Scale 的小数位数显示（132 × 0.1 → 13.2）。64 位整型的精确显示用 pointText。
 func formatEng(p point, v float64) string {
-	if p.Type == modbus.TypeFloat32 {
+	if p.Type.Float() {
 		return formatFloat(v)
 	}
 	s := strconv.FormatFloat(p.Scale, 'f', -1, 64)
@@ -54,14 +54,42 @@ func formatRTT(d time.Duration) string {
 
 func scaling(p point) modbus.Scaling { return modbus.Scaling{Scale: p.Scale} }
 
-// decodePoint 把点的寄存器解码为工程值，plausible 表示 FLOAT32 结果是否合理。
+// decodePoint 把点的寄存器解码为工程值，plausible 表示浮点结果是否合理。
 func decodePoint(p point, regs []uint16) (v float64, plausible bool, err error) {
 	raw, err := modbus.DecodeRaw(p.Type, p.Order, regs)
 	if err != nil {
 		return 0, false, err
 	}
-	plausible = p.Type != modbus.TypeFloat32 || modbus.PlausibleFloat32(raw)
-	return scaling(p).Engineering(raw), plausible, nil
+	return scaling(p).Engineering(raw), isPlausible(p.Type, raw), nil
+}
+
+// isPlausible 判断浮点值是否像真实数据，整型总是合理。
+func isPlausible(t modbus.DataType, v float64) bool {
+	switch t {
+	case modbus.TypeFloat32:
+		return modbus.PlausibleFloat32(v)
+	case modbus.TypeFloat64:
+		return modbus.PlausibleFloat64(v)
+	}
+	return true
+}
+
+// exactInt 表示按寄存器精确显示：64 位整型且没有换算。float64 只有 53 位精度，按工程值显示会丢掉低位。
+func exactInt(t modbus.DataType, s modbus.Scaling) bool {
+	return (t == modbus.TypeInt64 || t == modbus.TypeUint64) && s.Identity()
+}
+
+// pointText 显示点的工程值（带枚举含义，不带单位）。
+func pointText(p point, regs []uint16) (text string, plausible bool, err error) {
+	if exactInt(p.Type, scaling(p)) {
+		text, err = modbus.FormatInt(p.Type, p.Order, regs)
+		return text, true, err
+	}
+	v, plausible, err := decodePoint(p, regs)
+	if err != nil {
+		return "", false, err
+	}
+	return formatEng(p, v), plausible, nil
 }
 
 // frameText 是报文的显示形式：ASCII 帧本身就是可读字符，原样显示并写出结尾的 CR LF；其他显示十六进制。
@@ -142,10 +170,14 @@ const (
 	kindInt32    valueKind = "INT32"
 	kindUint32   valueKind = "UINT32"
 	kindFloat32  valueKind = "FLOAT32"
+	kindInt64    valueKind = "INT64"
+	kindUint64   valueKind = "UINT64"
+	kindFloat64  valueKind = "FLOAT64"
 	kindASCII    valueKind = "ASCII" // 每个寄存器两个字符，高字节在前
 )
 
-var valueKinds = []valueKind{kindPoint, kindSigned, kindUnsigned, kindHex, kindBinary, kindASCII, kindInt32, kindUint32, kindFloat32}
+var valueKinds = []valueKind{kindPoint, kindSigned, kindUnsigned, kindHex, kindBinary, kindASCII,
+	kindInt32, kindUint32, kindFloat32, kindInt64, kindUint64, kindFloat64}
 
 func kindNames() []string {
 	out := make([]string, len(valueKinds))
@@ -155,8 +187,8 @@ func kindNames() []string {
 	return out
 }
 
-// wide 表示 32 位格式：两个寄存器显示一个值，值显示在第一个寄存器上。
-func (k valueKind) wide() bool { return k == kindInt32 || k == kindUint32 || k == kindFloat32 }
+// width 是一个值占的寄存器数：32 位格式 2 个、64 位格式 4 个，值显示在第一个寄存器上。
+func (k valueKind) width() int { return k.dataType().Registers() }
 
 // dataType 返回写入时使用的数据类型。
 func (k valueKind) dataType() modbus.DataType {
@@ -169,6 +201,12 @@ func (k valueKind) dataType() modbus.DataType {
 		return modbus.TypeUint32
 	case kindFloat32:
 		return modbus.TypeFloat32
+	case kindInt64:
+		return modbus.TypeInt64
+	case kindUint64:
+		return modbus.TypeUint64
+	case kindFloat64:
+		return modbus.TypeFloat64
 	}
 	return modbus.TypeUint16
 }
@@ -188,16 +226,23 @@ func formatReg(k valueKind, r uint16) string {
 	return strconv.Itoa(int(r))
 }
 
-// formatWide 按 32 位格式显示两个寄存器，plausible 表示 FLOAT32 结果是否合理。
+// formatWide 按 32 / 64 位格式显示多个寄存器，plausible 表示浮点结果是否合理。o 可以写 32 位的字节序名，
+// 64 位格式按同一种规则换算。整型精确显示，64 位不经过 float64。
 func formatWide(k valueKind, o modbus.ByteOrder, regs []uint16) (string, bool) {
-	v, err := modbus.DecodeRaw(k.dataType(), o, regs)
+	dt := k.dataType()
+	o = o.For(dt)
+	if !dt.Float() {
+		text, err := modbus.FormatInt(dt, o, regs)
+		if err != nil {
+			return err.Error(), false
+		}
+		return text, true
+	}
+	v, err := modbus.DecodeRaw(dt, o, regs)
 	if err != nil {
 		return err.Error(), false
 	}
-	if k == kindFloat32 {
-		return formatFloat(v), modbus.PlausibleFloat32(v)
-	}
-	return strconv.FormatFloat(v, 'f', 0, 64), true
+	return formatFloat(v), isPlausible(dt, v)
 }
 
 // parseValue 按显示格式解析用户输入：Hex 接受 0x1234 / 1234，Binary 接受 0b… 或 0/1 串（可带空格），

@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,16 @@ import (
 var setpoint = control.Target{Slave: 1, Address: 346, Type: modbus.TypeFloat32, ReadOrder: modbus.OrderCDAB}
 
 var fastSchedule = []time.Duration{0, 50 * time.Millisecond, 300 * time.Millisecond}
+
+// verify 把工程值编码后做控制验证。
+func verify(t *testing.T, cl *modbus.Client, target control.Target, v float64) control.Report {
+	t.Helper()
+	regs, _, err := control.Encode(target, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return control.Verify(context.Background(), cl, target, regs, fastSchedule)
+}
 
 func TestControlVerifyResults(t *testing.T) {
 	cases := []struct {
@@ -37,7 +48,7 @@ func TestControlVerifyResults(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			_, addr := startServer(t, modbus.ModeTCP, c.faults)
 			cl, _ := newClient(t, addr, modbus.Options{Mode: modbus.ModeTCP})
-			rep := control.Verify(context.Background(), cl, c.target, 16.0, fastSchedule)
+			rep := verify(t, cl, c.target, 16.0)
 			if rep.Result != c.want || !strings.Contains(rep.Hint, c.hint) {
 				t.Fatalf("结论 %s（%s），期望 %s（含“%s”）", rep.Result, rep.Hint, c.want, c.hint)
 			}
@@ -51,7 +62,7 @@ func TestControlVerifyResults(t *testing.T) {
 func TestControlRestore(t *testing.T) {
 	_, addr := startServer(t, modbus.ModeRTUOverTCP, simulator.Faults{})
 	cl, _ := newClient(t, addr, modbus.Options{Mode: modbus.ModeRTUOverTCP})
-	rep := control.Verify(context.Background(), cl, setpoint, 16.0, fastSchedule)
+	rep := verify(t, cl, setpoint, 16.0)
 	if rep.Result != control.ResultPass {
 		t.Fatalf("应为 PASS，得到 %s %s", rep.Result, rep.Hint)
 	}
@@ -67,7 +78,7 @@ func TestControlScaledInteger(t *testing.T) {
 	_, addr := startServer(t, modbus.ModeTCP, simulator.Faults{})
 	cl, _ := newClient(t, addr, modbus.Options{Mode: modbus.ModeTCP})
 	valve := control.Target{Slave: 1, Address: 351, Type: modbus.TypeUint16, ReadOrder: modbus.OrderAB, Scaling: modbus.Scaling{Scale: 0.1}}
-	rep := control.Verify(context.Background(), cl, valve, 70.0, fastSchedule)
+	rep := verify(t, cl, valve, 70.0)
 	if rep.Result != control.ResultPass || rep.Written[0] != 700 || rep.Original != 65.0 {
 		t.Fatalf("阀门开度 65.0 → 70.0 应 PASS 且写入原始值 700，得到 %s %v %v", rep.Result, rep.Written, rep.Original)
 	}
@@ -78,7 +89,7 @@ func TestControlCoil(t *testing.T) {
 	_, addr := startServer(t, modbus.ModeRTUOverTCP, simulator.Faults{})
 	cl, rec := newClient(t, addr, modbus.Options{Mode: modbus.ModeRTUOverTCP})
 	coil := control.Target{Slave: 1, Area: modbus.AreaCoils, Address: 5}
-	rep := control.Verify(context.Background(), cl, coil, 1, fastSchedule)
+	rep := verify(t, cl, coil, 1)
 	if rep.Result != control.ResultPass || rep.Original != 0 {
 		t.Fatalf("结论 %s（%s），原值 %v", rep.Result, rep.Hint, rep.Original)
 	}
@@ -94,5 +105,27 @@ func TestControlCoil(t *testing.T) {
 	}
 	if _, _, err := control.Encode(coil, 2); err == nil {
 		t.Error("线圈写 2 应报错")
+	}
+}
+
+// 64 位整型精确写入：超过 2^53 的值按整数解析，不经过 float64，回读逐位比较。
+func TestControlUint64Exact(t *testing.T) {
+	_, addr := startServer(t, modbus.ModeTCP, simulator.Faults{})
+	cl, _ := newClient(t, addr, modbus.Options{Mode: modbus.ModeTCP})
+	counter := control.Target{Slave: 1, Address: 700, Type: modbus.TypeUint64, ReadOrder: modbus.OrderCDAB.For(modbus.TypeUint64)}
+	regs, _, _, err := control.EncodeText(counter, "72623859790382857") // 0x0102030405060709，float64 表示不了
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []uint16{0x0709, 0x0506, 0x0304, 0x0102}; !slices.Equal(regs, want) {
+		t.Fatalf("GHEFCDAB 编码 %04X，期望 %04X", regs, want)
+	}
+	rep := control.Verify(context.Background(), cl, counter, regs, fastSchedule)
+	if rep.Result != control.ResultPass {
+		t.Fatalf("应 PASS，得到 %s %s", rep.Result, rep.Hint)
+	}
+	back, _ := readRegs(t, cl, 700, 4)
+	if s, _ := modbus.FormatInt(counter.Type, counter.ReadOrder, back); s != "72623859790382857" {
+		t.Errorf("回读 %s", s)
 	}
 }

@@ -17,20 +17,34 @@ import (
 	"modbus-ai-studio/internal/modbus"
 )
 
-// writeSpec 是一次写入验证：目标、值，以及结果里怎么显示数值。
+// writeSpec 是一次写入验证：目标、要写入的寄存器，以及结果里怎么显示数值。
 type writeSpec struct {
-	title  string
-	target control.Target
-	value  float64
-	format func(float64) string
-	unit   string
+	title   string
+	target  control.Target
+	regs    []uint16 // 按写入字节序编码好的寄存器
+	value   float64  // 输入的目标值
+	rounded bool     // 整型取整改变了输入的值
+	format  func(float64) string
+	unit    string
 }
 
-func (s writeSpec) show(v float64) string {
+func (s writeSpec) withUnit(text string) string {
 	if s.unit == "" {
-		return s.format(v)
+		return text
 	}
-	return s.format(v) + " " + s.unit
+	return text + " " + s.unit
+}
+
+func (s writeSpec) show(v float64) string { return s.withUnit(s.format(v)) }
+
+// showRegs 显示寄存器对应的值：64 位整型按寄存器精确显示，其他按工程值 v 显示。
+func (s writeSpec) showRegs(regs []uint16, o modbus.ByteOrder, v float64) string {
+	if exactInt(s.target.Type, s.target.Scaling) {
+		if text, err := modbus.FormatInt(s.target.Type, o, regs); err == nil {
+			return s.withUnit(text)
+		}
+	}
+	return s.show(v)
 }
 
 // showWrite 打开选中单元的写入对话框：点表里的可写点按工程值写入；其他保持寄存器按窗口的显示格式写入；
@@ -71,24 +85,19 @@ func (ws *Workspace) writeForm(title string, fields []*widget.FormItem, build fu
 		spec, notes, err := build()
 		var lines []string
 		if err == nil {
-			regs, rounded, encErr := control.Encode(spec.target, spec.value)
-			if encErr != nil {
-				err = encErr
-			} else {
-				req := control.WriteRequest(spec.target, regs)
-				if pdu, perr := req.PDU(); perr == nil && ws.session != nil {
-					if spec.target.Area != modbus.AreaCoils {
-						var rs []string
-						for i, r := range regs {
-							rs = append(rs, fmt.Sprintf("%s = 0x%04X", modbus.Reference(modbus.AreaHoldingRegisters, spec.target.Address+uint16(i)), r))
-						}
-						lines = append(lines, "寄存器  "+strings.Join(rs, "   "))
+			req := control.WriteRequest(spec.target, spec.regs)
+			if pdu, perr := req.PDU(); perr == nil && ws.session != nil {
+				if spec.target.Area != modbus.AreaCoils {
+					var rs []string
+					for i, r := range spec.regs {
+						rs = append(rs, fmt.Sprintf("%s = 0x%04X", modbus.Reference(modbus.AreaHoldingRegisters, spec.target.Address+uint16(i)), r))
 					}
-					lines = append(lines, fmt.Sprintf("请求    %s（%s）", frameText(ws.session.mode, modbus.EncodeADU(ws.session.mode, spec.target.Slave, 1, pdu)), req.Function))
+					lines = append(lines, "寄存器  "+strings.Join(rs, "   "))
 				}
-				if rounded {
-					notes = append(notes, "注意：取整后实际写入的值与输入不同")
-				}
+				lines = append(lines, fmt.Sprintf("请求    %s（%s）", frameText(ws.session.mode, modbus.EncodeADU(ws.session.mode, spec.target.Slave, 1, pdu)), req.Function))
+			}
+			if spec.rounded {
+				notes = append(notes, "注意：取整后实际写入的值与输入不同")
 			}
 		}
 		if err != nil {
@@ -107,9 +116,6 @@ func (ws *Workspace) writeForm(title string, fields []*widget.FormItem, build fu
 			return
 		}
 		spec, _, err := build()
-		if err == nil {
-			_, _, err = control.Encode(spec.target, spec.value)
-		}
 		if err != nil {
 			dialog.ShowError(err, ws.win)
 			return
@@ -123,23 +129,38 @@ func (ws *Workspace) writeForm(title string, fields []*widget.FormItem, build fu
 
 // showPointWrite 按点表写入工程值：范围检查、字节序检查（设计文档 13.4）。
 func (ws *Workspace) showPointWrite(w *readWindow, p point) {
-	cur, hasCur := w.pointValue(p)
+	curRegs, hasCur := w.pointRegs(p)
+	curText := "—"
 	lo, hi, ranged := p.limits()
 	value := widget.NewEntry()
 	if hasCur {
-		step := 1.0
-		if p.Scale < 1 {
-			step = p.Scale * 10
+		text, _, err := pointText(p, curRegs)
+		cur, _, err2 := decodePoint(p, curRegs)
+		hasCur = err == nil && err2 == nil
+		if hasCur {
+			curText = text + " " + p.Unit
+			// 预填一个与当前值不同的值；64 位整型按原样预填，避免经过 float64 丢位
+			step := 1.0
+			if p.Scale < 1 {
+				step = p.Scale * 10
+			}
+			v := cur + step
+			if ranged && v > hi {
+				v = cur - step
+			}
+			if exactInt(p.Type, scaling(p)) {
+				value.SetText(text)
+			} else {
+				value.SetText(formatEng(p, v))
+			}
 		}
-		v := cur + step
-		if ranged && v > hi {
-			v = cur - step
-		}
-		value.SetText(formatEng(p, v))
 	}
 	orders := []string{string(p.Order)}
-	if p.Type.Registers() == 2 {
-		orders = []string{"ABCD", "CDAB", "BADC", "DCBA"}
+	if p.Type.Registers() > 1 {
+		orders = nil
+		for _, o := range p.Type.Orders() {
+			orders = append(orders, string(o))
+		}
 	}
 	order := widget.NewSelect(orders, nil)
 	order.SetSelected(string(p.Order))
@@ -147,23 +168,21 @@ func (ws *Workspace) showPointWrite(w *readWindow, p point) {
 		t := control.Target{Slave: w.def.Slave, Address: p.Offset, Type: p.Type, ReadOrder: p.Order,
 			WriteOrder: modbus.ByteOrder(order.Selected), Scaling: scaling(p)}
 		spec := writeSpec{title: p.Name, target: t, format: func(v float64) string { return formatEng(p, v) }, unit: p.Unit}
+		regs, v, rounded, err := control.EncodeText(t, value.Text)
 		var notes []string
 		if t.WriteOrder != p.Order {
-			if v, err := strconv.ParseFloat(strings.TrimSpace(value.Text), 64); err == nil {
-				if regs, _, e := control.Encode(t, v); e == nil {
-					if seen, _, e2 := decodePoint(p, regs); e2 == nil {
-						notes = append(notes, fmt.Sprintf("警告：写入 %s，采集 %s。设备按 %s 理解会得到 %.4g", t.WriteOrder, p.Order, p.Order, seen))
-					}
+			if err == nil {
+				if seen, _, e2 := pointText(p, regs); e2 == nil {
+					notes = append(notes, fmt.Sprintf("警告：写入 %s，采集 %s。设备按 %s 理解会得到 %s", t.WriteOrder, p.Order, p.Order, seen))
 				}
 			}
 		} else {
 			notes = append(notes, fmt.Sprintf("通过：写入字节序与采集一致（%s）", p.Order))
 		}
-		v, err := strconv.ParseFloat(strings.TrimSpace(value.Text), 64)
 		if err != nil {
-			return spec, notes, errors.New("请输入数字")
+			return spec, notes, err
 		}
-		spec.value = v
+		spec.regs, spec.value, spec.rounded = regs, v, rounded
 		if ranged && (v < lo || v > hi) {
 			return spec, notes, fmt.Errorf("超出点表允许范围 %v–%v", lo, hi)
 		}
@@ -171,10 +190,6 @@ func (ws *Workspace) showPointWrite(w *readWindow, p point) {
 			notes = append([]string{fmt.Sprintf("通过：在允许范围 %v–%v 内", lo, hi)}, notes...)
 		}
 		return spec, notes, nil
-	}
-	curText := "—"
-	if hasCur {
-		curText = formatEng(p, cur) + " " + p.Unit
 	}
 	fields := []*widget.FormItem{
 		widget.NewFormItem("当前值", widget.NewLabel(curText)),
@@ -187,7 +202,7 @@ func (ws *Workspace) showPointWrite(w *readWindow, p point) {
 	order.OnChanged = func(string) { update() }
 }
 
-// showRegisterWrite 按窗口的显示格式写原始值：Signed / Unsigned / Hex / Binary 写 1 个寄存器，32 位格式写 2 个。
+// showRegisterWrite 按窗口的显示格式写原始值：Signed / Unsigned / Hex / Binary 写 1 个寄存器，32 位格式写 2 个，64 位格式写 4 个。
 func (ws *Workspace) showRegisterWrite(w *readWindow, off uint16) {
 	d := w.def
 	kind := d.Kind
@@ -196,16 +211,16 @@ func (ws *Workspace) showRegisterWrite(w *readWindow, off uint16) {
 	}
 	dt := kind.dataType()
 	order := modbus.OrderAB
-	if kind.wide() {
-		order = d.Order
-	}
 	n := dt.Registers()
+	if n > 1 {
+		order = d.Order.For(dt)
+	}
 	regs, _, _ := w.snapshot()
 	i := int(off - d.Start)
 	value := widget.NewEntry()
 	curText := "—"
 	if i+n <= len(regs) {
-		if kind.wide() {
+		if n > 1 {
 			curText, _ = formatWide(kind, order, regs[i:i+n])
 		} else {
 			curText = formatReg(kind, regs[i])
@@ -213,16 +228,16 @@ func (ws *Workspace) showRegisterWrite(w *readWindow, off uint16) {
 		value.SetText(curText)
 	}
 	fcs := []string{modbus.FuncWriteSingleRegister.String(), modbus.FuncWriteMultipleRegisters.String()}
-	if n == 2 {
+	if n > 1 {
 		fcs = fcs[1:]
 	}
 	fc := widget.NewSelect(fcs, nil)
 	fc.SetSelected(fcs[0])
 	format := func(v float64) string {
-		if r, err := modbus.EncodeRaw(dt, order, v); err == nil && !kind.wide() {
+		if r, err := modbus.EncodeRaw(dt, order, v); err == nil && n == 1 {
 			return formatReg(kind, r[0])
 		}
-		if kind == kindFloat32 {
+		if dt.Float() {
 			return formatFloat(v)
 		}
 		return strconv.FormatFloat(v, 'f', -1, 64)
@@ -238,8 +253,14 @@ func (ws *Workspace) showRegisterWrite(w *readWindow, off uint16) {
 		if p, ok := ws.points.get(modbus.AreaHoldingRegisters, off); ok && d.Kind != kindPoint {
 			notes = append(notes, fmt.Sprintf("提示：点表里这是“%s”（%s %s），按原始值写入", p.Name, p.Type, p.Order))
 		}
-		v, err := parseValue(kind, value.Text)
-		spec.value = v
+		var err error
+		if exactInt(dt, t.Scaling) {
+			spec.regs, spec.value, spec.rounded, err = control.EncodeText(t, value.Text)
+			return spec, notes, err
+		}
+		if spec.value, err = parseValue(kind, value.Text); err == nil {
+			spec.regs, spec.rounded, err = control.Encode(t, spec.value)
+		}
 		return spec, notes, err
 	}
 	fields := []*widget.FormItem{
@@ -287,7 +308,8 @@ func (ws *Workspace) showCoilWrite(w *readWindow, off uint16) {
 		if state.Selected == "ON" {
 			v = 1
 		}
-		return writeSpec{title: "线圈 " + strconv.Itoa(int(off)), target: t, value: v, format: onOff}, nil, nil
+		regs, _, err := control.Encode(t, v)
+		return writeSpec{title: "线圈 " + strconv.Itoa(int(off)), target: t, regs: regs, value: v, format: onOff}, nil, err
 	}
 	curText := "—"
 	if cur >= 0 {
@@ -303,16 +325,15 @@ func (ws *Workspace) showCoilWrite(w *readWindow, off uint16) {
 	fc.OnChanged = func(string) { update() }
 }
 
-// pointValue 返回点的当前工程值（从窗口最近一次读到的寄存器解码）。
-func (w *readWindow) pointValue(p point) (float64, bool) {
+// pointRegs 返回点在窗口最近一次读到的寄存器。
+func (w *readWindow) pointRegs(p point) ([]uint16, bool) {
 	regs, _, _ := w.snapshot()
 	i := int(p.Offset) - int(w.def.Start)
 	n := p.Type.Registers()
 	if i < 0 || i+n > len(regs) {
-		return 0, false
+		return nil, false
 	}
-	v, _, err := decodePoint(p, regs[i:i+n])
-	return v, err == nil
+	return regs[i : i+n], true
 }
 
 func unitSuffix(unit string) string {
@@ -339,7 +360,7 @@ func (ws *Workspace) runVerify(spec writeSpec) {
 	progress := dialog.NewCustomWithoutButtons("控制验证", container.NewVBox(widget.NewLabel("写入并回读中…"), widget.NewProgressBarInfinite()), ws.win)
 	progress.Show()
 	go func() {
-		rep := control.Verify(s.ctx, s.client, spec.target, spec.value, control.DefaultSchedule)
+		rep := control.Verify(s.ctx, s.client, spec.target, spec.regs, control.DefaultSchedule)
 		uiDo(func() {
 			progress.Hide()
 			if !ws.closed {
@@ -358,15 +379,17 @@ func (ws *Workspace) showReport(spec writeSpec, rep control.Report) {
 	case rep.WriteErr != nil:
 		proto = rep.WriteErr.Error()
 	}
+	t := spec.target
+	original := spec.showRegs(rep.OriginalRegs, t.ReadOrder, rep.Original)
 	if rep.OriginalRegs != nil {
-		lines = append(lines, "原值："+spec.show(rep.Original), "目标："+spec.show(spec.value), "协议写入："+proto)
+		lines = append(lines, "原值："+original, "目标："+spec.showRegs(spec.regs, t.EncodeOrder(), spec.value), "协议写入："+proto)
 	}
 	for _, rb := range rep.Readbacks {
 		if rb.Err != nil {
 			lines = append(lines, fmt.Sprintf("回读 %d ms：%v", rb.At.Milliseconds(), rb.Err))
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("回读 %d ms：%s", rb.At.Milliseconds(), spec.show(rb.Value)))
+		lines = append(lines, fmt.Sprintf("回读 %d ms：%s", rb.At.Milliseconds(), spec.showRegs(rb.Registers, t.ReadOrder, rb.Value)))
 	}
 	if rep.Hint != "" {
 		lines = append(lines, "说明："+rep.Hint)
@@ -383,7 +406,7 @@ func (ws *Workspace) showReport(spec writeSpec, rep control.Report) {
 	changed := len(rep.Readbacks) > 0 && rep.OriginalRegs != nil
 	if changed {
 		last := rep.Readbacks[len(rep.Readbacks)-1]
-		changed = last.Err != nil || spec.format(last.Value) != spec.format(rep.Original)
+		changed = last.Err != nil || spec.showRegs(last.Registers, t.ReadOrder, last.Value) != original
 	}
 	if rep.Result == control.ResultPass || !changed {
 		d := dialog.NewCustom("控制验证 · "+spec.title, "关闭", content, ws.win)
@@ -405,7 +428,7 @@ func (ws *Workspace) showReport(spec writeSpec, rep control.Report) {
 					dialog.ShowError(fmt.Errorf("恢复原值失败，请人工处理：%w", err), ws.win)
 					return
 				}
-				dialog.ShowInformation("控制验证", "已恢复原值 "+spec.show(rep.Original), ws.win)
+				dialog.ShowInformation("控制验证", "已恢复原值 "+original, ws.win)
 			})
 		}()
 	}, ws.win)

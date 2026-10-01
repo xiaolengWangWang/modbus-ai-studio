@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -167,13 +168,14 @@ func registerInsight(w *readWindow) []decodeRow {
 			decodeString(modbus.OrderAB, str), decodeString(modbus.OrderBA, str))})
 	}
 
-	cur := modbus.ByteOrder("")
+	// 当前窗口按哪种宽度和字节序解读这几个寄存器，下面对应的行标“当前”
+	cur, width := modbus.ByteOrder(""), 0
 	p, isPoint := w.ws.points.get(area, off)
 	switch {
-	case d.Kind.wide():
-		cur = d.Order
-	case isPoint && d.Kind == kindPoint && p.Type.Registers() == 2:
-		cur = p.Order
+	case d.Kind.width() > 1:
+		width, cur = d.Kind.width(), d.Order.For(d.Kind.dataType())
+	case isPoint && d.Kind == kindPoint && p.Type != typeString && p.regs() > 1:
+		width, cur = p.regs(), p.Order
 	}
 	if i+1 < len(regs) {
 		pair := regs[i : i+2]
@@ -185,15 +187,32 @@ func registerInsight(w *readWindow) []decodeRow {
 				ok = "不合理"
 			}
 			m := fmt.Sprintf("FLOAT32 %s（%s）· INT32 %d · UINT32 %d", formatFloat(it.Float32), ok, it.Int32, it.Uint32)
-			if it.Order == cur {
+			if width == 2 && it.Order == cur {
 				m += " · 当前"
 			}
 			rows = append(rows, decodeRow{Name: string(it.Order), Hex: hexs(be), Meaning: m})
 		}
-		if cur != "" {
+		if width == 2 {
 			if o, ok := modbus.SuggestByteOrder(cur, pair); ok {
 				rows = append(rows, decodeRow{Name: "建议", Meaning: fmt.Sprintf("按 %s 解出的 FLOAT32 不合理，只有 %s 合理，字节序可能是 %s", cur, o, o)})
 			}
+		}
+	}
+	if i+3 < len(regs) {
+		quad := regs[i : i+4]
+		rows = append(rows, decodeRow{Meaning: fmt.Sprintf("与 %s 组成 64 位，线上字节 %s：", refSpan(area, off+1, 3), hexs(modbus.RegistersToBytes(quad)))})
+		for _, o := range modbus.Orders64 {
+			u, _ := modbus.Bits(modbus.TypeUint64, o, quad)
+			f := math.Float64frombits(u)
+			ok := "合理"
+			if !modbus.PlausibleFloat64(f) {
+				ok = "不合理"
+			}
+			m := fmt.Sprintf("FLOAT64 %s（%s）· INT64 %d · UINT64 %d", formatFloat(f), ok, int64(u), u)
+			if width == 4 && o == cur {
+				m += " · 当前"
+			}
+			rows = append(rows, decodeRow{Name: string(o), Hex: hexs(binary.BigEndian.AppendUint64(nil, u)), Meaning: m})
 		}
 	}
 	if isPoint {
@@ -213,8 +232,8 @@ func registerInsight(w *readWindow) []decodeRow {
 		}
 		rows = append(rows, decodeRow{Name: "点表", Meaning: fmt.Sprintf("%s · %s %s · Scale %v · %s", p.Name, p.Type, p.Order, p.Scale, access)})
 		if n := p.regs(); i+n <= len(regs) {
-			if v, _, err := decodePoint(p, regs[i:i+n]); err == nil {
-				rows = append(rows, decodeRow{Name: "工程值", Meaning: formatEng(p, v) + " " + p.Unit})
+			if text, _, err := pointText(p, regs[i:i+n]); err == nil {
+				rows = append(rows, decodeRow{Name: "工程值", Meaning: text + " " + p.Unit})
 			}
 		}
 	}

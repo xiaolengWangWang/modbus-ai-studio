@@ -130,7 +130,7 @@ func (w *readWindow) setDef(d readDef) {
 	w.rows = min(d.Rows, d.Qty)
 	w.groups = (d.Qty + w.rows - 1) / w.rows
 	for c := 0; c < w.groups*len(w.cols); c++ {
-		w.table.SetColumnWidth(c, d.colWidth(w.cols[c%len(w.cols)]))
+		w.table.SetColumnWidth(c, d.colWidth(w.cols[c%len(w.cols)], w.ws.points))
 	}
 	name := ""
 	if d.Name != "" {
@@ -148,7 +148,7 @@ func (w *readWindow) setDef(d readDef) {
 func (w *readWindow) prefWidth() float32 {
 	var g float32
 	for _, k := range w.cols {
-		g += w.def.colWidth(k) + theme.Padding()
+		g += w.def.colWidth(k, w.ws.points) + theme.Padding()
 	}
 	return max(g*float32(w.groups), 380)
 }
@@ -172,17 +172,17 @@ func (w *readWindow) cellOf(i, col int) widget.TableCellID {
 	return widget.TableCellID{Row: i % w.rows, Col: i/w.rows*len(w.cols) + col}
 }
 
-// align 让选中落在一个值的第一个寄存器上：32 位点的第二个寄存器、32 位格式的奇数位置都往前退一个。
+// align 让选中落在一个值的第一个寄存器上：多寄存器点的后几个寄存器、32 / 64 位格式的非起始位置都往前退。
 func (w *readWindow) align(i int) int {
 	d := w.def
 	switch {
 	case d.bits():
 	case d.usesPoints():
-		if w.ws.points.occupied(d.area(), d.Start+uint16(i)) && i > 0 {
-			return i - 1
+		for i > 0 && w.ws.points.occupied(d.area(), d.Start+uint16(i)) {
+			i--
 		}
-	case d.Kind.wide() && i%2 == 1:
-		return i - 1
+	case d.Kind.width() > 1:
+		return i - i%d.Kind.width()
 	}
 	return i
 }
@@ -282,7 +282,7 @@ func (w *readWindow) valueText(i int) (string, widget.Importance) {
 		if p.Type == typeString {
 			return decodeString(p.Order, regs[i:i+n]), imp(n)
 		}
-		v, plausible, err := decodePoint(p, regs[i:i+n])
+		text, plausible, err := pointText(p, regs[i:i+n])
 		if err != nil {
 			return err.Error(), widget.DangerImportance
 		}
@@ -290,18 +290,19 @@ func (w *readWindow) valueText(i int) (string, widget.Importance) {
 			return fmt.Sprintf("0x%04X", regs[i]), imp(n)
 		}
 		if !plausible {
-			return formatEng(p, v), widget.LowImportance
+			return text, widget.LowImportance
 		}
-		return formatEng(p, v), imp(n)
-	case d.Kind.wide():
-		if i%2 == 1 || i+1 >= len(regs) {
+		return text, imp(n)
+	case d.Kind.width() > 1:
+		n := d.Kind.width()
+		if i%n != 0 || i+n > len(regs) {
 			return "—", widget.LowImportance
 		}
-		text, plausible := formatWide(d.Kind, d.Order, regs[i:i+2])
+		text, plausible := formatWide(d.Kind, d.Order, regs[i:i+n])
 		if !plausible {
 			return text, widget.LowImportance
 		}
-		return text, imp(2)
+		return text, imp(n)
 	}
 	return formatReg(d.Kind, regs[i]), imp(1)
 }
@@ -406,9 +407,10 @@ func (w *readWindow) refresh() {
 		if regs != nil {
 			dg.Text += " · 灰色为 " + lastOK.Format("15:04:05") + " 的值"
 		}
-	case regs != nil && d.Kind == kindFloat32 && !d.bits():
-		if o, ok := suggestFloatOrder(regs, d.Order); ok {
-			dg.Hint = fmt.Sprintf("按 %s 解出的 FLOAT32 多数不合理（灰色），按 %s 全部合理：字节序可能是 %s。", d.Order, o, o)
+	case regs != nil && d.Kind.dataType().Float() && !d.bits():
+		dt := d.Kind.dataType()
+		if o, ok := suggestFloatOrder(dt, regs, d.Order.For(dt)); ok {
+			dg.Hint = fmt.Sprintf("按 %s 解出的 %s 多数不合理（灰色），按 %s 全部合理：字节序可能是 %s。", d.Order.For(dt), dt, o, o)
 			dg.Action, dg.Do = "改用 "+string(o), func() { w.ws.redefine(w, func(d *readDef) { d.Order = o }) }
 		}
 	}

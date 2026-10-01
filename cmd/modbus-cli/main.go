@@ -7,10 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"modbus-ai-studio/internal/control"
 	"modbus-ai-studio/internal/detect"
 	"modbus-ai-studio/internal/modbus"
 	"modbus-ai-studio/internal/transport"
@@ -24,6 +26,7 @@ const usage = `用法：
 示例：
   modbus-cli -target 127.0.0.1:1502 -type float32 -order CDAB read 40001 4
   modbus-cli -target 127.0.0.1:1502 -type float32 -order CDAB write 40347 16
+  modbus-cli -target 127.0.0.1:1502 -type uint64 -order CDAB read 40701 8
   modbus-cli -port /dev/cu.usbserial-110 -baud 9600 read 40001 10
 
 选项：`
@@ -38,8 +41,8 @@ var (
 	dataBit = flag.Int("databits", 8, "数据位：8，Modbus ASCII 常用 7")
 	slave   = flag.Uint("slave", 1, "Slave ID")
 	timeout = flag.Duration("timeout", time.Second, "响应超时")
-	typ     = flag.String("type", "uint16", "数据类型：int16、uint16、int32、uint32、float32")
-	order   = flag.String("order", "", "字节序：AB、BA、ABCD、CDAB、BADC、DCBA（默认 16 位 AB，32 位 ABCD）")
+	typ     = flag.String("type", "uint16", "数据类型：int16、uint16、int32、uint32、float32、int64、uint64、float64")
+	order   = flag.String("order", "", "字节序：AB、BA、ABCD、CDAB、BADC、DCBA，64 位还可写 ABCDEFGH、GHEFCDAB、BADCFEHG、HGFEDCBA\n（默认标准大端；64 位写 32 位的名字时按同样规则换算，CDAB 即 GHEFCDAB）")
 	scale   = flag.Float64("scale", 1, "工程值 = 原始值 × scale")
 	trace   = flag.Bool("trace", false, "打印收发报文")
 	echo    = flag.Bool("echo", false, "丢弃 RS485 回显")
@@ -74,11 +77,7 @@ func main() {
 		runRead(ctx, c, cand, n, dt, bo)
 		return
 	}
-	v, err := strconv.ParseFloat(args[2], 64)
-	if err != nil {
-		fail("值应为数字")
-	}
-	runWrite(ctx, c, cand, v, dt, bo)
+	runWrite(ctx, c, cand, args[2], dt, bo)
 }
 
 func mode() modbus.Mode {
@@ -157,7 +156,8 @@ func hexs(b []byte) string {
 func dataType() modbus.DataType {
 	t := modbus.DataType(strings.ToUpper(*typ))
 	switch t {
-	case modbus.TypeInt16, modbus.TypeUint16, modbus.TypeInt32, modbus.TypeUint32, modbus.TypeFloat32:
+	case modbus.TypeInt16, modbus.TypeUint16, modbus.TypeInt32, modbus.TypeUint32, modbus.TypeFloat32,
+		modbus.TypeInt64, modbus.TypeUint64, modbus.TypeFloat64:
 		return t
 	}
 	fail("不支持的数据类型 %q", *typ)
@@ -165,13 +165,15 @@ func dataType() modbus.DataType {
 }
 
 func byteOrder() modbus.ByteOrder {
-	if *order != "" {
-		return modbus.ByteOrder(strings.ToUpper(*order))
+	dt := dataType()
+	if *order == "" {
+		return modbus.OrderAB.For(dt)
 	}
-	if dataType().Registers() == 2 {
-		return modbus.OrderABCD
+	o := modbus.ByteOrder(strings.ToUpper(*order))
+	if dt.Registers() == 4 {
+		return o.For(dt)
 	}
-	return modbus.OrderAB
+	return o
 }
 
 // 地址有歧义时按第一种解释执行，并明确告诉用户另一种写法（设计文档 6.3：不静默猜测）。
@@ -208,7 +210,9 @@ func runRead(ctx context.Context, c *modbus.Client, a modbus.AddressCandidate, n
 			hexRegs[j] = fmt.Sprintf("%04X", r)
 		}
 		val := "—"
-		if raw, err := modbus.DecodeRaw(dt, bo, regs); err == nil {
+		if exact, err := modbus.FormatInt(dt, bo, regs); err == nil && *scale == 1 {
+			val = exact // 整型精确显示，64 位不经过 float64
+		} else if raw, err := modbus.DecodeRaw(dt, bo, regs); err == nil {
 			val = formatEng(modbus.Scaling{Scale: *scale}.Engineering(raw), dt)
 			if dt == modbus.TypeFloat32 {
 				if sug, ok := modbus.SuggestByteOrder(bo, regs); ok {
@@ -229,35 +233,45 @@ func formatEng(v float64, dt modbus.DataType) string {
 	if dt == modbus.TypeFloat32 && *scale == 1 {
 		return strconv.FormatFloat(v, 'g', -1, 32)
 	}
+	if dt == modbus.TypeFloat64 && *scale == 1 {
+		return strconv.FormatFloat(v, 'g', -1, 64)
+	}
 	s := strconv.FormatFloat(*scale, 'f', -1, 64)
 	decimals := 0
 	if i := strings.IndexByte(s, '.'); i >= 0 {
 		decimals = len(s) - i - 1
 	}
-	if dt == modbus.TypeFloat32 {
+	if dt.Float() {
 		decimals += 3
 	}
 	return strconv.FormatFloat(v, 'f', decimals, 64)
 }
 
 // runWrite 先展示编码，再写入，并立即回读比较（控制验证的最小形态，完整流程见设计文档 11.4）。
-func runWrite(ctx context.Context, c *modbus.Client, a modbus.AddressCandidate, eng float64, dt modbus.DataType, bo modbus.ByteOrder) {
+func runWrite(ctx context.Context, c *modbus.Client, a modbus.AddressCandidate, text string, dt modbus.DataType, bo modbus.ByteOrder) {
 	if !a.Area.Writable() {
 		fail("%s 区只读，不能写入", a.Area.Prefix())
 	}
-	raw, rounded := modbus.Scaling{Scale: *scale}.Raw(dt, eng)
-	regs, err := modbus.EncodeRaw(dt, bo, raw)
+	t := control.Target{Type: dt, ReadOrder: bo, Scaling: modbus.Scaling{Scale: *scale}}
+	regs, _, rounded, err := control.EncodeText(t, text)
 	if err != nil {
 		fail("%v", err)
+	}
+	show := func(regs []uint16) string {
+		if s, err := modbus.FormatInt(dt, bo, regs); err == nil && *scale == 1 {
+			return s
+		}
+		raw, _ := modbus.DecodeRaw(dt, bo, regs)
+		return strconv.FormatFloat(modbus.Scaling{Scale: *scale}.Engineering(raw), 'g', -1, 64)
 	}
 	req := modbus.Request{Slave: byte(*slave), Function: modbus.FuncWriteSingleRegister, Address: a.Offset, Values: regs}
 	if len(regs) > 1 {
 		req.Function = modbus.FuncWriteMultipleRegisters
 	}
 	pdu, _ := req.PDU()
-	fmt.Printf("目标值   %v（%s %s）\n", eng, dt, bo)
+	fmt.Printf("目标值   %s（%s %s）\n", strings.TrimSpace(text), dt, bo)
 	if rounded {
-		fmt.Printf("注意     取整后实际写入原始值 %v\n", raw)
+		fmt.Printf("注意     取整后实际写入 %s\n", show(regs))
 	}
 	fmt.Printf("线上字节 %s\n寄存器   ", hexs(modbus.RegistersToBytes(regs)))
 	for i, r := range regs {
@@ -274,13 +288,11 @@ func runWrite(ctx context.Context, c *modbus.Client, a modbus.AddressCandidate, 
 		fmt.Print("回读失败：")
 		explain(err)
 	}
-	back, _ := modbus.DecodeRaw(dt, bo, resp.Registers)
-	backEng := modbus.Scaling{Scale: *scale}.Engineering(back)
-	if backEng == eng || (dt == modbus.TypeFloat32 && float32(backEng) == float32(eng)) {
-		fmt.Printf("回读：%v，与目标一致\n", backEng)
+	if slices.Equal(resp.Registers, regs) {
+		fmt.Printf("回读：%s，与目标一致\n", show(resp.Registers))
 		return
 	}
-	fmt.Printf("回读：%v，与目标 %v 不符（控制验证 FAILED）\n", backEng, eng)
+	fmt.Printf("回读：%s，与目标 %s 不符（控制验证 FAILED）\n", show(resp.Registers), show(regs))
 	os.Exit(1)
 }
 

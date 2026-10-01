@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"context"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2/test"
 
@@ -45,7 +47,7 @@ func TestPointsCSV(t *testing.T) {
 	}
 	for _, bad := range []struct{ csv, want string }{
 		{"地址,名称\n40001,a\n", "缺少“类型”"},
-		{"地址,名称,类型\n40001,a,DOUBLE\n", "第 2 行：类型"},
+		{"地址,名称,类型\n40001,a,BCD\n", "第 2 行：类型"},
 		{"地址,名称,类型\n40001,a,FLOAT32\n40002,b,INT16\n", "第 3 行"},
 		{"地址,名称,类型\n40002,b,INT16\n40001,a,FLOAT32\n", "占用 2 个寄存器，其中 40002"},
 		{"地址,名称,类型\n10001,a,INT16\n", "1x 区"},
@@ -118,4 +120,66 @@ func TestStringPoints(t *testing.T) {
 	if v, err := parseValue(kindASCII, "A"); err != nil || v != 0x4100 {
 		t.Errorf("ASCII 写入 %v %v", v, err)
 	}
+}
+
+// 64 位：点表里的 64 位点、UINT64 / FLOAT64 显示格式都按寄存器精确显示，超过 2^53 也不丢位；
+// 字节序可以按 32 位的写法填，换算成同一种 64 位写法。
+func Test64BitPoints(t *testing.T) {
+	ps, err := parsePointsCSV([]byte("地址,名称,类型,字节序,单位\n40701,累计电能,ULINT,CDAB,kWh\n40705,累计热量,DOUBLE,,GJ\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ps[0].Type != modbus.TypeUint64 || ps[0].Order != modbus.OrderGHEFCDAB || ps[1].Type != modbus.TypeFloat64 || ps[1].Order != modbus.OrderABCDEFGH {
+		t.Fatalf("解析得到 %+v", ps)
+	}
+	if _, err := parsePointsCSV([]byte("地址,名称,类型\n40701,a,INT64\n40703,b,INT16\n")); err == nil || !strings.Contains(err.Error(), "占用") {
+		t.Errorf("64 位点占 4 个寄存器，40703 应冲突：%v", err)
+	}
+
+	a := test.NewTempApp(t)
+	ws := openWS(t, a, false)
+	var raw, pts *readWindow
+	locked(func() {
+		for len(ws.windows) > 0 {
+			ws.removeWindow(ws.windows[0])
+		}
+		ws.setPoints(newPointTable(ps))
+		d := defaultDef()
+		d.Start, d.Qty, d.Kind, d.Order = 700, 8, kindUint64, modbus.OrderCDAB
+		raw = ws.addWindow(d)
+		d.Kind = kindPoint
+		pts = ws.addWindow(d)
+	})
+	tap(ws.connBtn)
+	waitFor(t, 5*time.Second, "连接并读到数据", func() bool { return hasData(raw) })
+	u64, _ := modbus.ParseRaw(modbus.TypeUint64, modbus.OrderGHEFCDAB, "72623859790382857")
+	f64, _ := modbus.EncodeRaw(modbus.TypeFloat64, modbus.OrderABCDEFGH, 1234.5)
+	var c *modbus.Client
+	locked(func() { c = ws.session.client })
+	if _, err := c.Do(context.Background(), modbus.Request{Slave: 1, Function: modbus.FuncWriteMultipleRegisters, Address: 700, Values: append(u64, f64...)}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, "64 位值精确显示", func() bool {
+		r0, _ := raw.valueText(0)
+		r1, _ := raw.valueText(1)
+		p0, _ := pts.valueText(0)
+		p4, _ := pts.valueText(4)
+		p5, _ := pts.valueText(5)
+		return r0 == "72623859790382857" && r1 == "—" && p0 == "72623859790382857" && p4 == "1234.5" && p5 == "—"
+	})
+	var text string
+	locked(func() {
+		if f := raw.def.format(); f != "UINT64 GHEFCDAB" {
+			t.Errorf("标题格式 %q", f)
+		}
+		raw.sel = 2 // 选中 64 位值中间的寄存器，应落回第一个
+		raw.sel = raw.align(raw.sel)
+		ws.inspect.showRegister(raw)
+		text = ws.inspect.text
+	})
+	if !strings.Contains(text, "INT64 72623859790382857 · UINT64 72623859790382857 · 当前") {
+		t.Errorf("检查器缺少 64 位解读：\n%s", text)
+	}
+	snapshotPNG(t, ws.win, "modbus-ai-64bit.png")
+	tap(ws.connBtn)
 }
