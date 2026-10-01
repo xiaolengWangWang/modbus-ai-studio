@@ -8,4 +8,6 @@ Modbus AI Studio {{VERSION}}（Windows x64 绿色版）
 - modbus-sim.exe 是命令行模拟从站（换热站示例点表），modbus-cli.exe 是命令行主站，
   在命令行里加 -h 查看用法。
 
+使用说明：https://github.com/xiaolengWangWang/modbus-ai-studio/blob/main/docs/guide.md
+常见问题：https://github.com/xiaolengWangWang/modbus-ai-studio/blob/main/docs/faq.md
 项目主页：https://github.com/xiaolengWangWang/modbus-ai-studio
