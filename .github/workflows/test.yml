@@ -1,0 +1,28 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Linux 下 Fyne 需要的 OpenGL / X11 头文件
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev
+      - run: go vet ./...
+      - name: 测试（界面测试用 Fyne 的软件渲染驱动，不需要显卡）
+        if: runner.os != 'Windows'
+        run: go test -race -count=1 -timeout 15m ./...
+      - name: 测试（Windows）
+        if: runner.os == 'Windows'
+        run: go test -count=1 -timeout 15m ./...
