@@ -1,0 +1,36 @@
+// modbus-ai 是 Modbus AI Studio 桌面应用入口。
+package main
+
+import (
+	"fmt"
+	"os"
+	"time"
+
+	"fyne.io/fyne/v2/app"
+
+	"modbus-ai-studio/internal/recorder"
+	"modbus-ai-studio/internal/ui"
+)
+
+// version 在打包时用 -ldflags "-X main.version=…" 覆盖。
+var version = "0.7.0-dev"
+
+func main() {
+	a := app.NewWithID("studio.modbusai.desktop")
+	// 全部收发记录存进本机 SQLite；打不开时照常运行，只是不记录
+	path, err := recorder.DefaultPath()
+	var rec *recorder.Recorder
+	if err == nil {
+		rec, err = recorder.Open(path)
+	}
+	ui.SetRecorder(rec, path, err)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "报文记录不可用：", err)
+	} else {
+		go rec.Prune(time.Now().AddDate(0, 0, -ui.HistoryDays))
+		defer rec.Close() // 退出前写完缓冲里的记录
+	}
+	// 不设主窗口：可以用“文件 → 新建窗口”同时开多个主窗口，关掉最后一个才退出
+	ui.Open(a, version)
+	a.Run()
+}
