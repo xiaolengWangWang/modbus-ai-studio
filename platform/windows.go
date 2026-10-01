@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package platform
 
 import (
 	"io"
@@ -12,10 +12,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Windows 版没有控制台窗口，日志写到 %AppData%\ModbusAIStudio\app.log。
+// Setup 在程序启动最早调用。Windows 版没有控制台窗口，日志写到 %AppData%\ModbusAIStudio\app.log；
 // 界面因为 OpenGL 起不来时 Fyne 只写一行日志就退出，用户看到的是“双击没反应”，
 // 所以截住这行日志，先弹窗说明怎么处理。
-func init() {
+func Setup() {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return

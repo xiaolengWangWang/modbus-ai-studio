@@ -1,5 +1,5 @@
 // icon 生成应用图标 PNG：深青色圆角方块上一条白色方波（Modbus 通信的示意）。
-// 用法：go run ./scripts/icon <输出路径> [边长]
+// 用法：go run ./build/icon <输出路径> [边长]；改了图案后重新生成 assets/icon/AppIcon.png
 package main
 
 import (
@@ -13,7 +13,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		os.Stderr.WriteString("用法：go run ./scripts/icon <输出路径> [边长]\n")
+		os.Stderr.WriteString("用法：go run ./build/icon <输出路径> [边长]\n")
 		os.Exit(2)
 	}
 	size := 1024

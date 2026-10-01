@@ -13,7 +13,7 @@ import (
 
 // 示例 CSV 既是给用户的模板，也必须与内置换热站点表完全一致。
 func TestPointsCSV(t *testing.T) {
-	data, err := os.ReadFile("../../examples/heat-station-points.csv")
+	data, err := os.ReadFile("../../assets/examples/heat-station-points.csv")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,12 +10,14 @@ import (
 
 	"modbus-ai-studio/internal/recorder"
 	"modbus-ai-studio/internal/ui"
+	"modbus-ai-studio/platform"
 )
 
 // version 在打包时用 -ldflags "-X main.version=…" 覆盖。
 var version = "0.8.2-dev"
 
 func main() {
+	platform.Setup()
 	a := app.NewWithID("studio.modbusai.desktop")
 	// 全部收发记录存进本机 SQLite；打不开时照常运行，只是不记录
 	path, err := recorder.DefaultPath()

@@ -1,4 +1,6 @@
-package main
+// Package platform 放各操作系统专用的代码：Windows 的启动日志和 OpenGL 提示在 windows.go，
+// macOS、Linux 目前没有专用代码（other.go）。各平台的打包配置在 macos/、windows/ 子目录。
+package platform
 
 import "bytes"
 
