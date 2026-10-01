@@ -34,7 +34,7 @@ examples/              CSV 点表模板（换热站示例，与内置点表一�
 
 [GitHub Releases](https://github.com/xiaolengWangWang/modbus-ai-studio/releases) 提供：
 
-- Windows x64 绿色版 zip：解压后双击 `ModbusAIStudio.exe`，不用安装。需要 Windows 10 / 11 64 位（不支持 Windows 7 / 8）和支持 OpenGL 2.1 的显卡；远程桌面或虚拟机里窗口空白时，把 [Mesa3D](https://github.com/pal1000/mesa-dist-win) 软件渲染版的 `opengl32.dll` 放到 exe 同一目录。附带命令行工具 `modbus-sim.exe`、`modbus-cli.exe`。
+- Windows x64 绿色版 zip：解压后双击 `ModbusAIStudio.exe`，不用安装。需要 Windows 10 / 11 64 位（不支持 Windows 7 / 8）和支持 OpenGL 2.1 的显卡；显卡不支持时程序会弹窗说明（远程桌面、虚拟机、老工控机常见），把 [Mesa3D](https://github.com/pal1000/mesa-dist-win) 软件渲染版的 `opengl32.dll` 放到 exe 同一目录即可；日志在 `%AppData%\ModbusAIStudio\app.log`。附带命令行工具 `modbus-sim.exe`、`modbus-cli.exe`。
 - macOS DMG：Intel 和 Apple Silicon 各一个，最低 macOS 12。ad-hoc 签名，第一次打开要在“系统设置 → 隐私与安全性”里允许。
 
 ## 只读模式（0.8.0）
@@ -88,8 +88,8 @@ examples/              CSV 点表模板（换热站示例，与内置点表一�
 
 ```sh
 go run ./cmd/modbus-ai              # 运行桌面应用（启动时为空；“读取 → 打开换热站示例”加载示例并连接内置模拟器）
-VERSION=0.8.1 scripts/build-macos.sh    # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
-VERSION=0.8.1 scripts/build-windows.sh  # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
+VERSION=0.8.2 scripts/build-macos.sh    # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
+VERSION=0.8.2 scripts/build-windows.sh  # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
 
 go test ./...                       # 单元测试 + 集成测试
 go test -race -count=3 ./...        # 并发与稳定性

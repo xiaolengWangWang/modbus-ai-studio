@@ -13,7 +13,7 @@ import (
 )
 
 // version 在打包时用 -ldflags "-X main.version=…" 覆盖。
-var version = "0.8.1-dev"
+var version = "0.8.2-dev"
 
 func main() {
 	a := app.NewWithID("studio.modbusai.desktop")

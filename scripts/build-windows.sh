@@ -1,11 +1,11 @@
 #!/bin/sh
 # 在 macOS / Linux 上交叉编译 Windows x64 绿色版：zip 解压即用，不用安装。
 # 需要 mingw-w64（brew install mingw-w64），界面（OpenGL）和报文记录（SQLite）都要 cgo。
-# 用法：VERSION=0.8.1 scripts/build-windows.sh
+# 用法：VERSION=0.8.2 scripts/build-windows.sh
 set -eu
 cd "$(dirname "$0")/.."
 
-VERSION=${VERSION:-0.8.1}
+VERSION=${VERSION:-0.8.2}
 DIST=dist
 STAGE="$DIST/ModbusAIStudio-$VERSION-Windows-x64"
 ZIP="$STAGE.zip"
@@ -42,7 +42,7 @@ Modbus AI Studio ${VERSION}（Windows x64 绿色版）
 
 双击 ModbusAIStudio.exe 运行，不用安装。
 - 系统要求：Windows 10 / 11 64 位。不支持 Windows 7 / 8。
-- 需要显卡支持 OpenGL 2.1。远程桌面或虚拟机里打开后窗口空白时，下载 Mesa3D 软件渲染版的
+- 需要显卡支持 OpenGL 2.1，不支持时程序会弹窗说明。处理办法：下载 Mesa3D 软件渲染版的
   opengl32.dll（https://github.com/pal1000/mesa-dist-win 的 x64 目录），放到 exe 同一目录再运行。
 - 报文记录保存在 %AppData%\\ModbusAIStudio\\packets.db，保留 7 天。
 - modbus-sim.exe 是命令行模拟从站（换热站示例点表），modbus-cli.exe 是命令行主站，
