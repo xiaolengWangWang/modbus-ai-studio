@@ -232,3 +232,119 @@ func (ws *Workspace) showDefinition(w *readWindow) {
 	dlg.Resize(fyne.NewSize(520, 0))
 	dlg.Show()
 }
+
+// readDef 是读取窗口的读取定义（Modbus Poll 的 Read/Write Definition）。
+type readDef struct {
+	Name     string // 窗口别名，可空
+	Slave    byte
+	Function modbus.FunctionCode // 01–04
+	Start    uint16              // 协议地址（0 起始）
+	Qty      int
+	Scan     time.Duration
+	Kind     valueKind
+	Order    modbus.ByteOrder // 32 位格式的字节序
+	Rows     int              // 每列行数
+}
+
+var rowOptions = []int{10, 20, 50, 100}
+
+func (d readDef) area() modbus.Area { return modbus.AreaOf(d.Function) }
+
+func (d readDef) bits() bool {
+	return d.Function == modbus.FuncReadCoils || d.Function == modbus.FuncReadDiscreteInputs
+}
+
+// usesPoints 表示按点表解码：显示格式为点表，且读的是寄存器（点表只有 4x、3x）。
+func (d readDef) usesPoints() bool { return d.Kind == kindPoint && !d.bits() }
+
+// names 表示显示名称和单位列：按点表解码，且读取范围内有点。
+func (d readDef) names(pts pointTable) bool {
+	if !d.usesPoints() {
+		return false
+	}
+	for k := range pts {
+		if k.area == d.area() && int(k.off) >= int(d.Start) && int(k.off) < int(d.Start)+d.Qty {
+			return true
+		}
+	}
+	return false
+}
+
+func (d readDef) maxQty() int {
+	if d.bits() {
+		return modbus.MaxReadBits
+	}
+	return modbus.MaxReadRegisters
+}
+
+func (d readDef) validate() error {
+	switch {
+	case d.Slave == 0:
+		return errors.New("Slave ID 应为 1–255（0 是广播，读请求没有响应）")
+	case d.Qty < 1 || d.Qty > d.maxQty():
+		return fmt.Errorf("%s 的数量应为 1–%d", d.Function, d.maxQty())
+	case int(d.Start)+d.Qty > 0x10000:
+		return fmt.Errorf("起始地址 %d 加数量 %d 超出 65535", d.Start, d.Qty)
+	case d.Scan < 20*time.Millisecond || d.Scan > time.Hour:
+		return errors.New("扫描周期应为 20 ms–1 小时")
+	case d.Rows < 1:
+		return errors.New("每列行数至少为 1")
+	}
+	return nil
+}
+
+// format 是标题里的显示格式说明。
+func (d readDef) format() string {
+	switch {
+	case d.bits():
+		return "位"
+	case d.Kind.wide():
+		return string(d.Kind) + " " + string(d.Order)
+	}
+	return string(d.Kind)
+}
+
+type colKind int
+
+const (
+	colAddr colKind = iota
+	colName
+	colValue
+	colUnit
+)
+
+var colTitle = map[colKind]string{colAddr: "地址", colName: "名称", colValue: "值", colUnit: "单位"}
+
+func (d readDef) columns(pts pointTable) []colKind {
+	if d.names(pts) {
+		return []colKind{colAddr, colName, colValue, colUnit}
+	}
+	return []colKind{colAddr, colValue}
+}
+
+func (d readDef) colWidth(k colKind) float32 {
+	switch k {
+	case colAddr:
+		return 72
+	case colName:
+		return 112
+	case colUnit:
+		return 50
+	}
+	switch {
+	case d.bits():
+		return 56
+	case d.Kind == kindBinary:
+		return 176
+	case d.Kind == kindHex:
+		return 84
+	case d.Kind == kindASCII:
+		return 64
+	}
+	return 108
+}
+
+func defaultDef() readDef {
+	return readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters, Start: 0, Qty: 10, Scan: time.Second,
+		Kind: kindSigned, Order: modbus.OrderABCD, Rows: 10}
+}

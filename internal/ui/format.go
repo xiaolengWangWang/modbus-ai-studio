@@ -7,10 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/theme"
-
 	"modbus-ai-studio/internal/modbus"
 )
 
@@ -45,23 +41,6 @@ func formatFloat(v float64) string {
 		return strconv.FormatFloat(r, 'f', 1, 64)
 	}
 	return strconv.FormatFloat(r, 'f', -1, 64)
-}
-
-// compactTheme 缩小内边距和行距，让通信报文和解析面板一屏显示更多行（接近 Modbus Poll 的密度）。
-type compactTheme struct{ fyne.Theme }
-
-func (t compactTheme) Size(n fyne.ThemeSizeName) float32 {
-	switch n {
-	case theme.SizeNameInnerPadding:
-		return 2
-	case theme.SizeNameLineSpacing:
-		return 2
-	}
-	return t.Theme.Size(n)
-}
-
-func compact(obj fyne.CanvasObject) *container.ThemeOverride {
-	return container.NewThemeOverride(obj, compactTheme{theme.DefaultTheme()})
 }
 
 // formatRTT 显示响应时间：10 ms 以下保留一位小数，本机模拟器这类亚毫秒响应不会显示成 0。
@@ -254,15 +233,4 @@ func parseValue(k valueKind, s string) (float64, error) {
 		return 0, fmt.Errorf("“%s”不是数字", s)
 	}
 	return v, nil
-}
-
-var statusText = map[modbus.Status]string{
-	modbus.StatusTimeout:         "超时",
-	modbus.StatusException:       "异常",
-	modbus.StatusCRCError:        "CRC 错误，已丢弃",
-	modbus.StatusLate:            "晚到响应，已丢弃",
-	modbus.StatusUnexpected:      "不匹配，已丢弃",
-	modbus.StatusCancelled:       "已取消",
-	modbus.StatusConnectionError: "连接错误",
-	modbus.StatusParseError:      "格式错误，已丢弃",
 }

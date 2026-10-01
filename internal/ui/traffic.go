@@ -274,3 +274,14 @@ func (t *trafficPanel) save() {
 	d.SetFileName("modbus-traffic-" + time.Now().Format("20060102-150405") + ".txt")
 	d.Show()
 }
+
+var statusText = map[modbus.Status]string{
+	modbus.StatusTimeout:         "超时",
+	modbus.StatusException:       "异常",
+	modbus.StatusCRCError:        "CRC 错误，已丢弃",
+	modbus.StatusLate:            "晚到响应，已丢弃",
+	modbus.StatusUnexpected:      "不匹配，已丢弃",
+	modbus.StatusCancelled:       "已取消",
+	modbus.StatusConnectionError: "连接错误",
+	modbus.StatusParseError:      "格式错误，已丢弃",
+}

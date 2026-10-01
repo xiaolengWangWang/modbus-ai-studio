@@ -11,6 +11,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/internal/modbus"
@@ -380,5 +381,116 @@ func (ws *Workspace) showDiagCounters(s *session, slave byte, counts []diagCount
 		}()
 	}, ws.win)
 	dlg.Resize(fyne.NewSize(520, 0))
+	dlg.Show()
+}
+
+// probeRange 逐个地址读 1 个寄存器（或位），找出读取范围里哪些地址可读，定位异常 02 的来源。
+// 探测期间暂停该窗口的轮询；遇到超时等非异常错误就停止，因为那说明问题不在地址。
+func (ws *Workspace) probeRange(w *readWindow) {
+	s := ws.session
+	if s == nil {
+		return
+	}
+	d := w.def
+	w.setPaused(true)
+	ctx, cancel := context.WithCancel(s.ctx)
+	prog := widget.NewProgressBar()
+	prog.Max = float64(d.Qty)
+	dlg := dialog.NewCustom("逐个探测可读地址", "停止", container.NewVBox(
+		widget.NewLabel(fmt.Sprintf("Slave %d · %s · 逐个读取 %s", d.Slave, d.Function, refSpan(d.area(), d.Start, d.Qty))), prog), ws.win)
+	dlg.SetOnClosed(cancel)
+	dlg.Show()
+	go func() {
+		defer cancel()
+		res, stopErr := probe(ctx, s.client, d, func(n int) { uiDo(func() { prog.SetValue(float64(n)) }) })
+		uiDo(func() {
+			dlg.Hide()
+			if !ws.closed {
+				ws.showProbeResult(w, d, res, stopErr)
+			}
+		})
+	}()
+}
+
+// probe 逐个读取 d 范围内的地址：1 表示可读，-1 表示返回异常，0 表示未探测。
+func probe(ctx context.Context, c *modbus.Client, d readDef, progress func(int)) ([]int8, error) {
+	res := make([]int8, d.Qty)
+	for i := 0; i < d.Qty; i++ {
+		_, err := c.Do(ctx, modbus.Request{Slave: d.Slave, Function: d.Function, Address: d.Start + uint16(i), Quantity: 1})
+		if ctx.Err() != nil {
+			return res, nil
+		}
+		if _, isEx := modbus.AsException(err); isEx {
+			res[i] = -1
+		} else if err != nil {
+			return res, fmt.Errorf("%s %s", modbus.Reference(d.area(), d.Start+uint16(i)), errSummary(err))
+		} else {
+			res[i] = 1
+		}
+		progress(i + 1)
+	}
+	return res, nil
+}
+
+func (ws *Workspace) showProbeResult(w *readWindow, d readDef, res []int8, stopErr error) {
+	type run struct{ start, n int }
+	var good, bad []string
+	var best run
+	for i := 0; i < len(res); {
+		j := i
+		for j < len(res) && res[j] == res[i] {
+			j++
+		}
+		span := refSpan(d.area(), d.Start+uint16(i), j-i)
+		switch res[i] {
+		case 1:
+			good = append(good, span)
+			if j-i > best.n {
+				best = run{i, j - i}
+			}
+		case -1:
+			bad = append(bad, span)
+		}
+		i = j
+	}
+	join := func(s []string) string {
+		if len(s) == 0 {
+			return "无"
+		}
+		out := s[0]
+		for _, x := range s[1:] {
+			out += "、" + x
+		}
+		return out
+	}
+	text := fmt.Sprintf("可读：%s\n不可读（异常）：%s", join(good), join(bad))
+	if stopErr != nil {
+		text += fmt.Sprintf("\n\n探测在 %v 停止：这不是地址问题，先按超时 / 连接问题排查。", stopErr)
+	}
+	body := widget.NewLabel(text)
+	body.Wrapping = fyne.TextWrapWord
+	resume := func() {
+		if w.paused {
+			w.setPaused(false)
+		}
+	}
+	if best.n == 0 || best.n == d.Qty {
+		dlg := dialog.NewCustom("探测结果", "关闭", body, ws.win)
+		dlg.SetOnClosed(resume)
+		dlg.Resize(fyne.NewSize(480, 0))
+		dlg.Show()
+		return
+	}
+	apply := fmt.Sprintf("改为读取 %s", refSpan(d.area(), d.Start+uint16(best.start), best.n))
+	dlg := dialog.NewCustomConfirm("探测结果", apply, "关闭", body, func(ok bool) {
+		if ok {
+			w.paused = false
+			w.pauseBtn.SetIcon(theme.MediaPauseIcon())
+			ws.redefine(w, func(d *readDef) { d.Start, d.Qty = d.Start+uint16(best.start), best.n })
+			return
+		}
+		resume()
+	}, ws.win)
+	dlg.Resize(fyne.NewSize(480, 0))
 	dlg.Show()
 }
