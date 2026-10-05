@@ -14,6 +14,7 @@
 //	write.go      写入对话框和写入验证报告
 //	readonly.go   只读模式
 //	traffic.go    通信报文列表
+//	faultlog.go   故障日志列表和原始报文关联
 //	inspector.go  解析面板（寄存器多种解读、报文逐字段）
 //	decode*.go    报文逐字段解析
 //	reqtool.go    自定义请求窗口

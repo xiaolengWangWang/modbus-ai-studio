@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"path/filepath"
 	"slices"
@@ -78,6 +79,45 @@ func TestRecordingAndHistory(t *testing.T) {
 		}
 		return false
 	})
+}
+
+func TestSessionLabelsDistinguishRepeatedConnectionFailures(t *testing.T) {
+	start := time.Date(2026, 10, 5, 17, 0, 0, 0, time.Local)
+	first := recorder.Session{ID: 41, Start: start, Mode: modbus.ModeTCP, Target: "127.0.0.1:502", Window: 1, Faults: 1}
+	second := first
+	second.ID = 42
+	if sessionLabel(first) == sessionLabel(second) {
+		t.Fatal("同一秒内重复连接失败的两个会话，在历史列表中必须能分别选择")
+	}
+}
+
+func TestFaultLogIsStoredBeforeAddReturns(t *testing.T) {
+	r, err := recorder.Open(filepath.Join(t.TempDir(), "packets.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetRecorder(r, "packets.db", nil)
+	t.Cleanup(func() { SetRecorder(nil, "", nil); r.Close() })
+	id, err := r.StartSession(modbus.ModeTCP, "127.0.0.1:502", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := &Workspace{log: newFaultLog(test.NewTempApp(t))}
+	ws.addLog(logEntry{Event: recorder.Event{Kind: recorder.EventReadFail, Detail: "超时"}}, id)
+	events, err := r.Events(id)
+	if err != nil || len(events) != 1 || events[0].Detail != "超时" {
+		t.Fatalf("日志返回后数据库应已保存记录：%+v %v", events, err)
+	}
+	ws.no = 1
+	ws.logConnectFail(connConfig{mode: modbus.ModeTCP, target: "127.0.0.1:502"}, errors.New("connection refused"))
+	sessions, err := r.Sessions(10)
+	if err != nil || len(sessions) != 2 {
+		t.Fatalf("连接失败返回后应已创建历史会话：%+v %v", sessions, err)
+	}
+	events, err = r.Events(sessions[0].ID)
+	if err != nil || len(events) != 1 || events[0].Kind != recorder.EventConnectFail {
+		t.Fatalf("连接失败返回后应已保存日志：%+v %v", events, err)
+	}
 }
 
 // 读取失败和连接失败记进日志：同一种错误连续出现只记一条，带原因分析和抓到的原始报文，恢复时再记一条；

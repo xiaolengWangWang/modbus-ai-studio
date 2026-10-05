@@ -169,11 +169,10 @@ func (l *faultLog) changed() {
 }
 
 // addLog 记一条日志：显示在“日志”页，同时存进报文库。session 是报文库里的会话，为 0 时只显示不存。
-// 写库放到后台，不卡界面。
 func (ws *Workspace) addLog(e logEntry, session int64) {
 	ws.log.add(e)
 	if r := currentRecorder(); r != nil && session != 0 {
-		go r.Log(session, e.Event)
+		_ = r.Log(session, e.Event)
 	}
 }
 
@@ -296,12 +295,9 @@ func (ws *Workspace) logConnectFail(cfg connConfig, err error) {
 		connectFailCause(cfg, err), modbus.Packet{}, modbus.Packet{}, nil)
 	ws.log.add(e)
 	if r := currentRecorder(); r != nil {
-		no := ws.no
-		go func() {
-			if id, err := r.StartSession(cfg.mode, desc, no); err == nil {
-				r.Log(id, e.Event)
-				r.EndSession(id)
-			}
-		}()
+		if id, err := r.StartSession(cfg.mode, desc, ws.no); err == nil {
+			_ = r.Log(id, e.Event)
+			_ = r.EndSession(id)
+		}
 	}
 }

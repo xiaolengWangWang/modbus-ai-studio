@@ -66,7 +66,7 @@ func sessionLabel(s recorder.Session) string {
 	if s.Packets == 0 && s.Faults > 0 { // 一条报文都没发过就出了故障：连接没建立起来
 		label += "（连接失败）"
 	}
-	return label
+	return fmt.Sprintf("%s · #%d", label, s.ID)
 }
 
 // openHistory 打开历史报文窗口：选一次连接，查看它的收发记录，可筛选、查找、复制、保存，单击逐字段解析。
