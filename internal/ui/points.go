@@ -274,7 +274,7 @@ func parsePointRows(rows [][]string) ([]point, error) {
 		if get("地址") == "" && get("名称") == "" {
 			continue // 空行
 		}
-		p, err := parsePoint(get)
+		p, err := parsePoint(get, false)
 		if err == nil {
 			err = seen.add(p)
 		}
@@ -334,7 +334,7 @@ func parseAttrRows(rows [][]string) (pointImport, error) {
 			rw = "RW"
 		}
 		fields := map[string]string{"地址": addr, "名称": name, "类型": typ, "字节序": order, "倍率": scale, "单位": get("单位"), "读写": rw}
-		p, err := parsePoint(func(k string) string { return fields[k] })
+		p, err := parsePoint(func(k string) string { return fields[k] }, true)
 		if err == nil {
 			err = seen.add(p)
 		}
@@ -381,12 +381,15 @@ func formulaScale(f string) (scale string, ok bool) {
 	return strconv.FormatFloat(k, 'g', -1, 64), true
 }
 
-func parsePoint(get func(string) string) (point, error) {
+func parsePoint(get func(string) string, attrTable bool) (point, error) {
 	p := point{Name: get("名称"), Scale: 1, Unit: get("单位")}
-	addr := get("地址")
+	addr := strings.TrimSpace(get("地址"))
 	var cands []modbus.AddressCandidate
 	var err error
-	if s := strings.ToLower(addr); strings.HasPrefix(s, "0x") && len(s) > 2 && strings.IndexFunc(s[2:], func(r rune) bool { return r < '0' || r > '9' }) < 0 {
+	t, known := typeAliases[strings.ToUpper(get("类型"))]
+	s := strings.ToLower(addr)
+	coilNotation := attrTable || t == modbus.TypeBool || (s == "0x0001" && known && t != typeString && t.Registers() == 1)
+	if coilNotation && strings.HasPrefix(s, "0x") && len(s) > 2 && strings.IndexFunc(s[2:], func(r rune) bool { return r < '0' || r > '9' }) < 0 {
 		var n uint64
 		n, err = strconv.ParseUint(s[2:], 10, 32)
 		if err == nil && (n < 1 || n > 65536) {

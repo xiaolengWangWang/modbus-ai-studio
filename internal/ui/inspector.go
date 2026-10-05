@@ -227,13 +227,14 @@ func registerInsight(w *readWindow) []decodeRow {
 			rows = append(rows, decodeRow{Name: string(o), Hex: hexs(binary.BigEndian.AppendUint64(nil, u)), Meaning: m})
 		}
 	}
-	floatType := d.Kind.dataType()
-	if isPoint && d.Kind == kindPoint {
+	floatType := modbus.TypeFloat32 // 普通寄存器窗口也能在导入点表前诊断 FLOAT32 邻址
+	if d.Kind.dataType().Float() {
+		floatType = d.Kind.dataType()
+	}
+	if isPoint && d.Kind == kindPoint && p.Type.Float() {
 		floatType = p.Type
 	}
-	if floatType.Float() {
-		rows = append(rows, adjacentFloatRows(d, i, regs, floatType)...)
-	}
+	rows = append(rows, adjacentFloatRows(d, i, regs, floatType)...)
 	if isPoint {
 		access := "只读"
 		if p.RW {

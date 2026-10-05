@@ -96,6 +96,26 @@ func TestImportFourAreasAndBool(t *testing.T) {
 	}
 }
 
+func TestPointCSVKeepsLegacyHexOffsets(t *testing.T) {
+	data := []byte("地址,名称,类型\n0x0100,旧整型,INT16\n0x0200,旧浮点,FLOAT32\n 0x0002 ,线圈,BOOL\n0x0001,首线圈,INT16\n")
+	ps, err := parsePointsCSV(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		area modbus.Area
+		off  uint16
+	}{{modbus.AreaHoldingRegisters, 0x100}, {modbus.AreaHoldingRegisters, 0x200}, {modbus.AreaCoils, 1}, {modbus.AreaCoils, 0}}
+	if len(ps) != len(want) {
+		t.Fatalf("导入 %d 个点，期望 %d", len(ps), len(want))
+	}
+	for i, w := range want {
+		if ps[i].Area != w.area || ps[i].Offset != w.off {
+			t.Errorf("第 %d 个点地址 %+v，期望 %+v", i, ps[i], w)
+		}
+	}
+}
+
 func TestBitPointColumnsAndWritePermission(t *testing.T) {
 	app := test.NewTempApp(t)
 	ws := openWS(t, app, false)
@@ -567,6 +587,24 @@ func TestInspectorShowsAdjacentFloatReadingsWithoutChoosing(t *testing.T) {
 		w.sel = 0
 		if text := rowsText(registerInsight(w)); strings.Contains(text, "地址 -1 ·") {
 			t.Errorf("窗口起点没有前一个寄存器，不应展示前移候选：%s", text)
+		}
+	})
+}
+
+func TestRawRegisterInspectorShowsAdjacentFloatReadings(t *testing.T) {
+	a := test.NewTempApp(t)
+	ws := openWS(t, a, false)
+	locked(func() {
+		d := defaultDef()
+		d.Qty = 4
+		w := ws.addWindow(d)
+		w.mu.Lock()
+		w.regs = []uint16{0x4170, 0, 0x4171, 0}
+		w.mu.Unlock()
+		w.sel = 1
+		text := rowsText(registerInsight(w))
+		if !strings.Contains(text, "-1 ABCD") || !strings.Contains(text, "15.0（合理）") {
+			t.Fatalf("普通寄存器窗口缺少邻址浮点候选：%s", text)
 		}
 	})
 }
