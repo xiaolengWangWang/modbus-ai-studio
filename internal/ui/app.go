@@ -23,6 +23,7 @@
 //	xlsx.go       读取 xlsx 单元格（导入点表用）
 //	workspace.go  工作区文件、最近打开、导入点表
 //	history.go    报文记录（SQLite）和历史报文窗口
+//	update.go     检查更新、下载安装（“帮助”菜单和启动时自动检查）
 //	format.go     数值、地址、报文的显示格式
 //	widgets.go    通用界面部件
 package ui
@@ -80,30 +81,31 @@ type Workspace struct {
 	serBox   *fyne.Container
 	bar      *fyne.Container
 
-	session    *session
-	connecting bool
-	recID      atomic.Int64 // 正在记录的会话 ID，收发回调里读；0 表示不记录
-	points     pointTable   // 本窗口的点表，初始为空
-	readOnly   bool         // 只读模式，禁止一切写入（readonly.go）
-	roItem     *fyne.MenuItem
-	path       string // 工作区文件，未保存时为空
-	timeout    time.Duration
-	windows    []*readWindow
-	cur        *readWindow // 当前读取窗口（tiles.go 的 current），读取窗口的快捷键作用于它
-	nextWin    int
-	tiles      *fyne.Container
-	traffic    *trafficPanel
-	inspect    *inspector
-	log        *faultLog
-	tabs       *container.AppTabs // 通信报文 / 日志
-	logTab     *container.TabItem
-	ring       packetRing // 最近的收发，出错时取出原始报文记进日志
-	status     *widget.Label
-	stats      stats
-	evidence   evidence
-	tools      []fyne.Window // 自定义请求等工具窗口，主窗口关闭时一起关闭
-	done       chan struct{}
-	closed     bool
+	session     *session
+	connecting  bool
+	recID       atomic.Int64 // 正在记录的会话 ID，收发回调里读；0 表示不记录
+	points      pointTable   // 本窗口的点表，初始为空
+	readOnly    bool         // 只读模式，禁止一切写入（readonly.go）
+	roItem      *fyne.MenuItem
+	autoUpdItem *fyne.MenuItem // “帮助 → 自动检查更新”，勾选状态随设置变化
+	path        string         // 工作区文件，未保存时为空
+	timeout     time.Duration
+	windows     []*readWindow
+	cur         *readWindow // 当前读取窗口（tiles.go 的 current），读取窗口的快捷键作用于它
+	nextWin     int
+	tiles       *fyne.Container
+	traffic     *trafficPanel
+	inspect     *inspector
+	log         *faultLog
+	tabs        *container.AppTabs // 通信报文 / 日志
+	logTab      *container.TabItem
+	ring        packetRing // 最近的收发，出错时取出原始报文记进日志
+	status      *widget.Label
+	stats       stats
+	evidence    evidence
+	tools       []fyne.Window // 自定义请求等工具窗口，主窗口关闭时一起关闭
+	done        chan struct{}
+	closed      bool
 }
 
 // Open 新建一个主窗口并显示。主窗口初始为空：没有读取窗口，也不自动连接。
@@ -314,6 +316,8 @@ func (ws *Workspace) setMenu() {
 		}
 	}
 	ws.roItem = item("只读模式（禁止写入）", func() { ws.setReadOnly(!ws.readOnly) })
+	ws.autoUpdItem = item("自动检查更新", ws.toggleAutoUpdate)
+	ws.autoUpdItem.Checked = autoUpdate(ws.app)
 	ws.win.SetMainMenu(fyne.NewMainMenu(
 		fyne.NewMenu("文件",
 			key(item("新建窗口", func() { ws.openNew() }), fyne.KeyN, false),
@@ -346,6 +350,11 @@ func (ws *Workspace) setMenu() {
 			fyne.NewMenuItemSeparator(),
 			key(item("历史报文…", ws.openHistory), fyne.KeyH, true),
 			key(item("清空通信报文", ws.traffic.clear), fyne.KeyL, false)),
+		fyne.NewMenu("帮助",
+			item("检查更新…", func() { ws.checkUpdate(true) }),
+			ws.autoUpdItem,
+			fyne.NewMenuItemSeparator(),
+			item("下载页面", ws.openReleasePage)),
 	))
 }
 

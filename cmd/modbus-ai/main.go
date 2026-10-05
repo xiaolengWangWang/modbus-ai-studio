@@ -12,6 +12,7 @@ import (
 
 	"modbus-ai-studio/internal/recorder"
 	"modbus-ai-studio/internal/ui"
+	"modbus-ai-studio/internal/update"
 	"modbus-ai-studio/platform"
 )
 
@@ -21,6 +22,7 @@ var version = "0.10.0"
 func main() {
 	start := time.Now()
 	platform.Setup()
+	update.Cleanup() // 删掉上次更新换下来的旧文件
 	log.Printf("startup setup: %s", time.Since(start))
 	go platform.PrewarmFonts()
 	a := app.NewWithID("studio.modbusai.desktop")
@@ -42,7 +44,7 @@ func main() {
 		defer rec.Close() // 退出前写完缓冲里的记录
 	}
 	// 不设主窗口：可以用“文件 → 新建窗口”同时开多个主窗口，关掉最后一个才退出
-	ui.Open(a, version)
+	ui.Open(a, version).AutoCheckUpdate()
 	log.Printf("startup window shown: %s", time.Since(start))
 	fyne.Do(func() { log.Printf("startup first UI event: %s", time.Since(start)) })
 	a.Run()

@@ -35,6 +35,7 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 |  | `internal/control/` | 写入与控制验证：多次回读，判定 PASS / 未生效 / 被覆盖 / 值不符 |
 |  | `internal/simulator/` | 模拟从站与故障注入 |
 |  | `internal/recorder/` | 报文记录：会话、收发、断开重连事件存进本机 SQLite |
+|  | `internal/update/` | 软件更新：查询 GitHub Releases、下载并校验 SHA-256、替换 Windows 程序文件或 macOS .app |
 |  | `internal/ui/` | 桌面界面（各文件分工见 `internal/ui/app.go` 开头的说明） |
 |  | `tests/` | 基于模拟器的集成测试 |
 | 平台代码 | `platform/` | 各操作系统专用的 Go 代码：`windows.go`（启动日志、显卡不支持 OpenGL 时弹窗），`other.go`（macOS、Linux，目前没有专用代码） |
@@ -88,9 +89,9 @@ go test -race -count=3 ./...        # 并发与稳定性
 Windows 启动阶段耗时和字体预扫描结果写入 `%AppData%\ModbusAIStudio\app.log`；图标资源可用 `go-winres extract` 检查 `GLFW_ICON`。当前 Windows 字体、150% 缩放窗口、16 像素图标和启动速度尚待真机验证；遇到问题时请附 `app.log`。
 
 1. 改代码时同步递增版本号：`cmd/modbus-ai/main.go` 的 `version`、`build/*.sh` 的默认 `VERSION`、本文里的命令示例。
-2. `VERSION=x.y.z build/macos.sh`、`VERSION=x.y.z build/windows.sh` 打出两个 DMG 和 Windows zip。
+2. `VERSION=x.y.z build/macos.sh`、`VERSION=x.y.z build/windows.sh` 打出两个 DMG 和 Windows zip。安装包文件名不要改：程序里的“检查更新”按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包。
 3. 提交并推送，等持续集成在三个平台上都通过。
-4. `git tag -a vx.y.z` 并推送；`gh release create --draft` 建草稿，`gh release upload` 逐个上传三个文件（网络慢时一次传完会超时），核对大小后 `gh release edit --draft=false --latest` 发布。
+4. `git tag -a vx.y.z` 并推送；`gh release create --draft` 建草稿，`gh release upload` 逐个上传三个文件（网络慢时一次传完会超时），核对大小后 `gh release edit --draft=false --latest` 发布。发布说明末尾必须有 `## SHA-256` 段落，每行 `校验值  文件名`：自动更新按它校验下载的安装包，没有校验值的版本只能手动下载。
 
 ## 协议引擎的约定
 
