@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -169,7 +168,8 @@ func TestHistoryWindowAndDatabase(t *testing.T) {
 		}
 		clearOverlays(ws)
 	})
-	os.Remove(dbPath)
+	// 数据库文件不在（Windows 上 SQLite 开着的文件删不掉，所以换成指向一个不存在的路径）
+	SetRecorder(r, filepath.Join(filepath.Dir(dbPath), "missing.db"), nil)
 	locked(func() {
 		ws.openDatabase(ws.win, false)
 		if !strings.Contains(overlayText(ws), "找不到报文数据库") {
