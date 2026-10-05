@@ -207,7 +207,7 @@ modbus-sim -listen 127.0.0.1:1502 -mode rtu-over-tcp
 
 “帮助 → 检查更新…”从 GitHub Releases 查询最新版本。有新版本时列出更新内容，可以：
 
-- **下载并安装**：下载本机对应的安装包（Windows 绿色版 zip、macOS 的 Intel 或 Apple Silicon DMG），按发布说明里的 SHA-256 校验，校验不过不会安装。Windows 替换 `ModbusAIStudio.exe` 所在目录里的程序文件（工作区等其他文件不动），macOS 替换正在运行的 .app，装好后问是否立即重启。
+- **下载并安装**：下载本机对应的安装包（Windows 绿色版 zip、macOS 的 Intel 或 Apple Silicon DMG），按发布说明里的 SHA-256 校验，校验不过不会安装。Windows 替换 `ModbusAIStudio.exe` 所在目录里的程序文件（工作区等其他文件不动），macOS 替换正在运行的 .app，装好后问是否立即重启。网络慢时可以点“后台下载”接着用程序，状态栏显示下载进度；网络断开或卡住时自动接着下，取消或关掉程序后下次从断开处继续。
 - **打开下载页面**：手动下载。程序目录没有写入权限、从源码运行、Linux 时只能这样。
 
 程序启动几秒后会自动检查一次（每天最多一次，查不到不打扰）；自动检查时可以选“跳过这个版本”。不需要时关掉“帮助 → 自动检查更新”。

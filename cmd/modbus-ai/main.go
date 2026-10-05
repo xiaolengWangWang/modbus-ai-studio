@@ -17,7 +17,7 @@ import (
 )
 
 // version 在打包时用 -ldflags "-X main.version=…" 覆盖。
-var version = "0.10.0"
+var version = "0.10.1"
 
 func main() {
 	start := time.Now()

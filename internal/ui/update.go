@@ -27,6 +27,12 @@ const (
 	prefSkip       = "update.skip"      // 用户选择跳过的版本，自动检查时不再提示
 )
 
+// 测试时替换：不写用户的缓存目录，也不真的替换测试程序。
+var (
+	updateCacheDir   = update.CacheDir
+	installUpdatePkg = update.Install
+)
+
 // updating 表示正在检查或下载更新。多个主窗口共用，同一时间只做一次。
 var updating atomic.Bool
 
@@ -53,7 +59,7 @@ func (ws *Workspace) checkUpdate(manual bool) {
 	}
 	if !updating.CompareAndSwap(false, true) {
 		if manual {
-			dialog.ShowInformation("检查更新", "正在检查或下载更新，请稍候。", ws.win)
+			dialog.ShowInformation("检查更新", "正在检查或下载更新，下载进度见状态栏。", ws.win)
 		}
 		return
 	}
@@ -148,50 +154,73 @@ func (ws *Workspace) showUpdate(rel update.Release, manual bool) {
 	d.Show()
 }
 
-// installUpdate 下载、校验、替换程序，显示进度，可以取消；装好后问是否立即重启。
+// updateNote 是后台下载更新时状态栏显示的进度，所有主窗口共用；为空表示没有在下载。
+var updateNote atomic.Pointer[string]
+
+func setUpdateNote(s string) { updateNote.Store(&s) }
+
+// updateStatus 是状态栏末尾的更新进度。
+func updateStatus() string {
+	if p := updateNote.Load(); p != nil && *p != "" {
+		return " · " + *p
+	}
+	return ""
+}
+
+// installUpdate 下载、校验、替换程序。下载可以取消，也可以转到后台（状态栏显示进度）；
+// 下了一半的文件留在缓存目录，下次接着下。装好后问是否立即重启。
 func (ws *Workspace) installUpdate(rel update.Release, asset update.Asset, sum string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	bar := widget.NewProgressBar()
 	info := widget.NewLabel("正在连接…")
-	cancelBtn := widget.NewButton("取消", cancel)
-	box := container.NewVBox(info, bar)
+	tip := widget.NewLabel("网络慢时可以点“后台下载”继续用程序，下好后会提示安装；断开后会自动接着下。")
+	tip.Wrapping = fyne.TextWrapWord
+	tip.Resize(fyne.NewSize(420, 0))
+	box := container.NewVBox(info, bar, tip)
 	d := dialog.NewCustomWithoutButtons("下载新版本 "+rel.Version(), container.NewGridWrap(fyne.NewSize(420, box.MinSize().Height), box), ws.win)
-	d.SetButtons([]fyne.CanvasObject{cancelBtn})
+	cancelBtn := widget.NewButton("取消", cancel)
+	bgBtn := widget.NewButton("后台下载", d.Hide)
+	d.SetButtons([]fyne.CanvasObject{bgBtn, cancelBtn})
 	d.Show()
 	start := time.Now()
 	go func() {
 		defer cancel()
-		var target string
-		dir, err := os.MkdirTemp("", "modbus-ai-update-")
-		if err == nil {
-			defer os.RemoveAll(dir)
-			var pkg string
-			pkg, err = update.Download(ctx, asset, sum, dir, func(done, total int64) {
-				uiDo(func() {
-					mb := float64(done) / (1 << 20)
-					speed := mb / max(time.Since(start).Seconds(), 0.1)
-					if total > 0 {
-						bar.SetValue(float64(done) / float64(total))
-						info.SetText(fmt.Sprintf("已下载 %.1f / %.1f MB · %.1f MB/s", mb, float64(total)/(1<<20), speed))
-					} else {
-						info.SetText(fmt.Sprintf("已下载 %.1f MB · %.1f MB/s", mb, speed))
-					}
-				})
+		dir := updateCacheDir()
+		pkg, err := update.Download(ctx, asset, sum, dir, func(done, total int64) {
+			uiDo(func() {
+				mb := float64(done) / (1 << 20)
+				speed := mb / max(time.Since(start).Seconds(), 0.1)
+				if total > 0 {
+					bar.SetValue(float64(done) / float64(total))
+					info.SetText(fmt.Sprintf("已下载 %.1f / %.1f MB · %.2f MB/s", mb, float64(total)/(1<<20), speed))
+					setUpdateNote(fmt.Sprintf("正在下载新版本 %s：%.0f%%", rel.Version(), 100*float64(done)/float64(total)))
+				} else {
+					info.SetText(fmt.Sprintf("已下载 %.1f MB · %.2f MB/s", mb, speed))
+					setUpdateNote(fmt.Sprintf("正在下载新版本 %s：%.1f MB", rel.Version(), mb))
+				}
 			})
+		})
+		var target string
+		if err == nil {
+			uiDo(func() {
+				info.SetText("校验通过，正在替换程序…")
+				setUpdateNote("正在安装新版本 " + rel.Version())
+				cancelBtn.Disable()
+				bgBtn.Disable()
+			})
+			target, err = installUpdatePkg(pkg)
 			if err == nil {
-				uiDo(func() {
-					info.SetText("校验通过，正在替换程序…")
-					cancelBtn.Disable()
-				})
-				target, err = update.Install(pkg)
+				os.RemoveAll(dir) // 装好了，下载的安装包不再需要
 			}
 		}
 		uiDo(func() {
 			d.Hide()
+			setUpdateNote("")
 			updating.Store(false)
 			switch {
-			case ctx.Err() != nil && errors.Is(err, context.Canceled):
-				// 用户取消
+			case ws.closed:
+			case errors.Is(err, context.Canceled):
+				// 用户取消；下了一半的文件留着，下次接着下
 			case err != nil:
 				ws.showUpdateError("更新失败", err)
 			default:

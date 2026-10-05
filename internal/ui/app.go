@@ -413,7 +413,7 @@ func (ws *Workspace) refreshStatus() {
 		pts += " · 只读模式"
 	}
 	if ws.session == nil {
-		ws.status.SetText(fmt.Sprintf("○ 未连接 · Modbus AI Studio %s · 窗口 %d%s", ws.Version, ws.no, pts))
+		ws.status.SetText(fmt.Sprintf("○ 未连接 · Modbus AI Studio %s · 窗口 %d%s%s", ws.Version, ws.no, pts, updateStatus()))
 		return
 	}
 	rtt := "—"
@@ -432,5 +432,5 @@ func (ws *Workspace) refreshStatus() {
 	if r := currentRecorder(); r != nil && r.Dropped.Load() > 0 {
 		text += fmt.Sprintf(" · 报文记录丢了 %d 条", r.Dropped.Load())
 	}
-	ws.status.SetText(text + " · RTT " + rtt + pts)
+	ws.status.SetText(text + " · RTT " + rtt + pts + updateStatus())
 }

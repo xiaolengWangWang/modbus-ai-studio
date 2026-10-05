@@ -6,14 +6,20 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestNewer(t *testing.T) {
@@ -247,5 +253,148 @@ func TestInstallDMG(t *testing.T) {
 	}
 	if _, ok := appBundle("/usr/local/bin/modbus-ai"); ok {
 		t.Error("不在 .app 里时不能自动安装")
+	}
+}
+
+// flakyServer 提供一个安装包：第 fail 次及以前的请求只发一半就断开（stall 为 true 时发一半后卡住不动），
+// 之后的请求按 Range 接着发。rangeOK 为 false 时忽略 Range、总是从头发。
+type flakyServer struct {
+	data    []byte
+	fail    int
+	stall   bool
+	rangeOK bool
+	mu      sync.Mutex
+	reqs    []string // 每次请求的 Range 头
+}
+
+func (s *flakyServer) requests() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.reqs)
+}
+
+func (s *flakyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.reqs = append(s.reqs, r.Header.Get("Range"))
+	n, fail := len(s.reqs), s.fail
+	s.mu.Unlock()
+	start := 0
+	if rg := r.Header.Get("Range"); rg != "" && s.rangeOK {
+		fmt.Sscanf(rg, "bytes=%d-", &start)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, len(s.data)-1, len(s.data)))
+		w.Header().Set("Content-Length", strconv.Itoa(len(s.data)-start))
+		w.WriteHeader(http.StatusPartialContent)
+	} else {
+		w.Header().Set("Content-Length", strconv.Itoa(len(s.data)))
+	}
+	body := s.data[start:]
+	if n <= fail {
+		w.Write(body[:len(body)/2])
+		w.(http.Flusher).Flush()
+		if s.stall {
+			time.Sleep(time.Second) // 比测试里的 stallTimeout 长
+		}
+		panic(http.ErrAbortHandler) // 断开连接
+	}
+	w.Write(body)
+}
+
+func fastRetry(t *testing.T) {
+	d, st := retryDelay, stallTimeout
+	retryDelay, stallTimeout = 10*time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() { retryDelay, stallTimeout = d, st })
+}
+
+// 网络不好时：断开后用 Range 接着下，卡住不动时断开重连，下好后校验；服务器不支持 Range 时从头下。
+func TestDownloadResumes(t *testing.T) {
+	fastRetry(t)
+	data := []byte(strings.Repeat("Modbus AI Studio 安装包。", 4000))
+	sum := sha256.Sum256(data)
+	for name, s := range map[string]*flakyServer{
+		"断开两次后续传":      {data: data, fail: 2, rangeOK: true},
+		"卡住后重连续传":      {data: data, fail: 1, stall: true, rangeOK: true},
+		"服务器不支持 Range": {data: data, fail: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(s)
+			defer srv.Close()
+			dir := t.TempDir()
+			var last int64
+			path, err := Download(context.Background(), Asset{Name: "p.zip", URL: srv.URL, Size: int64(len(data))}, hex.EncodeToString(sum[:]), dir,
+				func(done, total int64) { last = done })
+			if err != nil {
+				t.Fatalf("%v，请求 %q", err, s.requests())
+			}
+			if b, _ := os.ReadFile(path); string(b) != string(data) || last != int64(len(data)) {
+				t.Errorf("内容或进度不对：%d 字节，进度 %d", len(b), last)
+			}
+			if reqs := s.requests(); s.rangeOK && (len(reqs) != s.fail+1 || reqs[1] == "") {
+				t.Errorf("应在断开处用 Range 接着下：%q", reqs)
+			}
+			if _, err := os.Stat(path + ".part"); !os.IsNotExist(err) {
+				t.Error("下好后不应留下 .part")
+			}
+			// 再下一次：已有校验通过的文件，直接用，不再请求
+			n := len(s.requests())
+			if p2, err := Download(context.Background(), Asset{Name: "p.zip", URL: srv.URL}, hex.EncodeToString(sum[:]), dir, nil); err != nil || p2 != path || len(s.requests()) != n {
+				t.Errorf("已下好的文件应直接复用：%v，请求 %d → %d", err, n, len(s.requests()))
+			}
+		})
+	}
+}
+
+// 一直下不下来时报错，下了一半的 .part 留着，下次接着下；取消时返回 context.Canceled。
+func TestDownloadGivesUpAndCancels(t *testing.T) {
+	fastRetry(t)
+	data := []byte(strings.Repeat("x", 100000))
+	sum := sha256.Sum256(data)
+	s := &flakyServer{data: data, fail: 100, rangeOK: true}
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+	dir := t.TempDir()
+	a := Asset{Name: "p.zip", URL: srv.URL}
+	if _, err := Download(context.Background(), a, hex.EncodeToString(sum[:]), dir, nil); err == nil || len(s.requests()) != tries {
+		t.Fatalf("应重试 %d 次后报错：%v，请求 %d 次", tries, err, len(s.requests()))
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "p.zip.part")); err != nil || fi.Size() == 0 {
+		t.Error("下了一半的文件应留着下次续传")
+	}
+	s.mu.Lock()
+	s.fail = 0
+	s.mu.Unlock()
+	if _, err := Download(context.Background(), a, hex.EncodeToString(sum[:]), dir, nil); err != nil || !strings.HasPrefix(s.requests()[len(s.requests())-1], "bytes=") {
+		t.Errorf("下次应接着下：%v %q", err, s.requests())
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Download(ctx, Asset{Name: "q.zip", URL: srv.URL}, hex.EncodeToString(sum[:]), t.TempDir(), nil); !errors.Is(err, context.Canceled) {
+		t.Errorf("取消时应返回 context.Canceled：%v", err)
+	}
+}
+
+// GitHub 偶尔返回 502：重试；4xx 不重试。
+func TestLatestRetries(t *testing.T) {
+	fastRetry(t)
+	n := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		if n == 1 {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+		json.NewEncoder(w).Encode(Release{Tag: "v1.2.3"})
+	}))
+	defer srv.Close()
+	old := LatestURL
+	LatestURL = srv.URL
+	defer func() { LatestURL = old }()
+	if r, err := Latest(context.Background()); err != nil || r.Version() != "1.2.3" || n != 2 {
+		t.Fatalf("502 后应重试成功：%+v %v，请求 %d 次", r, err, n)
+	}
+	LatestURL = srv.URL + "/missing"
+	srv.Config.Handler = http.NotFoundHandler()
+	n = 0
+	if _, err := Latest(context.Background()); err == nil {
+		t.Error("404 应报错")
 	}
 }

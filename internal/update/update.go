@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -52,30 +53,74 @@ type Release struct {
 // Version 是去掉 v 前缀的版本号。
 func (r Release) Version() string { return strings.TrimPrefix(r.Tag, "v") }
 
-// Latest 取最新的正式版（GitHub 的 latest 不含草稿和预发布）。
+// client 用于检查和下载更新。GitHub 在部分网络下握手、下载都很慢，超时比默认的宽松；
+// 整体时长由调用方的 context 控制，卡住不动由 Download 自己检测。
+var client = &http.Client{Transport: func() http.RoundTripper {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.TLSHandshakeTimeout = 30 * time.Second
+	t.ResponseHeaderTimeout = 60 * time.Second
+	return t
+}()}
+
+var (
+	retryDelay   = 3 * time.Second  // 网络出错后隔多久重试，测试时调小
+	stallTimeout = 60 * time.Second // 下载时这么久收不到数据就断开重连
+)
+
+// tries 是网络出错时的尝试次数。下载时每次都从断开处接着下，不浪费已下载的部分。
+const tries = 6
+
+// sleep 等待 d，context 结束时提前返回 false。
+func sleep(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// Latest 取最新的正式版（GitHub 的 latest 不含草稿和预发布）。网络出错或 GitHub 返回 5xx 时重试几次。
 func Latest(ctx context.Context) (Release, error) {
+	var r Release
+	var err error
+	for i := 0; i < 3; i++ {
+		if i > 0 && !sleep(ctx, retryDelay) {
+			break
+		}
+		var retry bool
+		r, retry, err = latestOnce(ctx)
+		if err == nil || !retry {
+			break
+		}
+	}
+	return r, err
+}
+
+func latestOnce(ctx context.Context) (r Release, retry bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, LatestURL, nil)
 	if err != nil {
-		return Release{}, err
+		return r, false, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "ModbusAIStudio")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return Release{}, fmt.Errorf("连不上 GitHub：%w", err)
+		return r, ctx.Err() == nil, fmt.Errorf("连不上 GitHub：%w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return Release{}, fmt.Errorf("GitHub 返回 %s", resp.Status)
+		return r, resp.StatusCode >= 500, fmt.Errorf("GitHub 返回 %s", resp.Status)
 	}
-	var r Release
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&r); err != nil {
-		return Release{}, fmt.Errorf("发布信息格式不对：%w", err)
+		return r, ctx.Err() == nil, fmt.Errorf("发布信息没有读完整：%w", err)
 	}
 	if r.Version() == "" {
-		return Release{}, errors.New("发布信息里没有版本号")
+		return r, false, errors.New("发布信息里没有版本号")
 	}
-	return r, nil
+	return r, false, nil
 }
 
 // Newer 判断版本 a 是否比 b 新。版本是 x.y.z，可带 -dev 这类后缀，带后缀的比同号正式版旧；
@@ -171,44 +216,146 @@ func (r Release) Notes() string {
 	return strings.TrimSpace(body)
 }
 
-// Download 把安装包下载到 dir，边下边算 SHA-256，与 sum 不一致时删掉文件并报错。
-// progress 在下载过程中被调用（不在界面线程），total 未知时为 0。
+// CacheDir 是下载更新的目录：下了一半的文件留在这里，取消或关掉程序后下次接着下。
+func CacheDir() string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, "ModbusAIStudio", "update")
+}
+
+// Download 把安装包下载到 dir，下载完按 sum 校验 SHA-256，不一致时删掉文件并报错。
+// 先写到 .part 文件；网络断开、连续 stallTimeout 收不到数据时，隔一会儿用 Range 从断开处接着下，
+// 最多 tries 次。dir 里已有校验通过的同名文件时直接用。progress 不在界面线程调用，total 未知时为 0。
 func Download(ctx context.Context, a Asset, sum, dir string, progress func(done, total int64)) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
+	sum = strings.ToLower(sum)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	final := filepath.Join(dir, filepath.Base(a.Name))
+	part := final + ".part"
+	// 只留这个安装包的文件，别的版本下了一半的删掉
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if n := e.Name(); n != filepath.Base(final) && n != filepath.Base(part) {
+				os.RemoveAll(filepath.Join(dir, n))
+			}
+		}
+	}
+	if got, err := fileSum(final); err == nil && got == sum {
+		return final, nil
+	}
+	os.Remove(final)
+
+	var err error
+	for i := 0; i < tries; i++ {
+		if i > 0 && !sleep(ctx, retryDelay) {
+			break
+		}
+		var retry bool
+		retry, err = downloadOnce(ctx, a, part, progress)
+		if err == nil || !retry {
+			break
+		}
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", err
+	}
+	got, err := fileSum(part)
 	if err != nil {
 		return "", err
+	}
+	if got != sum {
+		os.Remove(part)
+		return "", fmt.Errorf("安装包校验失败（SHA-256 %s，应为 %s），文件可能下载不完整或被改动", got[:12], sum[:min(12, len(sum))])
+	}
+	if err := os.Rename(part, final); err != nil {
+		return "", err
+	}
+	return final, nil
+}
+
+// downloadOnce 接着 part 已有的内容下载一次。retry 表示出错后值得再试（网络问题、服务器 5xx）。
+func downloadOnce(ctx context.Context, a Asset, part string, progress func(done, total int64)) (retry bool, err error) {
+	var have int64
+	if fi, err := os.Stat(part); err == nil {
+		have = fi.Size()
+	}
+	attempt, cancel := context.WithCancel(ctx)
+	defer cancel()
+	req, err := http.NewRequestWithContext(attempt, http.MethodGet, a.URL, nil)
+	if err != nil {
+		return false, err
 	}
 	req.Header.Set("User-Agent", "ModbusAIStudio")
-	resp, err := http.DefaultClient.Do(req)
+	if have > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
+	}
+	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("下载失败：%w", err)
+		return ctx.Err() == nil, fmt.Errorf("下载失败：%w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("下载失败：服务器返回 %s", resp.Status)
+	var f *os.File
+	total := a.Size
+	switch resp.StatusCode {
+	case http.StatusPartialContent: // 接着下
+		f, err = os.OpenFile(part, os.O_WRONLY|os.O_APPEND, 0o644)
+	case http.StatusOK: // 服务器不支持 Range，或者是第一次下：从头来
+		have = 0
+		if resp.ContentLength > 0 {
+			total = resp.ContentLength
+		}
+		f, err = os.Create(part)
+	case http.StatusRequestedRangeNotSatisfiable: // 上次其实已经下完了，交给校验
+		return false, nil
+	default:
+		return resp.StatusCode >= 500, fmt.Errorf("下载失败：服务器返回 %s", resp.Status)
 	}
-	path := filepath.Join(dir, filepath.Base(a.Name))
-	f, err := os.Create(path)
 	if err != nil {
-		return "", err
+		return false, err
 	}
-	total := resp.ContentLength
-	if total <= 0 {
-		total = a.Size
-	}
-	h := sha256.New()
-	var done int64
+	defer f.Close()
+
+	// 连续 stallTimeout 收不到数据就断开这次连接，由外层重试接着下。看门狗在本函数返回前退出
+	var lastRead atomic.Int64
+	lastRead.Store(time.Now().UnixNano())
+	stall := stallTimeout
+	stalled := make(chan struct{})
+	watchdog := make(chan struct{})
+	defer func() { cancel(); <-watchdog }()
+	go func() {
+		defer close(watchdog)
+		t := time.NewTicker(min(stall/4, time.Second))
+		defer t.Stop()
+		for {
+			select {
+			case <-attempt.Done():
+				return
+			case <-t.C:
+				if time.Since(time.Unix(0, lastRead.Load())) > stall {
+					close(stalled)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	done := have
 	buf := make([]byte, 64<<10)
 	last := time.Time{}
 	for {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
+			lastRead.Store(time.Now().UnixNano())
 			if _, err := f.Write(buf[:n]); err != nil {
-				f.Close()
-				os.Remove(path)
-				return "", err
+				return false, err
 			}
-			h.Write(buf[:n])
 			done += int64(n)
 			if progress != nil && time.Since(last) > 100*time.Millisecond {
 				progress(done, total)
@@ -219,23 +366,37 @@ func Download(ctx context.Context, a Asset, sum, dir string, progress func(done,
 			break
 		}
 		if rerr != nil {
-			f.Close()
-			os.Remove(path)
-			return "", fmt.Errorf("下载中断：%w", rerr)
+			select {
+			case <-stalled:
+				return true, fmt.Errorf("下载停滞：%s 没有收到数据", stall)
+			default:
+			}
+			return ctx.Err() == nil, fmt.Errorf("下载中断：%w", rerr)
 		}
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(path)
-		return "", err
 	}
 	if progress != nil {
 		progress(done, total)
 	}
-	if got := hex.EncodeToString(h.Sum(nil)); got != strings.ToLower(sum) {
-		os.Remove(path)
-		return "", fmt.Errorf("安装包校验失败（SHA-256 %s，应为 %s），文件可能下载不完整或被改动", got[:12], strings.ToLower(sum)[:min(12, len(sum))])
+	if err := f.Close(); err != nil {
+		return false, err
 	}
-	return path, nil
+	if total > 0 && done < total {
+		return true, fmt.Errorf("下载中断：只收到 %d / %d 字节", done, total)
+	}
+	return false, nil
+}
+
+func fileSum(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Install 用下载好的安装包替换正在运行的程序，返回重启时要运行的路径。
