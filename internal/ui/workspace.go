@@ -202,18 +202,14 @@ func (ws *Workspace) importPoints() {
 	d.Show()
 }
 
-// applyImport 换上导入的点表，返回给用户看的说明。已有的寄存器读取窗口改成按点表显示，省得逐个改显示格式；
-// 还没有寄存器读取窗口时，按点表的地址新建。
+// applyImport 换上导入的点表，已有读取窗口改成按点表显示；没有被完整覆盖的点自动补建窗口。
 func (ws *Workspace) applyImport(imp pointImport) string {
 	ws.setPoints(newPointTable(imp.points))
 	lines := []string{fmt.Sprintf("从%s导入了 %d 个点。", imp.format, len(imp.points))}
 	converted := false
 	for _, w := range ws.windows {
-		if w.def.bits() {
-			continue
-		}
-		converted = true
 		if w.def.Kind != kindPoint {
+			converted = true
 			d := w.def
 			d.Kind = kindPoint
 			ws.applyDef(w, d)
@@ -221,12 +217,23 @@ func (ws *Workspace) applyImport(imp pointImport) string {
 	}
 	if converted {
 		lines = append(lines, "读取窗口按点表显示名称、单位和工程值。")
-	} else {
-		var spans []string
-		for _, d := range defsForPoints(imp.points) {
-			ws.addWindow(d)
-			spans = append(spans, refSpan(d.area(), d.Start, d.Qty))
+	}
+	var missing []point
+	for _, p := range imp.points {
+		covered := slices.ContainsFunc(ws.windows, func(w *readWindow) bool {
+			d := w.def
+			return d.area() == p.Area && int(d.Start) <= int(p.Offset) && int(p.Offset)+p.regs() <= int(d.Start)+d.Qty
+		})
+		if !covered {
+			missing = append(missing, p)
 		}
+	}
+	var spans []string
+	for _, d := range defsForPoints(missing) {
+		ws.addWindow(d)
+		spans = append(spans, refSpan(d.area(), d.Start, d.Qty))
+	}
+	if len(spans) > 0 {
 		lines = append(lines, "按点表新建了读取窗口："+strings.Join(spans, "、")+"。")
 	}
 	if imp.noOrder && slices.ContainsFunc(imp.points, func(p point) bool { return p.Type != typeString && p.regs() > 1 }) {
@@ -255,8 +262,8 @@ func (ws *Workspace) showImportResult(msg string) {
 	dialog.NewCustom("导入点表", "好", scroll, ws.win).Show()
 }
 
-// defsForPoints 按点表的地址生成读取定义：同一数据区里相近的点合成一个窗口，一次最多读 120 个寄存器，
-// 相隔 20 个寄存器以上另开窗口；最多 8 个窗口。
+// defsForPoints 按点表的地址生成读取定义：同一数据区里相近的点合成一个窗口，一次最多读 120 个地址，
+// 相隔 20 个地址以上另开窗口。
 func defsForPoints(ps []point) []readDef {
 	sorted := slices.Clone(ps)
 	slices.SortFunc(sorted, func(a, b point) int {
@@ -275,14 +282,8 @@ func defsForPoints(ps []point) []readDef {
 				continue
 			}
 		}
-		if len(out) == 8 {
-			break
-		}
 		d := defaultDef()
-		d.Function = modbus.FuncReadHoldingRegisters
-		if p.Area == modbus.AreaInputRegisters {
-			d.Function = modbus.FuncReadInputRegisters
-		}
+		d.Function = p.Area.ReadFunction()
 		d.Start, d.Qty, d.Kind = p.Offset, p.regs(), kindPoint
 		out = append(out, d)
 	}

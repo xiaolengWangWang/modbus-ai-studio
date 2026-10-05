@@ -19,7 +19,7 @@ import (
 	"modbus-ai-studio/internal/simulator"
 )
 
-// point 是点表中的一个点。Area 为保持寄存器（4x）或输入寄存器（3x），Offset 是协议地址。
+// point 是点表中的一个点。Area 是 0x、1x、3x 或 4x 数据区，Offset 是协议地址。
 type point struct {
 	Area   modbus.Area
 	Offset uint16
@@ -132,6 +132,7 @@ func demoPoints() pointTable {
 }
 
 var typeAliases = map[string]modbus.DataType{
+	"BOOL": modbus.TypeBool, "BOOLEAN": modbus.TypeBool,
 	"INT16": modbus.TypeInt16, "INT": modbus.TypeInt16, "SHORT": modbus.TypeInt16,
 	"UINT16": modbus.TypeUint16, "UINT": modbus.TypeUint16, "WORD": modbus.TypeUint16,
 	"INT32": modbus.TypeInt32, "DINT": modbus.TypeInt32, "LONG": modbus.TypeInt32,
@@ -232,6 +233,9 @@ func cellGetter(col map[string]int, row []string) func(string) string {
 // add 加入一个点，与已有的点重复或重叠时报错。
 func (t pointTable) add(p point) error {
 	ref := modbus.Reference(p.Area, p.Offset)
+	if int(p.Offset)+p.regs() > 0x10000 {
+		return fmt.Errorf("%s 占用 %d 个地址，超出协议地址范围", ref, p.regs())
+	}
 	if _, dup := t.get(p.Area, p.Offset); dup || t.occupied(p.Area, p.Offset) {
 		return fmt.Errorf("地址 %s 与前面的点重复，或被前面的多寄存器点（32 / 64 位、字符串）占用", ref)
 	}
@@ -290,7 +294,7 @@ func isAttrTable(header []string) bool { return hasColumns(header, "属性标识
 //	4x0021:REAL    二次供温  1        ℃              2        0
 //
 // 属性标识是“地址:类型”，也可以再带字节序（4x0021:REAL:CDAB），类型按点表的类型名和别名识别；
-// 没写类型时按数据类型列：1 整数（按 INT16）、2 浮点、3 双精度，4 字符、5 日期、6 布尔不支持。
+// 没写类型时按数据类型列：1 整数（按 INT16）、2 浮点、3 双精度、6 布尔；4 字符、5 日期暂不支持。
 // 读写模式 2 表示可写；模式 1 是虚拟点位，没有 Modbus 地址；计算公式支持 x*0.1、/10 这种倍率。
 // 平台导出的表里常有本程序表示不了的点，这些行跳过并说明原因，其他照常导入。
 func parseAttrRows(rows [][]string) (pointImport, error) {
@@ -312,9 +316,9 @@ func parseAttrRows(rows [][]string) (pointImport, error) {
 		addr, rest, _ := strings.Cut(id, ":")
 		typ, order, _ := strings.Cut(rest, ":")
 		if typ == "" {
-			typ = map[string]string{"1": "INT16", "2": "FLOAT32", "3": "FLOAT64"}[intText(get("数据类型"))]
+			typ = map[string]string{"1": "INT16", "2": "FLOAT32", "3": "FLOAT64", "6": "BOOL"}[intText(get("数据类型"))]
 			if typ == "" {
-				skip("没有类型，或数据类型是字符、日期、布尔，暂不支持")
+				skip("没有类型，或数据类型是字符、日期，暂不支持")
 				continue
 			}
 		}
@@ -379,21 +383,32 @@ func formulaScale(f string) (scale string, ok bool) {
 
 func parsePoint(get func(string) string) (point, error) {
 	p := point{Name: get("名称"), Scale: 1, Unit: get("单位")}
-	cands, err := modbus.ParseAddress(get("地址"))
+	addr := get("地址")
+	var cands []modbus.AddressCandidate
+	var err error
+	if s := strings.ToLower(addr); strings.HasPrefix(s, "0x") && len(s) > 2 && strings.IndexFunc(s[2:], func(r rune) bool { return r < '0' || r > '9' }) < 0 {
+		var n uint64
+		n, err = strconv.ParseUint(s[2:], 10, 32)
+		if err == nil && (n < 1 || n > 65536) {
+			err = fmt.Errorf("线圈地址 %s 应为 0x0001–0x65536", addr)
+		}
+		if err == nil {
+			cands = []modbus.AddressCandidate{{Area: modbus.AreaCoils, Offset: uint16(n - 1)}}
+		}
+	} else {
+		cands, err = modbus.ParseAddress(addr)
+	}
 	if err != nil {
 		return p, err
 	}
 	p.Area = modbus.AreaNone
 	for _, c := range cands {
-		if c.Area == modbus.AreaHoldingRegisters || c.Area == modbus.AreaInputRegisters {
+		if c.Area != modbus.AreaNone {
 			p.Area, p.Offset = c.Area, c.Offset
 			break
 		}
 	}
 	if p.Area == modbus.AreaNone {
-		if cands[0].Area != modbus.AreaNone {
-			return p, fmt.Errorf("地址 %s 是 %s 区，点表只支持保持寄存器（4x）和输入寄存器（3x）", get("地址"), cands[0].Area.Prefix())
-		}
 		p.Area, p.Offset = modbus.AreaHoldingRegisters, cands[0].Offset // 原始 Offset 按保持寄存器
 	}
 	if p.Name == "" {
@@ -401,9 +416,12 @@ func parsePoint(get func(string) string) (point, error) {
 	}
 	t, ok := typeAliases[strings.ToUpper(get("类型"))]
 	if !ok {
-		return p, fmt.Errorf("类型“%s”不认识，应为 INT16、UINT16、INT32、UINT32、FLOAT32、INT64、UINT64、FLOAT64、STRING", get("类型"))
+		return p, fmt.Errorf("类型“%s”不认识，应为 BOOL、INT16、UINT16、INT32、UINT32、FLOAT32、INT64、UINT64、FLOAT64、STRING", get("类型"))
 	}
 	p.Type = t
+	if (p.Area == modbus.AreaCoils || p.Area == modbus.AreaDiscreteInputs) && (t == typeString || t.Registers() != 1) {
+		return p, fmt.Errorf("%s 位区只能使用 BOOL 或 16 位整数类型", p.Area.Prefix())
+	}
 	p.Order = modbus.ByteOrder(strings.ToUpper(get("字节序")))
 	switch {
 	case p.Order == "":

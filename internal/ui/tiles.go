@@ -135,6 +135,9 @@ func (ws *Workspace) relayout() {
 		obj = container.NewCenter(box)
 	} else {
 		obj = tile(ws.windows)
+		if len(ws.windows) > 8 {
+			obj = container.NewScroll(obj)
+		}
 	}
 	ws.tiles.Objects = []fyne.CanvasObject{obj}
 	ws.tiles.Refresh()

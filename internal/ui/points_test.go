@@ -56,14 +56,78 @@ func TestPointsCSV(t *testing.T) {
 		{"地址,名称,类型\n40001,a,BCD\n", "第 2 行：类型"},
 		{"地址,名称,类型\n40001,a,FLOAT32\n40002,b,INT16\n", "第 3 行"},
 		{"地址,名称,类型\n40002,b,INT16\n40001,a,FLOAT32\n", "占用 2 个寄存器，其中 40002"},
-		{"地址,名称,类型\n10001,a,INT16\n", "1x 区"},
 		{"地址,名称,类型,字节序\n40001,a,INT16,CDAB\n", "不能用字节序"},
 		{"地址,名称,类型,最小,最大\n40001,a,INT16,9,1\n", "大于最大"},
+		{"地址,名称,类型\n4x65536,a,FLOAT32\n", "超出协议地址范围"},
 	} {
 		if _, err := parsePointsCSV([]byte(bad.csv)); err == nil || !strings.Contains(err.Error(), bad.want) {
 			t.Errorf("%q：错误 %v，期望含“%s”", bad.csv, err, bad.want)
 		}
 	}
+}
+
+func TestImportFourAreasAndBool(t *testing.T) {
+	data := []byte("地址,名称,类型,读写\n0x0001,启动线圈,BOOL,RW\n1x0001,故障输入,BOOL,R\n30001,使能状态,BOOL,R\n40001,运行命令,BOOL,RW\n")
+	ps, err := parsePointsCSV(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		area modbus.Area
+		off  uint16
+		rw   bool
+	}{
+		{modbus.AreaCoils, 0, true},
+		{modbus.AreaDiscreteInputs, 0, false},
+		{modbus.AreaInputRegisters, 0, false},
+		{modbus.AreaHoldingRegisters, 0, true},
+	}
+	if len(ps) != len(want) {
+		t.Fatalf("导入 %d 个点，期望 %d：%+v", len(ps), len(want), ps)
+	}
+	for i, w := range want {
+		if ps[i].Area != w.area || ps[i].Offset != w.off || ps[i].Type != modbus.DataType("BOOL") || ps[i].RW != w.rw {
+			t.Errorf("第 %d 个点 %+v，期望 %+v", i, ps[i], w)
+		}
+	}
+	imp, err := parsePointsFile("attrs.csv", []byte("属性标识,属性名称,读写模式\n0x0001:BOOL,启动线圈,2\n1x0001:BOOL,故障输入,1\n"))
+	if err != nil || len(imp.points) != 2 || len(imp.skipped) != 0 || imp.points[0].Area != modbus.AreaCoils || imp.points[1].Area != modbus.AreaDiscreteInputs {
+		t.Fatalf("设备属性表里的 BOOL 位点应保留：%+v %v", imp, err)
+	}
+}
+
+func TestBitPointColumnsAndWritePermission(t *testing.T) {
+	app := test.NewTempApp(t)
+	ws := openWS(t, app, false)
+	locked(func() {
+		ws.setPoints(newPointTable([]point{
+			{Area: modbus.AreaCoils, Offset: 0, Name: "启动线圈", Type: modbus.TypeBool, Order: modbus.OrderAB, RW: false, Scale: 1},
+			{Area: modbus.AreaDiscreteInputs, Offset: 0, Name: "故障输入", Type: modbus.TypeBool, Order: modbus.OrderAB, RW: true, Scale: 1},
+		}))
+		for _, area := range []modbus.Area{modbus.AreaCoils, modbus.AreaDiscreteInputs} {
+			d := defaultDef()
+			d.Function, d.Kind, d.Qty = area.ReadFunction(), kindPoint, 1
+			w := ws.addWindow(d)
+			if len(w.cols) != 4 || w.cols[1] != colName {
+				t.Errorf("%s 点表窗口应显示名称和单位列：%v", area.Prefix(), w.cols)
+			}
+			w.mu.Lock()
+			w.regs = []uint16{1}
+			w.mu.Unlock()
+			if text, _ := w.valueText(0); text != "1" {
+				t.Errorf("%s BOOL 值 = %q，期望 1", area.Prefix(), text)
+			}
+			w.sel = 0
+			if detail := rowsText(registerInsight(w)); !strings.Contains(detail, ws.points[ptKey{area, 0}].Name) {
+				t.Errorf("%s 位点解析应显示点表名称：%s", area.Prefix(), detail)
+			}
+			ws.session = &session{}
+			if w.canWrite() {
+				t.Errorf("%s 的只读点不能写", area.Prefix())
+			}
+			ws.session = nil
+		}
+	})
 }
 
 func TestStringPoints(t *testing.T) {
@@ -245,7 +309,7 @@ func makeXLSX(t *testing.T, rows [][]string) []byte {
 }
 
 // 物联网平台（Telegraf 采集）导出的设备属性表：地址和类型写在属性标识里，没有字节序；
-// 虚拟点位、布尔、线圈地址等表示不了的行跳过并说明，其他照常导入。
+// 虚拟点位、位区里的多寄存器类型等表示不了的行跳过并说明，其他照常导入。
 func TestImportAttrTable(t *testing.T) {
 	head := []string{"属性ID", "属性标识", "属性名称", "标准化名称", "读写模式", "单位", "计算公式", "数据类型", "排列顺序", "模式"}
 	rows := [][]string{head,
@@ -258,6 +322,7 @@ func TestImportAttrTable(t *testing.T) {
 		{"198623", "0x0001:REAL", "线圈", "", "1", "", "", "2", "6", "0"},
 		{"198624", "4x0002:REAL", "重叠", "", "1", "", "", "2", "7", "0"},
 		{"198625", "3x0011:DOUBLE", "累计热量", "", "1", "GJ", "x*0.1+5", "3", "8", "0"},
+		{"198626", "1x0002", "故障输入", "", "1", "", "", "6", "9", "0"},
 	}
 	imp, err := parsePointsFile("热力站A型属性列表.xlsx", makeXLSX(t, rows))
 	if err != nil {
@@ -277,7 +342,9 @@ func TestImportAttrTable(t *testing.T) {
 		{modbus.AreaHoldingRegisters, 2, "一次回温", modbus.TypeFloat32, modbus.OrderABCD, 1, false},
 		{modbus.AreaHoldingRegisters, 4, "补水泵频率", modbus.TypeInt16, modbus.OrderAB, 0.01, true},
 		{modbus.AreaHoldingRegisters, 5, "温差", modbus.TypeInt16, modbus.OrderAB, 0.1, false},
+		{modbus.AreaHoldingRegisters, 6, "报警", modbus.TypeBool, modbus.OrderAB, 1, false},
 		{modbus.AreaInputRegisters, 10, "累计热量", modbus.TypeFloat64, modbus.OrderABCDEFGH, 1, false},
+		{modbus.AreaDiscreteInputs, 1, "故障输入", modbus.TypeBool, modbus.OrderAB, 1, false},
 	}
 	if imp.format != "设备属性表" || !imp.noOrder || len(imp.points) != len(wants) {
 		t.Fatalf("得到 %s %v %d 个点：%+v\n跳过：%v", imp.format, imp.noOrder, len(imp.points), imp.points, imp.skipped)
@@ -289,7 +356,7 @@ func TestImportAttrTable(t *testing.T) {
 		}
 	}
 	skipped := strings.Join(imp.skipped, "\n")
-	for _, s := range []string{"日均温度：虚拟点位", "报警：类型“BOOL”不认识", "线圈：", "重叠：地址 40002"} {
+	for _, s := range []string{"日均温度：虚拟点位", "线圈：0x 位区只能", "重叠：地址 40002"} {
 		if !strings.Contains(skipped, s) {
 			t.Errorf("跳过说明缺少“%s”：\n%s", s, skipped)
 		}
@@ -337,6 +404,60 @@ func TestDefsForPoints(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("得到 %v，期望 %v", got, want)
 	}
+}
+
+func TestDefsForPointsKeepsAllSparseAreas(t *testing.T) {
+	ps := []point{
+		{Area: modbus.AreaCoils, Offset: 0, Type: modbus.TypeBool},
+		{Area: modbus.AreaDiscreteInputs, Offset: 0, Type: modbus.TypeBool},
+		{Area: modbus.AreaInputRegisters, Offset: 0, Type: modbus.TypeInt16},
+	}
+	for i := range 9 {
+		ps = append(ps, point{Area: modbus.AreaHoldingRegisters, Offset: uint16(i * 100), Type: modbus.TypeInt16})
+	}
+	defs := defsForPoints(ps)
+	if len(defs) != len(ps) {
+		t.Fatalf("%d 个分散点应全部建窗，得到 %d 个：%+v", len(ps), len(defs), defs)
+	}
+	for i, want := range []modbus.FunctionCode{modbus.FuncReadCoils, modbus.FuncReadDiscreteInputs, modbus.FuncReadInputRegisters, modbus.FuncReadHoldingRegisters} {
+		if defs[i].Function != want || defs[i].Kind != kindPoint {
+			t.Errorf("第 %d 个窗口 %+v，期望功能码 %02X 且按点表显示", i, defs[i], byte(want))
+		}
+	}
+}
+
+func TestImportAddsWindowsForUncoveredPoints(t *testing.T) {
+	app := test.NewTempApp(t)
+	ws := openWS(t, app, false)
+	locked(func() {
+		covered := defaultDef()
+		covered.Start, covered.Qty = 0, 2
+		ws.addWindow(covered)
+		partial := defaultDef()
+		partial.Start, partial.Qty = 500, 1
+		ws.addWindow(partial)
+		imp := pointImport{format: "点表", points: []point{
+			{Area: modbus.AreaHoldingRegisters, Offset: 0, Type: modbus.TypeInt16, Name: "已覆盖"},
+			{Area: modbus.AreaHoldingRegisters, Offset: 500, Type: modbus.TypeFloat32, Name: "跨界"},
+			{Area: modbus.AreaDiscreteInputs, Offset: 0, Type: modbus.TypeBool, Name: "故障"},
+		}}
+		ws.applyImport(imp)
+		if len(ws.windows) != 4 {
+			t.Fatalf("已有两窗，只应为跨界点和离散输入补两窗：%+v", ws.windows)
+		}
+		for _, p := range imp.points {
+			found := false
+			for _, w := range ws.windows {
+				d := w.def
+				if d.Kind == kindPoint && d.area() == p.Area && int(d.Start) <= int(p.Offset) && int(p.Offset)+p.regs() <= int(d.Start)+d.Qty {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("点 %s 没有被完整覆盖", p.Name)
+			}
+		}
+	})
 }
 
 // 点表里的浮点数按 ABCD 解出来不合理、按 CDAB 全部合理：读取窗口建议改字节序，一键改点表。

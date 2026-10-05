@@ -269,8 +269,6 @@ func (w *readWindow) valueText(i int) (string, widget.Importance) {
 	}
 	off := d.Start + uint16(i)
 	switch {
-	case d.bits():
-		return strconv.Itoa(int(regs[i])), imp(1)
 	case d.Kind == kindPoint:
 		pts := w.ws.points
 		if pts.occupied(d.area(), off) && i > 0 {
@@ -298,6 +296,8 @@ func (w *readWindow) valueText(i int) (string, widget.Importance) {
 			return text, widget.LowImportance
 		}
 		return text, imp(n)
+	case d.bits():
+		return strconv.Itoa(int(regs[i])), imp(1)
 	case d.Kind.width() > 1:
 		n := d.Kind.width()
 		if i%n != 0 || i+n > len(regs) {
@@ -320,6 +320,9 @@ func (w *readWindow) canWrite() bool {
 	}
 	switch d.Function {
 	case modbus.FuncReadCoils:
+		if p, ok := w.ws.points.get(d.area(), d.Start+uint16(w.sel)); ok && d.usesPoints() {
+			return p.RW
+		}
 		return true
 	case modbus.FuncReadHoldingRegisters:
 		if p, ok := w.ws.points.get(d.area(), d.Start+uint16(w.sel)); ok && d.Kind == kindPoint {

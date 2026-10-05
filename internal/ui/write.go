@@ -145,6 +145,9 @@ func (ws *Workspace) showPointWrite(w *readWindow, p point) {
 				step = p.Scale * 10
 			}
 			v := cur + step
+			if p.Type == modbus.TypeBool {
+				v = 1 - cur
+			}
 			if ranged && v > hi {
 				v = cur - step
 			}

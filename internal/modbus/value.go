@@ -13,6 +13,7 @@ import (
 type DataType string
 
 const (
+	TypeBool    DataType = "BOOL"
 	TypeInt16   DataType = "INT16"
 	TypeUint16  DataType = "UINT16"
 	TypeInt32   DataType = "INT32"
@@ -174,6 +175,8 @@ func fromBits(t DataType, o ByteOrder, u uint64) []uint16 {
 // 否则 2^63 这样的值会通过检查、转换时溢出。
 func typeRange(t DataType) (float64, float64) {
 	switch t {
+	case TypeBool:
+		return 0, 1
 	case TypeInt16:
 		return math.MinInt16, math.MaxInt16
 	case TypeUint16:
@@ -228,6 +231,9 @@ func DecodeRaw(t DataType, o ByteOrder, regs []uint16) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
+	if t == TypeBool && u > 1 {
+		return 0, fmt.Errorf("modbus: BOOL 值应为 0 或 1，得到 %d", u)
+	}
 	switch t {
 	case TypeInt16:
 		return float64(int16(u)), nil
@@ -271,6 +277,13 @@ func ParseRaw(t DataType, o ByteOrder, s string) ([]uint16, error) {
 		return nil, err
 	}
 	s = strings.TrimSpace(s)
+	if t == TypeBool {
+		v, err := strconv.ParseUint(s, 0, 16)
+		if err != nil || v > 1 {
+			return nil, fmt.Errorf("BOOL 只能是 0 或 1，得到 %q", s)
+		}
+		return fromBits(t, o, v), nil
+	}
 	bits := t.Registers() * 16
 	if h, ok := strings.CutPrefix(strings.ToLower(s), "0x"); ok {
 		u, err := strconv.ParseUint(h, 16, bits)

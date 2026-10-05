@@ -261,8 +261,8 @@ func (d readDef) bits() bool {
 	return d.Function == modbus.FuncReadCoils || d.Function == modbus.FuncReadDiscreteInputs
 }
 
-// usesPoints 表示按点表解码：显示格式为点表，且读的是寄存器（点表只有 4x、3x）。
-func (d readDef) usesPoints() bool { return d.Kind == kindPoint && !d.bits() }
+// usesPoints 表示按点表解码，四个数据区都可以有点。
+func (d readDef) usesPoints() bool { return d.Kind == kindPoint }
 
 // names 表示显示名称和单位列：按点表解码，且读取范围内有点。
 func (d readDef) names(pts pointTable) bool {
@@ -303,6 +303,8 @@ func (d readDef) validate() error {
 // format 是标题里的显示格式说明。
 func (d readDef) format() string {
 	switch {
+	case d.bits() && d.usesPoints():
+		return "点表"
 	case d.bits():
 		return "位"
 	case d.Kind.width() > 1:

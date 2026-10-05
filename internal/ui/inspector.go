@@ -151,7 +151,14 @@ func registerInsight(w *readWindow) []decodeRow {
 		if regs[i] != 0 {
 			state = "ON"
 		}
-		return append(rows, decodeRow{Name: "值", Meaning: fmt.Sprintf("%d（%s）", regs[i], state)})
+		rows = append(rows, decodeRow{Name: "值", Meaning: fmt.Sprintf("%d（%s）", regs[i], state)})
+		if p, ok := w.ws.points.get(area, off); ok && d.usesPoints() {
+			rows = append(rows, decodeRow{Name: "点表", Meaning: fmt.Sprintf("%s · %s", p.Name, p.Type)})
+			if text, _, err := pointText(p, regs[i:i+1]); err == nil {
+				rows = append(rows, decodeRow{Name: "工程值", Meaning: text + " " + p.Unit})
+			}
+		}
+		return rows
 	}
 	r := regs[i]
 	b := []byte{byte(r >> 8), byte(r)}

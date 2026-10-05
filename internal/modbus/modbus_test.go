@@ -188,6 +188,24 @@ func TestEncodeDecodeByteOrders(t *testing.T) {
 	}
 }
 
+func TestBoolValuesAreOnlyZeroOrOne(t *testing.T) {
+	for _, v := range []float64{0, 1} {
+		regs, err := EncodeRaw(DataType("BOOL"), OrderAB, v)
+		if err != nil || len(regs) != 1 || regs[0] != uint16(v) {
+			t.Fatalf("BOOL %v 编码为 %v：%v", v, regs, err)
+		}
+	}
+	if _, err := EncodeRaw(DataType("BOOL"), OrderAB, 2); err == nil {
+		t.Error("BOOL 不应允许写入 2")
+	}
+	if _, err := ParseRaw(DataType("BOOL"), OrderAB, "2"); err == nil {
+		t.Error("BOOL 文本解析不应允许 2")
+	}
+	if _, err := DecodeRaw(DataType("BOOL"), OrderAB, []uint16{2}); err == nil {
+		t.Error("BOOL 响应值 2 应指出异常")
+	}
+}
+
 // 64 位整型超过 2^53 时 float64 存不下全部位数：FormatInt / ParseRaw 按整数精确处理。
 func TestInt64Exact(t *testing.T) {
 	regs := []uint16{0x0102, 0x0304, 0x0506, 0x0709}
