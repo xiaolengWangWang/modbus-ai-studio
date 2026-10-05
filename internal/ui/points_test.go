@@ -506,6 +506,71 @@ func TestPointOrderSuggestion(t *testing.T) {
 	tap(ws.connBtn)
 }
 
+func TestChangePointOrderByScope(t *testing.T) {
+	a := test.NewTempApp(t)
+	ws := openWS(t, a, false)
+	locked(func() {
+		ws.setPoints(newPointTable([]point{
+			{Area: modbus.AreaHoldingRegisters, Offset: 0, Type: modbus.TypeFloat32, Order: modbus.OrderABCD, Scale: 1},
+			{Area: modbus.AreaHoldingRegisters, Offset: 10, Type: modbus.TypeFloat32, Order: modbus.OrderCDAB, Scale: 1},
+			{Area: modbus.AreaHoldingRegisters, Offset: 20, Type: modbus.TypeUint64, Order: modbus.OrderGHEFCDAB, Scale: 1},
+			{Area: modbus.AreaHoldingRegisters, Offset: 30, Type: modbus.TypeInt16, Order: modbus.OrderAB, Scale: 1},
+			{Area: modbus.AreaInputRegisters, Offset: 0, Type: modbus.TypeFloat32, Order: modbus.OrderBADC, Scale: 1},
+		}))
+		d := defaultDef()
+		d.Start, d.Qty, d.Kind = 0, 31, kindPoint
+		w := ws.addWindow(d)
+		w.mu.Lock()
+		w.regs = make([]uint16, 31)
+		w.mu.Unlock()
+		d.Function = modbus.FuncReadInputRegisters
+		ws.addWindow(d)
+		order := func(area modbus.Area, off uint16) modbus.ByteOrder { return ws.points[ptKey{area, off}].Order }
+		h, in := modbus.AreaHoldingRegisters, modbus.AreaInputRegisters
+		if n := ws.changePointOrder(orderOne, w, 10, modbus.OrderDCBA); n != 1 || order(h, 10) != modbus.OrderDCBA || order(h, 0) != modbus.OrderABCD {
+			t.Errorf("单点修改影响了其他点：%d, %v", n, ws.points)
+		}
+		if n := ws.changePointOrder(orderWindow, w, 0, modbus.OrderBADC); n != 3 || order(h, 0) != modbus.OrderBADC || order(h, 10) != modbus.OrderBADC || order(h, 20) != modbus.OrderBADCFEHG || order(h, 30) != modbus.OrderAB || order(in, 0) != modbus.OrderBADC {
+			t.Errorf("当前窗口修改范围或 64 位映射错误：%d, %v", n, ws.points)
+		}
+		if n := ws.changePointOrder(orderAll, nil, 0, modbus.OrderABCD); n != 4 || order(h, 20) != modbus.OrderABCDEFGH || order(in, 0) != modbus.OrderABCD || order(h, 30) != modbus.OrderAB {
+			t.Errorf("全部点修改范围错误：%d, %v", n, ws.points)
+		}
+		if regs, _, _ := w.snapshot(); len(regs) != 31 {
+			t.Errorf("调整字节序不应清空正在显示的读数，剩余 %d 个", len(regs))
+		}
+	})
+}
+
+func TestInspectorShowsAdjacentFloatReadingsWithoutChoosing(t *testing.T) {
+	a := test.NewTempApp(t)
+	ws := openWS(t, a, false)
+	locked(func() {
+		p := point{Area: modbus.AreaHoldingRegisters, Offset: 1, Name: "温度", Type: modbus.TypeFloat32, Order: modbus.OrderCDAB, Scale: 1}
+		ws.setPoints(newPointTable([]point{p}))
+		d := defaultDef()
+		d.Start, d.Qty, d.Kind = 0, 4, kindPoint
+		w := ws.addWindow(d)
+		w.mu.Lock()
+		w.regs = []uint16{0x4170, 0x0000, 0x4171, 0x0000}
+		w.mu.Unlock()
+		w.sel = 1
+		text := rowsText(registerInsight(w))
+		for _, want := range []string{"-1 ABCD", "+1 ABCD", "15.0（合理）", "15.0625（合理）", "对照设备面板", "不会自动"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("邻址解读缺少 %q：\n%s", want, text)
+			}
+		}
+		if got := ws.points[ptKey{p.Area, p.Offset}].Order; got != modbus.OrderCDAB {
+			t.Errorf("解析不应自动改字节序，得到 %s", got)
+		}
+		w.sel = 0
+		if text := rowsText(registerInsight(w)); strings.Contains(text, "地址 -1 ·") {
+			t.Errorf("窗口起点没有前一个寄存器，不应展示前移候选：%s", text)
+		}
+	})
+}
+
 // parsePointsCSV 按本程序的格式解析 CSV 点表（不识别设备属性表）。
 func parsePointsCSV(data []byte) ([]point, error) {
 	rows, err := readCSV(data)

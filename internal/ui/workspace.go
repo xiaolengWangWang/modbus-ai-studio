@@ -302,6 +302,89 @@ func (ws *Workspace) setPointOrder(from, to modbus.ByteOrder) {
 	ws.setPoints(pts)
 }
 
+type pointOrderScope byte
+
+const (
+	orderAll pointOrderScope = iota
+	orderWindow
+	orderOne
+)
+
+// changePointOrder 把指定范围的多寄存器数值点改为同一种字节序；不清空已读数据。
+func (ws *Workspace) changePointOrder(scope pointOrderScope, w *readWindow, off uint16, to modbus.ByteOrder) int {
+	if !slices.Contains(modbus.Orders32, to) || (scope != orderAll && !slices.Contains(ws.windows, w)) {
+		return 0
+	}
+	pts := pointTable{}
+	changed := 0
+	for k, p := range ws.points {
+		selected := scope == orderAll
+		if w != nil && k.area == w.def.area() {
+			switch scope {
+			case orderWindow:
+				selected = int(w.def.Start) <= int(k.off) && int(k.off)+p.regs() <= int(w.def.Start)+w.def.Qty
+			case orderOne:
+				selected = k.off == off
+			}
+		}
+		if selected && p.Type != typeString && p.regs() > 1 {
+			if next := to.For(p.Type); p.Order != next {
+				p.Order = next
+				changed++
+			}
+		}
+		pts[k] = p
+	}
+	if changed > 0 {
+		ws.points = pts
+		for _, x := range ws.windows {
+			x.refresh()
+		}
+	}
+	return changed
+}
+
+// showPointOrderDialog 让用户明确选择字节序和作用范围；菜单与解析面板共用。
+func (ws *Workspace) showPointOrderDialog(w *readWindow) {
+	const all, window, one = "全部点", "本读取窗口的点", "单个点"
+	scopes := []string{all}
+	selected := all
+	if slices.Contains(ws.windows, w) {
+		scopes = append(scopes, window)
+		selected = window
+	}
+	var off uint16
+	if w != nil && w.sel >= 0 {
+		off = w.def.Start + uint16(w.sel)
+		if p, ok := ws.points.get(w.def.area(), off); ok && p.Type != typeString && p.regs() > 1 {
+			scopes = append(scopes, one)
+			selected = one
+		}
+	}
+	scope := widget.NewSelect(scopes, nil)
+	scope.SetSelected(selected)
+	var orders []string
+	for _, o := range modbus.Orders32 {
+		orders = append(orders, string(o))
+	}
+	order := widget.NewSelect(orders, nil)
+	order.SetSelected(string(modbus.OrderABCD))
+	if selected == one {
+		p, _ := ws.points.get(w.def.area(), off)
+		order.SetSelected(string(p.Order.For(modbus.TypeFloat32)))
+	}
+	dialog.NewForm("调整点表字节序", "应用", "取消", []*widget.FormItem{
+		widget.NewFormItem("范围", scope), widget.NewFormItem("字节序", order),
+	}, func(ok bool) {
+		if !ok {
+			return
+		}
+		kind := map[string]pointOrderScope{all: orderAll, window: orderWindow, one: orderOne}[scope.Selected]
+		n := ws.changePointOrder(kind, w, off, modbus.ByteOrder(order.Selected))
+		dialog.ShowInformation("点表字节序", fmt.Sprintf("已调整 %d 个多寄存器数值点。", n), ws.win)
+	}, ws.win).Show()
+}
+
 // recent 返回最近打开过、且文件还在的工作区，最多 5 个。
 func (ws *Workspace) recent() []string {
 	var out []string

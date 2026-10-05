@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -16,14 +18,15 @@ import (
 // inspector 是解析面板：选中读取窗口的单元时显示寄存器的多种解读（多解释视图，设计文档 7.3），
 // 选中通信报文时逐字段解析报文。
 type inspector struct {
-	ws    *Workspace
-	src   *readWindow // 正在显示寄存器解析的读取窗口，随轮询实时刷新；nil 表示显示的是报文或为空
-	title *widget.Label
-	body  *fyne.Container
-	wrap  *container.ThemeOverride
-	rows  []rowView
-	text  string
-	root  fyne.CanvasObject
+	ws       *Workspace
+	src      *readWindow // 正在显示寄存器解析的读取窗口，随轮询实时刷新；nil 表示显示的是报文或为空
+	title    *widget.Label
+	orderBtn *widget.Button
+	body     *fyne.Container
+	wrap     *container.ThemeOverride
+	rows     []rowView
+	text     string
+	root     fyne.CanvasObject
 }
 
 type rowView struct {
@@ -38,8 +41,10 @@ func newInspector(ws *Workspace) *inspector {
 	in.body = container.NewVBox()
 	copyBtn := widget.NewButtonWithIcon("复制", theme.ContentCopyIcon(), func() { ws.app.Clipboard().SetContent(in.text) })
 	copyBtn.Importance = widget.LowImportance
+	in.orderBtn = widget.NewButton("字节序…", func() { ws.showPointOrderDialog(in.src) })
+	in.orderBtn.Importance = widget.LowImportance
 	in.wrap = compact(in.body)
-	in.root = container.NewBorder(container.NewBorder(nil, nil, nil, copyBtn, in.title), nil, nil, nil, container.NewVScroll(in.wrap))
+	in.root = container.NewBorder(container.NewBorder(nil, nil, nil, container.NewHBox(in.orderBtn, copyBtn), in.title), nil, nil, nil, container.NewVScroll(in.wrap))
 	in.clear()
 	return in
 }
@@ -193,7 +198,7 @@ func registerInsight(w *readWindow) []decodeRow {
 			if !it.Plausible {
 				ok = "不合理"
 			}
-			m := fmt.Sprintf("FLOAT32 %s（%s）· INT32 %d · UINT32 %d", formatFloat(it.Float32), ok, it.Int32, it.Uint32)
+			m := fmt.Sprintf("FLOAT32 %s（%s）· INT32 %d · UINT32 %d", formatFloatExact(it.Float32, 32), ok, it.Int32, it.Uint32)
 			if width == 2 && it.Order == cur {
 				m += " · 当前"
 			}
@@ -215,12 +220,19 @@ func registerInsight(w *readWindow) []decodeRow {
 			if !modbus.PlausibleFloat64(f) {
 				ok = "不合理"
 			}
-			m := fmt.Sprintf("FLOAT64 %s（%s）· INT64 %d · UINT64 %d", formatFloat(f), ok, int64(u), u)
+			m := fmt.Sprintf("FLOAT64 %s（%s）· INT64 %d · UINT64 %d", formatFloatExact(f, 64), ok, int64(u), u)
 			if width == 4 && o == cur {
 				m += " · 当前"
 			}
 			rows = append(rows, decodeRow{Name: string(o), Hex: hexs(binary.BigEndian.AppendUint64(nil, u)), Meaning: m})
 		}
+	}
+	floatType := d.Kind.dataType()
+	if isPoint && d.Kind == kindPoint {
+		floatType = p.Type
+	}
+	if floatType.Float() {
+		rows = append(rows, adjacentFloatRows(d, i, regs, floatType)...)
 	}
 	if isPoint {
 		access := "只读"
@@ -243,6 +255,46 @@ func registerInsight(w *readWindow) []decodeRow {
 				rows = append(rows, decodeRow{Name: "工程值", Meaning: text + " " + p.Unit})
 			}
 		}
+	}
+	return rows
+}
+
+// formatFloatExact 保留设备原始浮点精度，让两个低位不同的候选值能直接比较。
+func formatFloatExact(v float64, bits int) string {
+	s := strconv.FormatFloat(v, 'g', -1, bits)
+	if !strings.ContainsAny(s, ".eE") && !math.IsNaN(v) && !math.IsInf(v, 0) {
+		s += ".0"
+	}
+	return s
+}
+
+// adjacentFloatRows 展示起始地址前后差一位时的候选解读，不据此自动改配置。
+func adjacentFloatRows(d readDef, i int, regs []uint16, t modbus.DataType) []decodeRow {
+	var rows []decodeRow
+	for _, shift := range []int{-1, 1} {
+		start := i + shift
+		if start < 0 || start+t.Registers() > len(regs) {
+			continue
+		}
+		if len(rows) == 0 {
+			rows = append(rows, decodeRow{Meaning: "起始地址差一位时的候选读法："})
+		}
+		pair := regs[start : start+t.Registers()]
+		for _, order := range t.Orders() {
+			v, err := modbus.DecodeRaw(t, order, pair)
+			if err != nil {
+				continue
+			}
+			quality := "不合理"
+			if isPlausible(t, v) {
+				quality = "合理"
+			}
+			rows = append(rows, decodeRow{Name: fmt.Sprintf("%+d %s", shift, order), Hex: hexs(modbus.RegistersToBytes(pair)),
+				Meaning: fmt.Sprintf("从 %s 读取 %s %s（%s）", modbus.Reference(d.area(), d.Start+uint16(start)), t, formatFloatExact(v, t.Registers()*16), quality)})
+		}
+	}
+	if len(rows) > 0 {
+		rows = append(rows, decodeRow{Meaning: "字节序和地址差一位的结果可能很接近；请对照设备面板确认，程序不会自动选择。"})
 	}
 	return rows
 }

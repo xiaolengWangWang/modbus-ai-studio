@@ -325,6 +325,7 @@ func (ws *Workspace) setMenu() {
 			item("关闭读取窗口", cur(ws.removeWindow)),
 			fyne.NewMenuItemSeparator(),
 			key(item("导入点表…", ws.importPoints), fyne.KeyI, false),
+			item("调整点表字节序…", func() { ws.showPointOrderDialog(ws.current()) }),
 			item("打开换热站示例", ws.loadDemo),
 			fyne.NewMenuItemSeparator(),
 			key(item("全部暂停", func() { ws.pauseAll(true) }), fyne.KeyP, true),
