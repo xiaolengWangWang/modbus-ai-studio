@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -29,6 +30,18 @@ func Setup() {
 		return
 	}
 	log.SetOutput(glWatch{f})
+}
+
+var systemParametersInfo = windows.NewLazySystemDLL("user32.dll").NewProc("SystemParametersInfoW")
+
+// WorkArea 返回任务栏以外的主屏幕可用像素；无法取得时由调用方使用默认尺寸。
+func WorkArea() (int, int) {
+	var rect windows.Rect
+	r, _, _ := systemParametersInfo.Call(0x30, 0, uintptr(unsafe.Pointer(&rect)), 0) // SPI_GETWORKAREA
+	if r == 0 {
+		return 0, 0
+	}
+	return int(rect.Right - rect.Left), int(rect.Bottom - rect.Top)
 }
 
 type glWatch struct{ io.Writer }

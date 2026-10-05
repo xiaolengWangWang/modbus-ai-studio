@@ -24,7 +24,7 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 
 | 类别 | 目录 | 内容 |
 | --- | --- | --- |
-| 资源 | `assets/icon/` | 应用图标 `AppIcon.png`（1024×1024，由 `go run ./build/icon` 生成，打包时转成 macOS icns 和 Windows ico） |
+| 资源 | `assets/icon/` | macOS 图标 `AppIcon.png`；Windows 用 `windows/icon16.png` 至 `icon256.png` 分别绘制，并以 `GLFW_ICON` 资源名嵌入 exe |
 |  | `assets/examples/` | CSV 点表模板（换热站示例，测试保证与内置点表一致） |
 |  | `assets/screenshots/` | 文档里的截图，由界面测试生成（见 [测试](#测试)） |
 | 核心代码 | `cmd/modbus-ai/` | 桌面应用入口 |
@@ -50,8 +50,8 @@ Linux 版目前没有专用代码和安装包：同一份代码可以在 Linux �
 
 ```sh
 go run ./cmd/modbus-ai              # 运行桌面应用（启动时为空；“读取 → 打开换热站示例”加载示例并连接内置模拟器）
-VERSION=0.9.1 build/macos.sh        # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
-VERSION=0.9.1 build/windows.sh      # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
+VERSION=0.10.0 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
+VERSION=0.10.0 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
 
 go build -o bin/ ./cmd/...
 
@@ -84,6 +84,8 @@ go test -race -count=3 ./...        # 并发与稳定性
 ## 打包与发版
 
 `build/macos.sh` 在 Intel Mac 上同时打 Intel 和 Apple Silicon 两个 .app 和 DMG（ad-hoc 签名，最低 macOS 12）；`build/windows.sh` 在 macOS 上用 mingw-w64 交叉编译 Windows x64 绿色版 zip（静态链接，只依赖系统 DLL）。
+
+Windows 启动阶段耗时和字体预扫描结果写入 `%AppData%\ModbusAIStudio\app.log`；图标资源可用 `go-winres extract` 检查 `GLFW_ICON`。当前 Windows 字体、150% 缩放窗口、16 像素图标和启动速度尚待真机验证；遇到问题时请附 `app.log`。
 
 1. 改代码时同步递增版本号：`cmd/modbus-ai/main.go` 的 `version`、`build/*.sh` 的默认 `VERSION`、本文里的命令示例。
 2. `VERSION=x.y.z build/macos.sh`、`VERSION=x.y.z build/windows.sh` 打出两个 DMG 和 Windows zip。

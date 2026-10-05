@@ -44,6 +44,7 @@ import (
 
 	"modbus-ai-studio/internal/modbus"
 	"modbus-ai-studio/internal/transport"
+	"modbus-ai-studio/platform"
 )
 
 // uiMu 串行化后台 goroutine 发起的界面更新。正式驱动本来就在主线程依次执行 fyne.Do；
@@ -113,9 +114,18 @@ func Open(app fyne.App, version string) *Workspace {
 
 func open(app fyne.App, version string, no int) *Workspace {
 	w := app.NewWindow("Modbus AI Studio " + version)
-	w.Resize(fyne.NewSize(1280, 820))
+	want := fyne.NewSize(1280, 820)
+	workW, workH := platform.WorkArea()
+	if workW > 0 {
+		w.Resize(fyne.NewSize(960, 620)) // 首帧先放进小屏幕；Show 后才能取得 Fyne 的真实缩放比例
+	} else {
+		w.Resize(want)
+	}
 	ws := newWorkspace(app, w, version, no)
 	w.Show()
+	if workW > 0 {
+		w.Resize(platform.FitSize(want, workW, workH, w.Canvas().Scale()))
+	}
 	return ws
 }
 

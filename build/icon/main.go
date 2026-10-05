@@ -1,5 +1,5 @@
 // icon 生成应用图标 PNG：深青色圆角方块上一条白色方波（Modbus 通信的示意）。
-// 用法：go run ./build/icon <输出路径> [边长]；改了图案后重新生成 assets/icon/AppIcon.png
+// 用法：go run ./build/icon <输出路径> [边长] [windows]；Windows 各尺寸分别绘制。
 package main
 
 import (
@@ -19,6 +19,14 @@ func main() {
 	size := 1024
 	if len(os.Args) > 2 {
 		size, _ = strconv.Atoi(os.Args[2])
+	}
+	if size < 16 {
+		os.Stderr.WriteString("图标边长至少 16 像素\n")
+		os.Exit(2)
+	}
+	if len(os.Args) > 3 && os.Args[3] == "windows" {
+		writePNG(os.Args[1], drawWindowsIcon(size))
+		return
 	}
 	s := float64(size) / 1024
 	img := image.NewNRGBA(image.Rect(0, 0, size, size))
@@ -48,7 +56,11 @@ func main() {
 		x0 := (330 + float64(i)*140) * s
 		fillRect(img, x0, 690*s, x0+100*s, 730*s, color.NRGBA{255, 255, 255, 150})
 	}
-	f, err := os.Create(os.Args[1])
+	writePNG(os.Args[1], img)
+}
+
+func writePNG(path string, img image.Image) {
+	f, err := os.Create(path)
 	if err != nil {
 		panic(err)
 	}
@@ -56,6 +68,35 @@ func main() {
 	if err := png.Encode(f, img); err != nil {
 		panic(err)
 	}
+}
+
+// Windows 小图标铺满画布，16/24/32 像素去掉装饰，仅保留清晰的通信方波。
+func drawWindowsIcon(size int) *image.NRGBA {
+	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+	s := float64(size)
+	fill := color.NRGBA{0x06, 0x65, 0x82, 255}
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			if a := roundRectAlpha(float64(x)+0.5, float64(y)+0.5, 0.02*s, 0.98*s, 0.18*s); a > 0 {
+				c := fill
+				c.A = uint8(255 * a)
+				img.SetNRGBA(x, y, c)
+			}
+		}
+	}
+	pts := [][2]float64{{0.15, 0.63}, {0.30, 0.63}, {0.30, 0.35}, {0.50, 0.35}, {0.50, 0.63}, {0.69, 0.63}, {0.69, 0.35}, {0.85, 0.35}}
+	for i := range pts {
+		pts[i][0] *= s
+		pts[i][1] *= s
+	}
+	stroke(img, pts, math.Max(2, 0.065*s), color.NRGBA{255, 255, 255, 255})
+	if size >= 48 {
+		for i := 0; i < 3; i++ {
+			x0 := (0.29 + float64(i)*0.15) * s
+			fillRect(img, x0, 0.76*s, x0+0.10*s, 0.80*s, color.NRGBA{0xC4, 0xEF, 0xF5, 205})
+		}
+	}
+	return img
 }
 
 func lerp(a, b uint8, t float64) uint8 { return uint8(float64(a) + (float64(b)-float64(a))*t) }
