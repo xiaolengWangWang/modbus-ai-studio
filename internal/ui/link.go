@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -125,12 +126,21 @@ func (e lossEvent) describe() string {
 
 func dialErrText(err error) string {
 	switch {
-	case errors.Is(err, syscall.ECONNREFUSED):
+	case isConnRefused(err):
 		return "连接被拒绝：设备的 Modbus 服务没开，或端口不对"
 	case errors.Is(err, os.ErrDeadlineExceeded), isNetTimeout(err):
 		return "连接超时：设备不在线或网络不通"
 	}
 	return err.Error()
+}
+
+// isConnRefused 判断连接被拒绝。Windows 上的错误码是 WSAECONNREFUSED（10061），和 syscall.ECONNREFUSED 不相等。
+func isConnRefused(err error) bool {
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	var errno syscall.Errno
+	return runtime.GOOS == "windows" && errors.As(err, &errno) && errno == 10061
 }
 
 func isNetTimeout(err error) bool {

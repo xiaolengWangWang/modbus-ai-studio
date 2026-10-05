@@ -2,8 +2,11 @@ package ui
 
 import (
 	"net"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -191,4 +194,16 @@ func TestSerialLoss(t *testing.T) {
 			t.Errorf("串口断开的分析：%+v", dg)
 		}
 	})
+}
+
+// 连接被拒绝要给出原因：Windows 上的错误码是 WSAECONNREFUSED（10061），和 syscall.ECONNREFUSED 不相等。
+func TestDialErrTextConnRefused(t *testing.T) {
+	refused := syscall.ECONNREFUSED
+	if runtime.GOOS == "windows" {
+		refused = syscall.Errno(10061)
+	}
+	err := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", refused)}
+	if got := dialErrText(err); !strings.Contains(got, "连接被拒绝") {
+		t.Errorf("连接被拒绝没有识别出来：%s", got)
+	}
 }
