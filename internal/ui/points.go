@@ -386,12 +386,23 @@ func parsePoint(get func(string) string, attrTable bool) (point, error) {
 	addr := strings.TrimSpace(get("地址"))
 	var cands []modbus.AddressCandidate
 	var err error
-	t, known := typeAliases[strings.ToUpper(get("类型"))]
+	// 线圈写法：设备属性表里的 0xNNNN，以及 BOOL 点的 0xNNNN、00001。其他类型的 0x 开头仍按十六进制 Offset，
+	// 旧点表里的 0x0001,温度,INT16 含义不变
+	isBool := typeAliases[strings.ToUpper(get("类型"))] == modbus.TypeBool
 	s := strings.ToLower(addr)
-	coilNotation := attrTable || t == modbus.TypeBool || (s == "0x0001" && known && t != typeString && t.Registers() == 1)
-	if coilNotation && strings.HasPrefix(s, "0x") && len(s) > 2 && strings.IndexFunc(s[2:], func(r rune) bool { return r < '0' || r > '9' }) < 0 {
+	digits := func(s string) bool {
+		return s != "" && strings.IndexFunc(s, func(r rune) bool { return r < '0' || r > '9' }) < 0
+	}
+	coil := ""
+	switch {
+	case (attrTable || isBool) && strings.HasPrefix(s, "0x") && digits(s[2:]):
+		coil = s[2:]
+	case isBool && (len(s) == 5 || len(s) == 6) && s[0] == '0' && digits(s):
+		coil = s
+	}
+	if coil != "" {
 		var n uint64
-		n, err = strconv.ParseUint(s[2:], 10, 32)
+		n, err = strconv.ParseUint(coil, 10, 32)
 		if err == nil && (n < 1 || n > 65536) {
 			err = fmt.Errorf("线圈地址 %s 应为 0x0001–0x65536", addr)
 		}

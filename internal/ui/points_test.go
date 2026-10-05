@@ -97,7 +97,7 @@ func TestImportFourAreasAndBool(t *testing.T) {
 }
 
 func TestPointCSVKeepsLegacyHexOffsets(t *testing.T) {
-	data := []byte("地址,名称,类型\n0x0100,旧整型,INT16\n0x0200,旧浮点,FLOAT32\n 0x0002 ,线圈,BOOL\n0x0001,首线圈,INT16\n")
+	data := []byte("地址,名称,类型\n0x0100,旧整型,INT16\n0x0200,旧浮点,FLOAT32\n 0x0002 ,线圈,BOOL\n0x0001,旧首地址,INT16\n00005,五位线圈,BOOL\n")
 	ps, err := parsePointsCSV(data)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +105,7 @@ func TestPointCSVKeepsLegacyHexOffsets(t *testing.T) {
 	want := []struct {
 		area modbus.Area
 		off  uint16
-	}{{modbus.AreaHoldingRegisters, 0x100}, {modbus.AreaHoldingRegisters, 0x200}, {modbus.AreaCoils, 1}, {modbus.AreaCoils, 0}}
+	}{{modbus.AreaHoldingRegisters, 0x100}, {modbus.AreaHoldingRegisters, 0x200}, {modbus.AreaCoils, 1}, {modbus.AreaHoldingRegisters, 1}, {modbus.AreaCoils, 4}}
 	if len(ps) != len(want) {
 		t.Fatalf("导入 %d 个点，期望 %d", len(ps), len(want))
 	}
@@ -451,10 +451,10 @@ func TestImportAddsWindowsForUncoveredPoints(t *testing.T) {
 	ws := openWS(t, app, false)
 	locked(func() {
 		covered := defaultDef()
-		covered.Start, covered.Qty = 0, 2
+		covered.Slave, covered.Start, covered.Qty = 7, 0, 2
 		ws.addWindow(covered)
 		partial := defaultDef()
-		partial.Start, partial.Qty = 500, 1
+		partial.Slave, partial.Start, partial.Qty = 7, 500, 1
 		ws.addWindow(partial)
 		imp := pointImport{format: "点表", points: []point{
 			{Area: modbus.AreaHoldingRegisters, Offset: 0, Type: modbus.TypeInt16, Name: "已覆盖"},
@@ -464,6 +464,11 @@ func TestImportAddsWindowsForUncoveredPoints(t *testing.T) {
 		ws.applyImport(imp)
 		if len(ws.windows) != 4 {
 			t.Fatalf("已有两窗，只应为跨界点和离散输入补两窗：%+v", ws.windows)
+		}
+		for _, w := range ws.windows[2:] {
+			if w.def.Slave != 7 {
+				t.Errorf("补建的窗口应沿用已有窗口的站号 7，实际 %d", w.def.Slave)
+			}
 		}
 		for _, p := range imp.points {
 			found := false

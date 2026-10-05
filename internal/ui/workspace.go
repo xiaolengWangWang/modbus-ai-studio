@@ -230,6 +230,9 @@ func (ws *Workspace) applyImport(imp pointImport) string {
 	}
 	var spans []string
 	for _, d := range defsForPoints(missing) {
+		if len(ws.windows) > 0 {
+			d.Slave = ws.windows[0].def.Slave // 补建的窗口沿用已有窗口的站号，点表一般对应同一台设备
+		}
 		ws.addWindow(d)
 		spans = append(spans, refSpan(d.area(), d.Start, d.Qty))
 	}
