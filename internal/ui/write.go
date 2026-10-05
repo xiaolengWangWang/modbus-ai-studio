@@ -213,10 +213,10 @@ func (ws *Workspace) showRegisterWrite(w *readWindow, off uint16) {
 		kind = kindUnsigned
 	}
 	dt := kind.dataType()
-	order := modbus.OrderAB
+	order := d.Order.For(dt) // 16 位格式 BA 表示字节交换
 	n := dt.Registers()
-	if n > 1 {
-		order = d.Order.For(dt)
+	if d.Kind == kindPoint {
+		order = modbus.OrderAB // 点表窗口里不在点表中的寄存器按原始值写
 	}
 	regs, _, _ := w.snapshot()
 	i := int(off - d.Start)
@@ -226,7 +226,7 @@ func (ws *Workspace) showRegisterWrite(w *readWindow, off uint16) {
 		if n > 1 {
 			curText, _ = formatWide(kind, order, regs[i:i+n])
 		} else {
-			curText = formatReg(kind, regs[i])
+			curText = formatReg(kind, swap16(order, regs[i]))
 		}
 		value.SetText(curText)
 	}
@@ -237,8 +237,8 @@ func (ws *Workspace) showRegisterWrite(w *readWindow, off uint16) {
 	fc := widget.NewSelect(fcs, nil)
 	fc.SetSelected(fcs[0])
 	format := func(v float64) string {
-		if r, err := modbus.EncodeRaw(dt, order, v); err == nil && n == 1 {
-			return formatReg(kind, r[0])
+		if r, err := modbus.EncodeRaw(dt, modbus.OrderAB, v); err == nil && n == 1 {
+			return formatReg(kind, r[0]) // 显示值本身，不是交换后的线上值
 		}
 		if dt.Float() {
 			return formatFloat(v)

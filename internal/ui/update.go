@@ -94,6 +94,8 @@ func (ws *Workspace) checkUpdate(manual bool) {
 				}
 			case !manual && ws.app.Preferences().String(prefSkip) == rel.Version():
 				updating.Store(false)
+			case !manual && ws.win.Canvas().Overlays().Top() != nil:
+				updating.Store(false) // 正开着别的对话框，不叠上去，下次启动再提示
 			default:
 				ws.showUpdate(rel, manual)
 			}

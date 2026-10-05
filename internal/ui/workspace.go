@@ -341,6 +341,7 @@ func (ws *Workspace) changePointOrder(scope pointOrderScope, w *readWindow, off 
 	if changed > 0 {
 		ws.points = pts
 		for _, x := range ws.windows {
+			x.bar.sync()
 			x.refresh()
 		}
 	}

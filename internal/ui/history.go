@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"sync/atomic"
 
@@ -13,6 +14,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/internal/recorder"
+	"modbus-ai-studio/platform"
 )
 
 // HistoryDays 是报文数据库保留的天数，main 启动时按它清理。
@@ -80,8 +82,13 @@ func (ws *Workspace) openHistory() {
 		dialog.ShowInformation("历史报文", msg, ws.win)
 		return
 	}
+	if ws.historyWin != nil { // 只开一个，再点切到已打开的
+		ws.historyWin.RequestFocus()
+		return
+	}
 	r := st.r
 	w := ws.app.NewWindow(fmt.Sprintf("历史报文 · 窗口 %d", ws.no))
+	ws.historyWin = w
 	w.Resize(fyne.NewSize(1180, 720))
 	tp := newTrafficPanel(ws)
 	tp.pauseBtn.Hide()
@@ -148,10 +155,49 @@ func (ws *Workspace) openHistory() {
 	path := widget.NewLabel(fmt.Sprintf("数据库：%s（保留 %d 天，可用 SQLite 工具直接打开）", st.path, HistoryDays))
 	path.Selectable = true
 	path.Truncation = fyne.TextTruncateEllipsis
+	dbBtns := container.NewHBox(
+		widget.NewButtonWithIcon("打开数据库", theme.FileIcon(), func() { ws.openDatabase(w, false) }),
+		widget.NewButtonWithIcon("所在文件夹", theme.FolderOpenIcon(), func() { ws.openDatabase(w, true) }))
 	split := container.NewHSplit(tabs, in.root)
 	split.Offset = 0.58
 	top := container.NewBorder(nil, nil, widget.NewLabel("连接"), widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), load), sel)
-	w.SetContent(container.NewBorder(container.NewVBox(top, info), path, nil, nil, split))
-	ws.addTool(w, nil)
+	w.SetContent(container.NewBorder(container.NewVBox(top, info), container.NewBorder(nil, nil, nil, dbBtns, path), nil, nil, split))
+	ws.addTool(w, func() { ws.historyWin = nil })
 	w.Show()
+}
+
+// 测试时替换，不真的打开访达 / 资源管理器。
+var (
+	openFileFn     = platform.OpenFile
+	showInFolderFn = platform.ShowInFolder
+)
+
+// openDatabase 用系统里的 SQLite 工具打开报文数据库（folder 为 true 时在文件夹里显示它）；
+// 没有能打开 .db 文件的程序时改为在文件夹里显示，并说明可以装什么工具。parent 是显示提示的窗口。
+func (ws *Workspace) openDatabase(parent fyne.Window, folder bool) {
+	st := recorderState.Load()
+	if st == nil || st.path == "" {
+		dialog.ShowInformation("报文数据库", "报文记录没有启用，没有数据库文件。", parent)
+		return
+	}
+	if _, err := os.Stat(st.path); err != nil {
+		dialog.ShowError(fmt.Errorf("找不到报文数据库：%w", err), parent)
+		return
+	}
+	if folder {
+		if err := showInFolderFn(st.path); err != nil {
+			dialog.ShowError(fmt.Errorf("打不开数据库所在文件夹：%w", err), parent)
+		}
+		return
+	}
+	err := openFileFn(st.path)
+	if errors.Is(err, platform.ErrNoApp) {
+		_ = showInFolderFn(st.path)
+		dialog.ShowInformation("报文数据库", "这台电脑上没有能打开 .db 文件的程序，已在文件夹里显示数据库文件。\n"+
+			"可以安装免费的 DB Browser for SQLite 后再打开；程序运行时也能打开查看。", parent)
+		return
+	}
+	if err != nil {
+		dialog.ShowError(fmt.Errorf("打不开报文数据库：%w", err), parent)
+	}
 }

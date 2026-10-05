@@ -1,0 +1,134 @@
+package ui
+
+import (
+	"context"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/widget"
+
+	"modbus-ai-studio/internal/modbus"
+)
+
+// 点在读取窗口的标题文字上（不响应点击的地方），按真实的点击路由落到外框，设为当前窗口。
+func TestTapTitleActivatesWindow(t *testing.T) {
+	a := test.NewTempApp(t)
+	ws := openWS(t, a, false)
+	locked(func() {
+		ws.win.Resize(fyne.NewSize(1280, 820))
+		ws.loadDemo()
+		w2 := ws.windows[1]
+		pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(w2.title).AddXY(10, 5)
+		test.TapCanvas(ws.win.Canvas(), pos)
+		if ws.current() != w2 || !w2.root.frame.Visible() {
+			t.Errorf("点窗口 2 的标题应设为当前窗口，当前是窗口 %d", ws.current().no)
+		}
+		pressShortcut(ws, fyne.KeyT, false) // 新建读取窗口成为当前窗口
+		if n := len(ws.windows); ws.current() != ws.windows[n-1] {
+			t.Error("新建的读取窗口应成为当前窗口")
+		}
+	})
+}
+
+// 控制条：功能码、格式、字节序、原始值，选了立即生效；线圈窗口没有格式和字节序。
+func TestReadBar(t *testing.T) {
+	a := test.NewTempApp(t)
+	ws := openWS(t, a, false)
+	tap(ws.connBtn)
+	var w *readWindow
+	locked(func() {
+		d := defaultDef()
+		d.Start, d.Qty = 700, 6
+		w = ws.addWindow(d)
+	})
+	waitFor(t, 5*time.Second, "连接并读到数据", func() bool { return hasData(w) })
+	// 设备上是 CDAB 的 FLOAT32 85.5 和 0x1234
+	f, _ := modbus.EncodeRaw(modbus.TypeFloat32, modbus.OrderCDAB, 85.5)
+	var c *modbus.Client
+	locked(func() { c = ws.session.client })
+	if _, err := c.Do(context.Background(), modbus.Request{Slave: 1, Function: modbus.FuncWriteMultipleRegisters, Address: 700, Values: append(f, 0x1234)}); err != nil {
+		t.Fatal(err)
+	}
+
+	locked(func() {
+		if w.bar.fn.Selected != "03 保持寄存器" || w.bar.kind.Selected != "Signed" || w.bar.order.Selected != "AB" || !slices.Equal(w.bar.order.Options, []string{"AB", "BA"}) {
+			t.Errorf("控制条应显示当前定义：%s %s %s %v", w.bar.fn.Selected, w.bar.kind.Selected, w.bar.order.Selected, w.bar.order.Options)
+		}
+		w.bar.kind.SetSelected("FLOAT32")
+		if w.def.Kind != kindFloat32 || !slices.Equal(w.bar.order.Options, []string{"ABCD", "CDAB", "BADC", "DCBA"}) || w.bar.order.Selected != "ABCD" {
+			t.Errorf("换成 FLOAT32：%s，字节序选项 %v %s", w.def.Kind, w.bar.order.Options, w.bar.order.Selected)
+		}
+		w.bar.order.SetSelected("CDAB")
+		if w.def.Order != modbus.OrderCDAB || !strings.Contains(w.title.Text, "FLOAT32 CDAB") {
+			t.Errorf("字节序应改成 CDAB：%s，标题 %s", w.def.Order, w.title.Text)
+		}
+	})
+	waitFor(t, 5*time.Second, "按 CDAB 显示 85.5", func() bool { v, _ := w.valueText(0); return v == "85.5" })
+
+	locked(func() {
+		w.bar.kind.SetSelected("Hex")
+		w.bar.order.SetSelected("BA")
+		if w.def.Order.For(modbus.TypeUint16) != modbus.OrderBA || !strings.Contains(w.title.Text, "Hex BA") {
+			t.Errorf("16 位格式应能字节交换：%s %s", w.def.Order, w.title.Text)
+		}
+		w.bar.raw.SetChecked(true)
+		if !slices.Contains(w.cols, colRaw) {
+			t.Errorf("打开原始值后应多一列：%v", w.cols)
+		}
+	})
+	waitFor(t, 5*time.Second, "字节交换后的 Hex 和原始值", func() bool {
+		v, _ := w.valueText(2) // 40703 写的是 0x1234
+		return v == "0x3412" && w.rawText(2) == "1234"
+	})
+
+	locked(func() {
+		w.bar.fn.SetSelected("04 输入寄存器")
+		if w.def.Function != modbus.FuncReadInputRegisters || !strings.Contains(w.title.Text, "30701") {
+			t.Errorf("功能码应改成 04：%s %s", w.def.Function, w.title.Text)
+		}
+		w.bar.fn.SetSelected("01 线圈")
+		if w.def.Function != modbus.FuncReadCoils || !w.bar.kind.Disabled() || !w.bar.order.Disabled() || !w.bar.raw.Disabled() || slices.Contains(w.cols, colRaw) {
+			t.Errorf("线圈窗口没有格式、字节序和原始值：%s kind=%v order=%v raw=%v cols=%v", w.def.Function, w.bar.kind.Disabled(), w.bar.order.Disabled(), w.bar.raw.Disabled(), w.cols)
+		}
+	})
+	tap(ws.connBtn)
+}
+
+// 点表窗口里，控制条的字节序作用于本窗口的 32 / 64 位点，别的窗口的点不变。
+func TestReadBarPointOrder(t *testing.T) {
+	a := test.NewTempApp(t)
+	ws := openWS(t, a, false)
+	locked(func() {
+		ws.setPoints(newPointTable([]point{
+			{Area: modbus.AreaHoldingRegisters, Offset: 0, Name: "温度", Type: modbus.TypeFloat32, Order: modbus.OrderABCD, Scale: 1},
+			{Area: modbus.AreaHoldingRegisters, Offset: 2, Name: "压力", Type: modbus.TypeFloat32, Order: modbus.OrderABCD, Scale: 1},
+			{Area: modbus.AreaHoldingRegisters, Offset: 100, Name: "流量", Type: modbus.TypeFloat32, Order: modbus.OrderABCD, Scale: 1},
+		}))
+		for _, start := range []uint16{0, 100} {
+			d := defaultDef()
+			d.Start, d.Qty, d.Kind = start, 4, kindPoint
+			ws.addWindow(d)
+		}
+		w1, w2 := ws.windows[0], ws.windows[1]
+		if w1.bar.order.Disabled() || w1.bar.order.Selected != "ABCD" {
+			t.Fatalf("点表窗口的字节序应可选，当前 ABCD：%v %s", w1.bar.order.Disabled(), w1.bar.order.Selected)
+		}
+		w1.bar.order.SetSelected("CDAB")
+		for off, want := range map[uint16]modbus.ByteOrder{0: modbus.OrderCDAB, 2: modbus.OrderCDAB, 100: modbus.OrderABCD} {
+			if p, _ := ws.points.get(modbus.AreaHoldingRegisters, off); p.Order != want {
+				t.Errorf("40%03d 字节序 %s，期望 %s", off+1, p.Order, want)
+			}
+		}
+		if w1.bar.order.Selected != "CDAB" || w2.bar.order.Selected != "ABCD" {
+			t.Errorf("两个窗口的控制条应各自显示：%s %s", w1.bar.order.Selected, w2.bar.order.Selected)
+		}
+		w1.tapCell(widget.TableCellID{Row: 0, Col: 2})
+		if ws.current() != w1 {
+			t.Error("点了窗口 1 的值应成为当前窗口")
+		}
+	})
+}

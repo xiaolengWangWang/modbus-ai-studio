@@ -211,6 +211,14 @@ func (k valueKind) dataType() modbus.DataType {
 	return modbus.TypeUint16
 }
 
+// swap16 按 16 位格式的字节序取出寄存器的值：字节序是 BA（字节交换）时交换高低字节。
+func swap16(o modbus.ByteOrder, r uint16) uint16 {
+	if o.For(modbus.TypeUint16) == modbus.OrderBA {
+		return r>>8 | r<<8
+	}
+	return r
+}
+
 // formatReg 按 16 位格式显示一个寄存器。
 func formatReg(k valueKind, r uint16) string {
 	switch k {

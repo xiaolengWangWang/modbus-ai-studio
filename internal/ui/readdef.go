@@ -9,6 +9,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/internal/modbus"
@@ -177,9 +178,10 @@ func (ws *Workspace) showDefinition(w *readWindow) {
 		} else {
 			kind.Enable()
 		}
-		dt := valueKind(kind.Selected).dataType()
-		if dt.Registers() == 1 {
-			dt = modbus.TypeUint32 // 16 位格式不用字节序，选项保持 32 位的写法
+		k := valueKind(kind.Selected)
+		dt := k.dataType() // 16 位格式 AB / BA（字节交换），32、64 位格式各四种
+		if k == kindPoint {
+			dt = modbus.TypeUint32 // 点表窗口的字节序按点，在控制条或“调整点表字节序”里改
 		}
 		var names []string
 		for _, o := range dt.Orders() {
@@ -187,7 +189,7 @@ func (ws *Workspace) showDefinition(w *readWindow) {
 		}
 		order.Options = names
 		order.SetSelected(string(modbus.ByteOrder(order.Selected).For(dt)))
-		if !bits && valueKind(kind.Selected).width() > 1 {
+		if !bits && k != kindPoint {
 			order.Enable()
 		} else {
 			order.Disable()
@@ -212,7 +214,7 @@ func (ws *Workspace) showDefinition(w *readWindow) {
 		widget.NewFormItem("数量", qty),
 		widget.NewFormItem("扫描周期（ms）", scan),
 		widget.NewFormItem("显示格式", kind),
-		widget.NewFormItem("32 位字节序", order),
+		widget.NewFormItem("字节序", order),
 		widget.NewFormItem("每列行数", rows),
 	}
 	dlg := dialog.NewForm(fmt.Sprintf("读取定义 · 窗口 %d", w.no), "确定", "取消", items, func(ok bool) {
@@ -229,7 +231,7 @@ func (ws *Workspace) showDefinition(w *readWindow) {
 		ms, _ := strconv.Atoi(strings.TrimSpace(scan.Text))
 		r, _ := strconv.Atoi(rows.Selected)
 		nd := readDef{Name: strings.TrimSpace(name.Text), Slave: byte(sv), Function: funcByName(fn.Selected), Start: c.Offset, Qty: n,
-			Scan: time.Duration(ms) * time.Millisecond, Kind: valueKind(kind.Selected), Order: modbus.ByteOrder(order.Selected), Rows: r}
+			Scan: time.Duration(ms) * time.Millisecond, Kind: valueKind(kind.Selected), Order: modbus.ByteOrder(order.Selected), Rows: r, Raw: d.Raw}
 		if err := nd.validate(); err != nil {
 			dialog.ShowError(err, ws.win)
 			return
@@ -249,8 +251,9 @@ type readDef struct {
 	Qty      int
 	Scan     time.Duration
 	Kind     valueKind
-	Order    modbus.ByteOrder // 32 / 64 位格式的字节序，用 For 换成格式对应宽度的写法
+	Order    modbus.ByteOrder // 显示格式的字节序，用 For 换成格式对应宽度的写法；16 位格式 BA 表示字节交换
 	Rows     int              // 每列行数
+	Raw      bool             `json:",omitempty"` // 多显示一列寄存器的十六进制原始值
 }
 
 var rowOptions = []int{10, 20, 50, 100}
@@ -309,6 +312,8 @@ func (d readDef) format() string {
 		return "位"
 	case d.Kind.width() > 1:
 		return string(d.Kind) + " " + string(d.Order.For(d.Kind.dataType()))
+	case d.Kind != kindPoint && d.Order.For(modbus.TypeUint16) == modbus.OrderBA:
+		return string(d.Kind) + " BA"
 	}
 	return string(d.Kind)
 }
@@ -320,15 +325,32 @@ const (
 	colName
 	colValue
 	colUnit
+	colRaw
 )
 
-var colTitle = map[colKind]string{colAddr: "地址", colName: "名称", colValue: "值", colUnit: "单位"}
+var colTitle = map[colKind]string{colAddr: "地址", colName: "名称", colValue: "值", colUnit: "单位", colRaw: "原始"}
 
 func (d readDef) columns(pts pointTable) []colKind {
+	cols := []colKind{colAddr, colValue}
 	if d.names(pts) {
-		return []colKind{colAddr, colName, colValue, colUnit}
+		cols = []colKind{colAddr, colName, colValue, colUnit}
 	}
-	return []colKind{colAddr, colValue}
+	if d.Raw && !d.bits() {
+		cols = append(cols, colRaw)
+	}
+	return cols
+}
+
+// textWidth 是读取范围内点的某段文字（名称、单位）需要的列宽，限制在 lo–hi 之间。
+func (d readDef) textWidth(pts pointTable, text func(point) string, lo, hi float32) float32 {
+	width := lo
+	pad := 2*theme.InnerPadding() + 4
+	for k, p := range pts {
+		if k.area == d.area() && int(k.off) >= int(d.Start) && int(k.off) < int(d.Start)+d.Qty {
+			width = max(width, fyne.MeasureText(text(p), theme.TextSize(), fyne.TextStyle{}).Width+pad)
+		}
+	}
+	return min(width, hi)
 }
 
 // longInts 表示读取范围内有 64 位整型点：数值最长 20 位，值列要放宽。
@@ -349,10 +371,12 @@ func (d readDef) colWidth(k colKind, pts pointTable) float32 {
 	switch k {
 	case colAddr:
 		return 72
-	case colName:
-		return 112
+	case colName: // 按点名称的长度，短名称不占地方，长名称不被截断
+		return d.textWidth(pts, func(p point) string { return p.Name }, 72, 220)
 	case colUnit:
-		return 50
+		return d.textWidth(pts, func(p point) string { return p.Unit }, 44, 96)
+	case colRaw:
+		return 64
 	}
 	switch {
 	case d.bits():

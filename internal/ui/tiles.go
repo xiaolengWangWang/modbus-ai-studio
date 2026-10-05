@@ -36,7 +36,7 @@ func (ws *Workspace) addWindow(d readDef) *readWindow {
 	w := newReadWindow(ws, ws.nextWin, d)
 	ws.windows = append(ws.windows, w)
 	ws.relayout()
-	ws.setCurrent(w)
+	ws.setCurrent(ws.cur) // 一次建多个窗口（示例、导入点表、打开工作区）时当前窗口仍是第一个
 	w.start()
 	return w
 }
@@ -52,18 +52,30 @@ func (ws *Workspace) current() *readWindow {
 	return nil
 }
 
-// setCurrent 设为当前读取窗口。有多个读取窗口时当前窗口的标题高亮，看得出快捷键作用于哪个。
+// setCurrent 设为当前读取窗口。有多个读取窗口时当前窗口的标题高亮、加一圈边框，看得出快捷键和“写入”作用于哪个；
+// 换到另一个窗口时取消其他窗口里的选中，同一时间只有一个选中的值。
 func (ws *Workspace) setCurrent(w *readWindow) {
+	switched := w != nil && w != ws.cur
 	ws.cur = w
 	cur := ws.current()
 	for _, x := range ws.windows {
+		active := x == cur && len(ws.windows) > 1
 		imp := widget.MediumImportance
-		if x == cur && len(ws.windows) > 1 {
+		if active {
 			imp = widget.HighImportance
 		}
 		if x.title.Importance != imp {
 			x.title.Importance = imp
 			x.title.Refresh()
+		}
+		x.root.setActive(active)
+		if switched && x != cur && x.sel >= 0 {
+			x.sel = -1
+			x.table.UnselectAll()
+			x.updateWriteBtn()
+			if ws.inspect.src == x {
+				ws.inspect.clear() // 解析面板不再显示已取消选中的窗口
+			}
 		}
 	}
 }
@@ -76,6 +88,7 @@ func (ws *Workspace) addReadWindow() {
 		d.Slave, d.Function = last.Slave, last.Function
 	}
 	w := ws.addWindow(d)
+	ws.setCurrent(w)
 	ws.showDefinition(w)
 }
 

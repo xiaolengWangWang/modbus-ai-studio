@@ -85,13 +85,27 @@ func TestShortcuts(t *testing.T) {
 		t.Fatalf("示例应有 3 个读取窗口，实际 %d", len(wins))
 	}
 	locked(func() {
-		if ws.current() != wins[2] {
-			t.Errorf("新建的窗口应成为当前窗口")
+		if ws.current() != wins[0] || !wins[0].root.frame.Visible() {
+			t.Errorf("打开示例后当前窗口应是第一个，并有高亮边框")
+		}
+		wins[2].tapCell(widget.TableCellID{Row: 0, Col: 0})
+		if ws.current() != wins[2] || wins[2].sel != 0 {
+			t.Errorf("点了窗口 3 的值后它应成为当前窗口")
 		}
 		wins[0].tapCell(widget.TableCellID{Row: 0, Col: 0})
-		if ws.current() != wins[0] || wins[0].title.Importance != widget.HighImportance || wins[2].title.Importance == widget.HighImportance {
+		if ws.current() != wins[0] || wins[0].title.Importance != widget.HighImportance || wins[2].title.Importance == widget.HighImportance ||
+			!wins[0].root.frame.Visible() || wins[2].root.frame.Visible() {
 			t.Errorf("点了窗口 1 后它应成为当前窗口并高亮")
 		}
+		if wins[2].sel != -1 {
+			t.Errorf("换到窗口 1 后窗口 3 的选中应取消，同一时间只有一个选中的值：sel=%d", wins[2].sel)
+		}
+		// 点窗口里不响应点击的地方（标题、状态行）也设为当前窗口
+		test.Tap(wins[1].root)
+		if ws.current() != wins[1] || wins[0].sel != -1 {
+			t.Errorf("点窗口 2 的空白处应设为当前窗口并取消窗口 1 的选中")
+		}
+		wins[0].tapCell(widget.TableCellID{Row: 0, Col: 0})
 		pressShortcut(ws, fyne.KeyP, false)
 		if !wins[0].paused || wins[1].paused || wins[2].paused {
 			t.Errorf("⌘P 应只暂停当前窗口：%v %v %v", wins[0].paused, wins[1].paused, wins[2].paused)

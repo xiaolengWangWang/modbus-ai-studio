@@ -10,6 +10,7 @@
 //	tiles.go      读取窗口的增删、换热站示例、平铺
 //	readdef.go    读取定义：类型、列规则、定义对话框
 //	readwin.go    读取窗口：表格、轮询、显示值、错误行
+//	readbar.go    读取窗口的控制条（功能码、格式、字节序、原始值）和当前窗口边框
 //	diagnose.go   错误自动分析和一键处理
 //	write.go      写入对话框和写入验证报告
 //	readonly.go   只读模式
@@ -104,6 +105,7 @@ type Workspace struct {
 	stats       stats
 	evidence    evidence
 	tools       []fyne.Window // 自定义请求等工具窗口，主窗口关闭时一起关闭
+	historyWin  fyne.Window   // 打开着的历史报文窗口，只开一个
 	done        chan struct{}
 	closed      bool
 }
@@ -315,43 +317,55 @@ func (ws *Workspace) setMenu() {
 			}
 		}
 	}
+	// 会弹对话框的菜单项：已有对话框打开时不再弹。对话框只挡住窗口里的点击，macOS 的原生菜单和
+	// 各平台的快捷键照样能用，不拦着就会一层层叠下去
+	modal := func(fn func()) func() {
+		return func() {
+			if ws.win.Canvas().Overlays().Top() != nil {
+				return
+			}
+			fn()
+		}
+	}
 	ws.roItem = item("只读模式（禁止写入）", func() { ws.setReadOnly(!ws.readOnly) })
 	ws.autoUpdItem = item("自动检查更新", ws.toggleAutoUpdate)
 	ws.autoUpdItem.Checked = autoUpdate(ws.app)
 	ws.win.SetMainMenu(fyne.NewMainMenu(
 		fyne.NewMenu("文件",
 			key(item("新建窗口", func() { ws.openNew() }), fyne.KeyN, false),
-			key(item("打开工作区…", ws.openWorkspace), fyne.KeyO, false),
-			key(item("保存工作区", ws.saveWorkspace), fyne.KeyS, false),
-			key(item("工作区另存为…", ws.saveWorkspaceAs), fyne.KeyS, true),
+			key(item("打开工作区…", modal(ws.openWorkspace)), fyne.KeyO, false),
+			key(item("保存工作区", modal(ws.saveWorkspace)), fyne.KeyS, false),
+			key(item("工作区另存为…", modal(ws.saveWorkspaceAs)), fyne.KeyS, true),
 			fyne.NewMenuItemSeparator(),
 			key(item("关闭窗口", ws.win.Close), fyne.KeyW, false)),
 		fyne.NewMenu("连接",
 			key(item("连接 / 断开", ws.toggleConnect), fyne.KeyK, false),
-			key(item("识别协议", ws.detectProtocol), fyne.KeyD, false),
-			item("扫描串口参数…", ws.scanSerialDialog),
+			key(item("识别协议", modal(ws.detectProtocol)), fyne.KeyD, false),
+			item("扫描串口参数…", modal(ws.scanSerialDialog)),
 			fyne.NewMenuItemSeparator(), ws.roItem),
 		fyne.NewMenu("读取",
-			key(item("新建读取窗口", ws.addReadWindow), fyne.KeyT, false),
-			key(item("读取定义…", cur(ws.showDefinition)), fyne.KeyE, false),
-			key(item("写入选中的值…", cur(ws.showWrite)), fyne.KeyReturn, false),
+			key(item("新建读取窗口", modal(ws.addReadWindow)), fyne.KeyT, false),
+			key(item("读取定义…", modal(cur(ws.showDefinition))), fyne.KeyE, false),
+			key(item("写入选中的值…", modal(cur(ws.showWrite))), fyne.KeyReturn, false),
 			key(item("暂停 / 继续", cur(func(w *readWindow) { w.setPaused(!w.paused) })), fyne.KeyP, false),
 			item("关闭读取窗口", cur(ws.removeWindow)),
 			fyne.NewMenuItemSeparator(),
-			key(item("导入点表…", ws.importPoints), fyne.KeyI, false),
-			item("调整点表字节序…", func() { ws.showPointOrderDialog(ws.current()) }),
+			key(item("导入点表…", modal(ws.importPoints)), fyne.KeyI, false),
+			item("调整点表字节序…", modal(func() { ws.showPointOrderDialog(ws.current()) })),
 			item("打开换热站示例", ws.loadDemo),
 			fyne.NewMenuItemSeparator(),
 			key(item("全部暂停", func() { ws.pauseAll(true) }), fyne.KeyP, true),
 			key(item("全部继续", func() { ws.pauseAll(false) }), fyne.KeyR, true)),
 		fyne.NewMenu("调试",
 			key(item("自定义请求…", ws.openRequestTool), fyne.KeyR, false),
-			item("扫描从站地址…", ws.scanSlavesDialog), item("读取诊断计数器…", ws.diagCountersDialog),
+			item("扫描从站地址…", modal(ws.scanSlavesDialog)), item("读取诊断计数器…", modal(ws.diagCountersDialog)),
 			fyne.NewMenuItemSeparator(),
-			key(item("历史报文…", ws.openHistory), fyne.KeyH, true),
+			key(item("历史报文…", modal(ws.openHistory)), fyne.KeyH, true),
+			item("打开报文数据库", modal(func() { ws.openDatabase(ws.win, false) })),
+			item("报文数据库所在文件夹", modal(func() { ws.openDatabase(ws.win, true) })),
 			key(item("清空通信报文", ws.traffic.clear), fyne.KeyL, false)),
 		fyne.NewMenu("帮助",
-			item("检查更新…", func() { ws.checkUpdate(true) }),
+			item("检查更新…", modal(func() { ws.checkUpdate(true) })),
 			ws.autoUpdItem,
 			fyne.NewMenuItemSeparator(),
 			item("下载页面", ws.openReleasePage)),

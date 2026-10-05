@@ -41,18 +41,21 @@ type readWindow struct {
 	errN    int
 	err     error
 
-	title     *widget.Label
-	statusLbl *widget.Label
-	errLbl    *widget.Label
-	hintLbl   *widget.Label
-	actionBtn *widget.Button
-	diagBox   *fyne.Container
-	writeBtn  *widget.Button
-	pauseBtn  *widget.Button
-	table     *widget.Table
-	sel       int // 选中的寄存器序号（相对 Start），-1 表示未选中
-	head      *fyne.Container
-	root      *fyne.Container
+	title      *widget.Label
+	statusLbl  *widget.Label
+	errLbl     *widget.Label
+	hintLbl    *widget.Label
+	actionBtn  *widget.Button
+	diagBox    *fyne.Container // 错误行：错误说明和一键处理
+	writeBtn   *widget.Button
+	pauseBtn   *widget.Button
+	table      *widget.Table
+	sel        int // 选中的寄存器序号（相对 Start），-1 表示未选中
+	head       *fyne.Container
+	bar        *readBar          // 功能码、格式、字节序、原始值（readbar.go）
+	body       *fyne.Container   // 标题区 + 表格，readLayout 排列
+	headScroll *container.Scroll // 标题区放不下时在这里滚动
+	root       *activator        // 点窗口任何地方都设为当前窗口，当前窗口有高亮边框
 }
 
 func newReadWindow(ws *Workspace, no int, d readDef) *readWindow {
@@ -117,12 +120,18 @@ func newReadWindow(ws *Workspace, no int, d readDef) *readWindow {
 		}
 	})
 	w.actionBtn.Importance = widget.HighImportance
-	// 一键处理放在错误行右侧，说明占满整行，窄窗口里也不会被挤成好几行
-	w.diagBox = container.NewVBox(container.NewBorder(nil, nil, nil, w.actionBtn, w.errLbl), w.hintLbl)
+	// 一键处理放在错误行右侧，说明另起一行占满宽度，窄窗口里也不会被挤成好几行
+	w.diagBox = container.NewBorder(nil, nil, nil, w.actionBtn, w.errLbl)
 	w.diagBox.Hide()
+	w.hintLbl.Hide()
 	buttons := container.NewHBox(defBtn, w.writeBtn, w.pauseBtn, closeBtn)
-	w.head = container.NewVBox(container.NewBorder(nil, nil, nil, buttons, w.title), w.statusLbl, w.diagBox)
-	w.root = container.NewBorder(w.head, nil, nil, nil, w.table)
+	w.bar = newReadBar(w)
+	// 高度不够时从下往上收起：先收状态行，错误和一键处理尽量留在可见范围
+	w.head = container.NewVBox(container.NewBorder(nil, nil, nil, buttons, w.title), w.bar.root, w.diagBox, w.hintLbl, w.statusLbl)
+	// 平铺给的高度不够时（例如错误说明占了好几行），标题区在自己的范围内滚动，表格至少留出表头和两行
+	w.headScroll = container.NewVScroll(w.head)
+	w.body = container.New(readLayout{w}, w.headScroll, w.table)
+	w.root = newActivator(w.body, func() { ws.setCurrent(w) })
 	w.setDef(d)
 	return w
 }
@@ -141,12 +150,61 @@ func (w *readWindow) setDef(d readDef) {
 		name = " " + d.Name
 	}
 	w.title.SetText(fmt.Sprintf("窗口 %d%s · %s · %s", w.no, name, refSpan(d.area(), d.Start, d.Qty), d.format()))
+	w.bar.sync()
 	w.sel = -1
 	w.table.UnselectAll()
 	if w.ws.inspect.src == w {
 		w.ws.inspect.clear()
 	}
 	w.reset()
+}
+
+// readLayout 排列读取窗口：标题区在上、表格在下。高度够时标题区完整显示；不够时标题区按整行收起
+// （从下往上：状态行、说明，内部可滚动查看），表格至少留出表头和一行，不会画到窗口外面。
+type readLayout struct{ w *readWindow }
+
+// rowHeight 是表格一行的高度。
+func rowHeight() float32 {
+	return fyne.MeasureText("0", theme.TextSize(), fyne.TextStyle{}).Height + 2*theme.InnerPadding()
+}
+
+// headHeight 是标题区在 room 高度内能完整显示的行数对应的高度，至少保留第一、二行（标题、控制条）。
+func (l readLayout) headHeight(room float32) float32 {
+	var h float32
+	n := 0
+	for _, o := range l.w.head.Objects {
+		if !o.Visible() {
+			continue
+		}
+		next := h + o.MinSize().Height
+		if n > 0 {
+			next += theme.Padding()
+		}
+		if next > room && n >= 2 {
+			break
+		}
+		h, n = next, n+1
+	}
+	return h
+}
+
+func (l readLayout) Layout(_ []fyne.CanvasObject, size fyne.Size) {
+	head := l.w.head.MinSize().Height
+	reserve := 2 * rowHeight() // 表头加一行
+	if l.w.diagBox.Visible() {
+		reserve = rowHeight() // 出错时数据是旧的，先保证错误和一键处理看得见
+	}
+	if room := size.Height - reserve; head > room {
+		head = l.headHeight(room)
+	}
+	l.w.headScroll.Move(fyne.NewPos(0, 0))
+	l.w.headScroll.Resize(fyne.NewSize(size.Width, head))
+	l.w.table.Move(fyne.NewPos(0, head))
+	l.w.table.Resize(fyne.NewSize(size.Width, max(size.Height-head, 0)))
+}
+
+func (l readLayout) MinSize([]fyne.CanvasObject) fyne.Size {
+	return fyne.NewSize(max(l.w.head.MinSize().Width, l.w.table.MinSize().Width), l.headHeight(0)+2*rowHeight())
 }
 
 func (w *readWindow) prefWidth() float32 {
@@ -157,7 +215,7 @@ func (w *readWindow) prefWidth() float32 {
 	return max(g*float32(w.groups), 380)
 }
 
-func (w *readWindow) prefHeight() float32 { return float32(w.rows+1)*36 + 90 }
+func (w *readWindow) prefHeight() float32 { return float32(w.rows+1)*36 + 130 }
 
 // indexOf 把表格单元换算成寄存器序号（相对 Start）；超出读取范围返回 -1。
 func (w *readWindow) indexOf(id widget.TableCellID) int {
@@ -243,6 +301,9 @@ func (w *readWindow) updateCell(id widget.TableCellID, c *cell) {
 		text, imp := w.valueText(i)
 		c.Importance = imp
 		c.SetText(text)
+	case colRaw:
+		c.TextStyle.Monospace, c.Alignment, c.Importance = true, fyne.TextAlignTrailing, widget.LowImportance
+		c.SetText(w.rawText(i))
 	}
 }
 
@@ -309,7 +370,17 @@ func (w *readWindow) valueText(i int) (string, widget.Importance) {
 		}
 		return text, imp(n)
 	}
-	return formatReg(d.Kind, regs[i]), imp(1)
+	return formatReg(d.Kind, swap16(d.Order, regs[i])), imp(1)
+}
+
+// rawText 是第 i 个寄存器线上的原始值（十六进制，不按字节序换算），调大小端时对照着看。
+func (w *readWindow) rawText(i int) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if i >= len(w.regs) {
+		return ""
+	}
+	return fmt.Sprintf("%04X", w.regs[i])
 }
 
 // canWrite：线圈和保持寄存器可写；点表模式下点表标为只读的点不可写。
@@ -437,18 +508,9 @@ func (w *readWindow) refresh() {
 }
 
 func (w *readWindow) setDiagnosis(dg diagnosis) {
-	visible := dg.Text != "" || dg.Hint != ""
+	rowVisible := dg.Text != "" || dg.Action != ""
+	relayout := rowVisible != w.diagBox.Visible() || (dg.Hint != "") != w.hintLbl.Visible() || dg.Hint != w.hintLbl.Text
 	w.errLbl.SetText(dg.Text)
-	if dg.Text == "" && dg.Action == "" {
-		w.errLbl.Hide()
-	} else {
-		w.errLbl.Show()
-	}
-	if dg.Hint == "" {
-		w.hintLbl.Hide()
-	} else {
-		w.hintLbl.Show()
-	}
 	w.hintLbl.SetText(dg.Hint)
 	w.diagDo = dg.Do
 	if dg.Action == "" {
@@ -457,15 +519,20 @@ func (w *readWindow) setDiagnosis(dg diagnosis) {
 		w.actionBtn.SetText(dg.Action)
 		w.actionBtn.Show()
 	}
-	if visible != w.diagBox.Visible() {
-		if visible {
-			w.diagBox.Show()
+	for _, x := range []struct {
+		obj fyne.CanvasObject
+		on  bool
+	}{{w.diagBox, rowVisible}, {w.errLbl, rowVisible}, {w.hintLbl, dg.Hint != ""}} {
+		if x.on {
+			x.obj.Show()
 		} else {
-			w.diagBox.Hide()
+			x.obj.Hide()
 		}
-		// 错误区出现或消失后标题区高度变化，需要让外层重新布局，否则会与表格重叠
+	}
+	if relayout {
+		// 错误区出现、消失或说明变长后标题区高度变化，让窗口重新排列，否则会与表格重叠
 		w.head.Refresh()
-		w.root.Refresh()
+		w.body.Refresh()
 	}
 }
 
