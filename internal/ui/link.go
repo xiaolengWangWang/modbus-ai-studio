@@ -189,11 +189,17 @@ func (ws *Workspace) connLost(s *session, l *linkState, errText string) {
 }
 
 func (ws *Workspace) addLoss(s *session, e lossEvent) {
+	again := s.lost != nil && s.lost.kind == lossOnConnect && e.kind == lossOnConnect
 	s.lost = &e
 	s.losses = append(s.losses, e)
-	if r := currentRecorder(); r != nil && s.recID != 0 {
-		r.Event(s.recID, recorder.EventDisconnect, e.describe())
+	if again || ws.session != s {
+		return // 重连时一连上就被关闭，每次重试都一样，日志只记第一次
 	}
+	var tx, res modbus.Packet
+	if e.kind != lossOnConnect {
+		tx, res, _ = ws.ring.exchange(func(modbus.Packet) bool { return true }) // 断开前最后一条请求
+	}
+	ws.addLog(newLogEntry(recorder.EventDisconnect, 0, e.describe(), diagnosisLines(ws.lossDiagnosis()), tx, res, ws.points), s.recID)
 }
 
 func (ws *Workspace) refreshAll() {
@@ -227,6 +233,11 @@ func (ws *Workspace) reconnectLoop(s *session, attempt int) {
 		if err != nil {
 			msg := dialErrText(err)
 			uiDo(func() {
+				if msg != s.dialErr && ws.session == s { // 同样的失败只记第一次
+					cfg := connConfig{mode: s.mode, target: s.target}
+					ws.addLog(newLogEntry(recorder.EventConnectFail, 0, fmt.Sprintf("第 %d 次重连失败 · %s", s.tries, msg),
+						connectFailCause(cfg, err), modbus.Packet{}, modbus.Packet{}, nil), s.recID)
+				}
 				s.dialErr = msg
 				ws.refreshStatus()
 			})
@@ -259,9 +270,8 @@ func (ws *Workspace) relink(s *session, t modbus.Transport, attempt int) {
 	s.lost, s.dialErr, s.retryAt = nil, "", time.Time{}
 	s.reconnects++
 	s.backoff = attempt + 1
-	if r := currentRecorder(); r != nil && s.recID != 0 {
-		r.Event(s.recID, recorder.EventReconnect, fmt.Sprintf("第 %d 次重连成功，断开了 %s", s.reconnects, roundDur(down)))
-	}
+	ws.addLog(logEntry{Event: recorder.Event{Time: time.Now(), Kind: recorder.EventReconnect,
+		Detail: fmt.Sprintf("第 %d 次重连成功，断开了 %s", s.reconnects, roundDur(down))}}, s.recID)
 	for _, w := range ws.windows {
 		w.start()
 	}

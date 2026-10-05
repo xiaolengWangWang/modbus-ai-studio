@@ -215,6 +215,7 @@ func (ws *Workspace) connect() {
 			}
 			if err != nil {
 				ws.connBtn.SetText("连接")
+				ws.logConnectFail(cfg, err)
 				dialog.ShowError(err, ws.win)
 				return
 			}

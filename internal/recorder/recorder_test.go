@@ -1,6 +1,7 @@
 package recorder
 
 import (
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -32,11 +33,16 @@ func TestRecordAndRead(t *testing.T) {
 	for _, p := range want {
 		r.Record(id, p)
 	}
-	if err := r.Event(id, EventDisconnect, "发送 Slave 1 03 40347×2 后被设备断开：EOF"); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Event(id, EventReconnect, "第 1 次重连成功"); err != nil {
-		t.Fatal(err)
+	readFail := Event{Kind: EventReadFail, Window: 3, Detail: "窗口 3 · 40601–40604 · 超时：1000 ms 内无响应",
+		Analysis: "设备有应答，但约 1100 ms 才到", TX: []byte{1, 3, 2, 0x58, 0, 4, 0xC4, 0x62}}
+	for _, e := range []Event{
+		readFail,
+		{Kind: EventDisconnect, Detail: "发送 Slave 1 03 40347×2 后被设备断开：EOF"},
+		{Kind: EventReconnect, Detail: "第 1 次重连成功"},
+	} {
+		if err := r.Log(id, e); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := r.EndSession(id); err != nil {
 		t.Fatal(err)
@@ -56,11 +62,15 @@ func TestRecordAndRead(t *testing.T) {
 	defer r.Close()
 	ss, err := r.Sessions(10)
 	if err != nil || len(ss) != 1 || ss[0].Packets != 3 || ss[0].Errors != 1 || ss[0].Target != "192.168.1.20:502" ||
-		ss[0].Mode != modbus.ModeRTUOverTCP || ss[0].Window != 2 || ss[0].End.IsZero() || ss[0].Disconnects != 1 {
+		ss[0].Mode != modbus.ModeRTUOverTCP || ss[0].Window != 2 || ss[0].End.IsZero() || ss[0].Disconnects != 1 || ss[0].Faults != 1 {
 		t.Fatalf("会话 %+v %v", ss, err)
 	}
-	if ev, err := r.Events(id); err != nil || len(ev) != 2 || ev[0].Kind != EventDisconnect || ev[1].Detail != "第 1 次重连成功" {
-		t.Fatalf("事件 %+v %v", ev, err)
+	ev, err := r.Events(id)
+	if err != nil || len(ev) != 3 || ev[1].Kind != EventDisconnect || ev[2].Detail != "第 1 次重连成功" {
+		t.Fatalf("日志 %+v %v", ev, err)
+	}
+	if e := ev[0]; e.Kind != EventReadFail || e.Window != 3 || e.Analysis != readFail.Analysis || !reflect.DeepEqual(e.TX, readFail.TX) || e.RX != nil {
+		t.Errorf("读取失败日志 %+v", e)
 	}
 	got, err := r.Packets(id, 100)
 	if err != nil || len(got) != 3 {
@@ -117,5 +127,35 @@ func TestOpenError(t *testing.T) {
 		t.Error("目录不存在应报错")
 	} else if errors.Unwrap(err) == nil {
 		t.Errorf("错误应包含原因：%v", err)
+	}
+}
+
+// 旧版本的库没有日志的分析和原始报文列，打开时自动补上，原有记录保留。
+func TestMigrateOldEvents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "packets.db")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE sessions (id INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, ended_at INTEGER,
+		protocol TEXT NOT NULL, target TEXT NOT NULL, window INTEGER NOT NULL);
+		CREATE TABLE events (id INTEGER PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+		time INTEGER NOT NULL, kind TEXT NOT NULL, detail TEXT NOT NULL);
+		INSERT INTO sessions VALUES (1, 1, NULL, 'MODBUS_TCP', '10.0.0.1:502', 1);
+		INSERT INTO events VALUES (1, 1, 2, 'DISCONNECT', '旧记录');`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	r, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if err := r.Log(1, Event{Kind: EventConnectFail, Detail: "重连失败", Analysis: "连接被拒绝"}); err != nil {
+		t.Fatal(err)
+	}
+	ev, err := r.Events(1)
+	if err != nil || len(ev) != 2 || ev[0].Detail != "旧记录" || ev[0].Analysis != "" || ev[1].Analysis != "连接被拒绝" {
+		t.Fatalf("%+v %v", ev, err)
 	}
 }

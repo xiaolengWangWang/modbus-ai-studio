@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sync/atomic"
@@ -59,6 +60,12 @@ func sessionLabel(s recorder.Session) string {
 	if s.Disconnects > 0 {
 		label += fmt.Sprintf("，断开 %d 次", s.Disconnects)
 	}
+	if s.Faults > 0 {
+		label += fmt.Sprintf("，故障 %d 次", s.Faults)
+	}
+	if s.Packets == 0 && s.Faults > 0 { // 一条报文都没发过就出了故障：连接没建立起来
+		label += "（连接失败）"
+	}
 	return label
 }
 
@@ -78,8 +85,17 @@ func (ws *Workspace) openHistory() {
 	w.Resize(fyne.NewSize(1180, 720))
 	tp := newTrafficPanel(ws)
 	tp.pauseBtn.Hide()
+	tp.title.Hide()
 	in := newInspector(ws)
 	tp.onSelect = in.showPacket
+	fl := newFaultLog(ws.app)
+	fl.onSelect = func(e logEntry) { in.show("日志", e.detail()) }
+	logTab := container.NewTabItem("日志", fl.root)
+	tabs := container.NewAppTabs(container.NewTabItem("报文", tp.root), logTab)
+	fl.onChange = func(n int) {
+		logTab.Text = fmt.Sprintf("日志 (%d)", n)
+		tabs.Refresh()
+	}
 	info := widget.NewLabel("")
 	var sessions []recorder.Session
 	sel := widget.NewSelect(nil, nil)
@@ -91,21 +107,21 @@ func (ws *Workspace) openHistory() {
 			}
 			go func() {
 				ps, err := r.Packets(s.ID, maxTraffic)
-				events, _ := r.Events(s.ID)
+				events, err2 := r.Events(s.ID)
 				uiDo(func() {
-					if err != nil {
+					if err = errors.Join(err, err2); err != nil {
 						info.SetText("读取失败：" + err.Error())
 						return
 					}
 					tp.setPackets(ps)
-					text := fmt.Sprintf("共 %d 条，显示最后 %d 条", s.Packets, len(ps))
-					// 断开和重连记录：最近 5 条，时间对照报文列表里的连接错误行
-					for _, e := range events[max(0, len(events)-5):] {
-						kind := "断开"
-						if e.Kind == recorder.EventReconnect {
-							kind = "重连"
-						}
-						text += fmt.Sprintf("\n%s %s：%s", e.Time.Format("15:04:05"), kind, e.Detail)
+					var es []logEntry
+					for _, e := range events {
+						es = append(es, logEntry{Event: e})
+					}
+					fl.set(es)
+					text := fmt.Sprintf("报文共 %d 条，显示最后 %d 条；日志 %d 条（连接失败、读取失败与恢复、断开、重连，带原因分析和原始报文）", s.Packets, len(ps), len(es))
+					if len(ps) == 0 && len(es) > 0 {
+						tabs.Select(logTab)
 					}
 					info.SetText(text)
 				})
@@ -132,7 +148,7 @@ func (ws *Workspace) openHistory() {
 	path := widget.NewLabel(fmt.Sprintf("数据库：%s（保留 %d 天，可用 SQLite 工具直接打开）", st.path, HistoryDays))
 	path.Selectable = true
 	path.Truncation = fyne.TextTruncateEllipsis
-	split := container.NewHSplit(tp.root, in.root)
+	split := container.NewHSplit(tabs, in.root)
 	split.Offset = 0.58
 	top := container.NewBorder(nil, nil, widget.NewLabel("连接"), widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), load), sel)
 	w.SetContent(container.NewBorder(container.NewVBox(top, info), path, nil, nil, split))

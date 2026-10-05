@@ -42,6 +42,7 @@ type trafficPanel struct {
 	list     *widget.List
 	count    *widget.Label
 	pauseBtn *widget.Button
+	title    *widget.Label
 	root     fyne.CanvasObject
 	onSelect func(modbus.Packet) // 选中一行时调用，默认交给主窗口的解析面板
 }
@@ -90,8 +91,9 @@ func newTrafficPanel(ws *Workspace) *trafficPanel {
 		b.Importance = widget.LowImportance
 		return b
 	}
+	t.title = widget.NewLabelWithStyle("通信报文", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	head := container.NewBorder(nil, nil,
-		container.NewHBox(widget.NewLabelWithStyle("通信报文", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}), t.pauseBtn,
+		container.NewHBox(t.title, t.pauseBtn,
 			btn("清空", theme.DeleteIcon(), t.clear), btn("复制", theme.ContentCopyIcon(), t.copy), btn("保存", theme.DocumentSaveIcon(), t.save)),
 		container.NewHBox(t.showTS, fixed(96, t.filter), t.count), t.search)
 	t.root = container.NewBorder(head, nil, nil, nil, compact(t.list))

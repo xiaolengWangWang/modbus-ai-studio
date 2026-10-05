@@ -47,8 +47,12 @@ CREATE TABLE IF NOT EXISTS events (
 	id         INTEGER PRIMARY KEY,
 	session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 	time       INTEGER NOT NULL, -- Unix 毫秒
-	kind       TEXT    NOT NULL, -- DISCONNECT、RECONNECT
-	detail     TEXT    NOT NULL  -- 原因和断开前最后一条请求
+	kind       TEXT    NOT NULL, -- CONNECT_FAIL、READ_FAIL、READ_OK、DISCONNECT、RECONNECT
+	detail     TEXT    NOT NULL, -- 一行结论
+	window     INTEGER NOT NULL DEFAULT 0,  -- 读取窗口编号，与连接有关的为 0
+	analysis   TEXT    NOT NULL DEFAULT '', -- 原因分析和原始报文的逐字段解析
+	tx         BLOB,                        -- 出错请求的原始报文
+	rx         BLOB                         -- 收到的原始响应，超时为空
 );
 CREATE INDEX IF NOT EXISTS packets_session ON packets(session_id, id);
 CREATE INDEX IF NOT EXISTS packets_time ON packets(time);
@@ -92,6 +96,9 @@ func open(path string, buffer int) (*Recorder, error) {
 	if err == nil {
 		_, err = db.Exec(schema)
 	}
+	if err == nil {
+		err = migrate(db)
+	}
 	if err != nil {
 		if db != nil {
 			db.Close()
@@ -101,6 +108,36 @@ func open(path string, buffer int) (*Recorder, error) {
 	r := &Recorder{db: db, ch: make(chan item, buffer), done: make(chan struct{})}
 	go r.loop()
 	return r, nil
+}
+
+// migrate 给旧库的 events 表补上后来加的列（0.10.0 起记录故障分析和原始报文）。
+func migrate(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(events)`)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		have[name] = true
+	}
+	rows.Close()
+	for _, c := range []struct{ name, def string }{
+		{"window", "INTEGER NOT NULL DEFAULT 0"}, {"analysis", "TEXT NOT NULL DEFAULT ''"}, {"tx", "BLOB"}, {"rx", "BLOB"},
+	} {
+		if !have[c.name] {
+			if _, err := db.Exec(`ALTER TABLE events ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Record 记录一条收发。不阻塞，可以在收发回调里直接调用。
@@ -204,38 +241,47 @@ func (r *Recorder) EndSession(id int64) error {
 	return err
 }
 
-// 连接事件的种类。
+// 日志的种类。
 const (
-	EventDisconnect = "DISCONNECT"
-	EventReconnect  = "RECONNECT"
+	EventConnectFail = "CONNECT_FAIL" // 连接或重连失败
+	EventReadFail    = "READ_FAIL"    // 读取窗口开始出错（同一种错误连续出现只记第一次）
+	EventReadOK      = "READ_OK"      // 读取窗口恢复正常
+	EventDisconnect  = "DISCONNECT"   // 连接中途断开
+	EventReconnect   = "RECONNECT"    // 重连成功
 )
 
-// Event 记录一次断开或重连，写得很少，直接同步写入。
-func (r *Recorder) Event(session int64, kind, detail string) error {
-	_, err := r.db.Exec(`INSERT INTO events (session_id, time, kind, detail) VALUES (?, ?, ?, ?)`,
-		session, time.Now().UnixMilli(), kind, detail)
+// Event 是一条日志：连接失败、读取失败与恢复、断开、重连，带原因分析和出错时抓到的原始报文。
+type Event struct {
+	Time     time.Time
+	Kind     string
+	Window   int    // 读取窗口编号，与连接有关的为 0
+	Detail   string // 一行结论
+	Analysis string // 原因分析和原始报文的逐字段解析
+	TX, RX   []byte // 出错请求和收到的响应，没有时为空
+}
+
+// Log 写一条日志。写得很少（同一种错误连续出现只记一次），直接同步写入。Time 为零值时取当前时间。
+func (r *Recorder) Log(session int64, e Event) error {
+	if e.Time.IsZero() {
+		e.Time = time.Now()
+	}
+	_, err := r.db.Exec(`INSERT INTO events (session_id, time, kind, detail, window, analysis, tx, rx) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		session, e.Time.UnixMilli(), e.Kind, e.Detail, e.Window, e.Analysis, e.TX, e.RX)
 	return err
 }
 
-// ConnEvent 是一条断开或重连记录。
-type ConnEvent struct {
-	Time   time.Time
-	Kind   string
-	Detail string
-}
-
-// Events 按时间正序返回会话的断开、重连记录。
-func (r *Recorder) Events(session int64) ([]ConnEvent, error) {
-	rows, err := r.db.Query(`SELECT time, kind, detail FROM events WHERE session_id = ? ORDER BY id`, session)
+// Events 按时间正序返回会话的日志。
+func (r *Recorder) Events(session int64) ([]Event, error) {
+	rows, err := r.db.Query(`SELECT time, kind, detail, window, analysis, tx, rx FROM events WHERE session_id = ? ORDER BY id`, session)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []ConnEvent
+	var out []Event
 	for rows.Next() {
-		var e ConnEvent
+		var e Event
 		var t int64
-		if err := rows.Scan(&t, &e.Kind, &e.Detail); err != nil {
+		if err := rows.Scan(&t, &e.Kind, &e.Detail, &e.Window, &e.Analysis, &e.TX, &e.RX); err != nil {
 			return nil, err
 		}
 		e.Time = time.UnixMilli(t)
@@ -254,13 +300,15 @@ type Session struct {
 	Packets     int
 	Errors      int // 状态不是 SENT / SUCCESS 的记录数
 	Disconnects int // 连接中途断开的次数
+	Faults      int // 连接失败、读取出错的次数（同一种错误连续出现算一次）
 }
 
 // Sessions 按时间倒序返回最近的会话。
 func (r *Recorder) Sessions(limit int) ([]Session, error) {
 	rows, err := r.db.Query(`SELECT s.id, s.started_at, s.ended_at, s.protocol, s.target, s.window,
 		COUNT(p.id), COALESCE(SUM(p.status NOT IN ('SENT', 'SUCCESS')), 0),
-		(SELECT COUNT(*) FROM events e WHERE e.session_id = s.id AND e.kind = 'DISCONNECT')
+		(SELECT COUNT(*) FROM events e WHERE e.session_id = s.id AND e.kind = 'DISCONNECT'),
+		(SELECT COUNT(*) FROM events e WHERE e.session_id = s.id AND e.kind IN ('CONNECT_FAIL', 'READ_FAIL'))
 		FROM sessions s LEFT JOIN packets p ON p.session_id = s.id
 		GROUP BY s.id ORDER BY s.id DESC LIMIT ?`, limit)
 	if err != nil {
@@ -272,7 +320,7 @@ func (r *Recorder) Sessions(limit int) ([]Session, error) {
 		var s Session
 		var start int64
 		var end sql.NullInt64
-		if err := rows.Scan(&s.ID, &start, &end, &s.Mode, &s.Target, &s.Window, &s.Packets, &s.Errors, &s.Disconnects); err != nil {
+		if err := rows.Scan(&s.ID, &start, &end, &s.Mode, &s.Target, &s.Window, &s.Packets, &s.Errors, &s.Disconnects, &s.Faults); err != nil {
 			return nil, err
 		}
 		s.Start = time.UnixMilli(start)

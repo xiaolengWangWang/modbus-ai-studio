@@ -92,6 +92,10 @@ type Workspace struct {
 	tiles      *fyne.Container
 	traffic    *trafficPanel
 	inspect    *inspector
+	log        *faultLog
+	tabs       *container.AppTabs // 通信报文 / 日志
+	logTab     *container.TabItem
+	ring       packetRing // 最近的收发，出错时取出原始报文记进日志
 	status     *widget.Label
 	stats      stats
 	evidence   evidence
@@ -117,7 +121,10 @@ func open(app fyne.App, version string, no int) *Workspace {
 func newWorkspace(app fyne.App, win fyne.Window, version string, no int) *Workspace {
 	ws := &Workspace{Version: version, app: app, win: win, no: no, timeout: time.Second, done: make(chan struct{}), points: pointTable{}}
 	ws.traffic = newTrafficPanel(ws)
+	ws.traffic.title.Hide() // 页签已经写了“通信报文”
 	ws.inspect = newInspector(ws)
+	ws.log = newFaultLog(app)
+	ws.log.onSelect = func(e logEntry) { ws.inspect.show("日志", e.detail()) }
 	ws.status = widget.NewLabel("")
 	ws.tiles = container.NewStack()
 	win.SetContent(ws.layout())
@@ -255,7 +262,16 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 		widget.NewButtonWithIcon("", theme.ContentCopyIcon(), func() { ws.openNew() }))
 	bar := ws.bar
 
-	bottom := container.NewHSplit(ws.traffic.root, ws.inspect.root)
+	ws.logTab = container.NewTabItem("日志", ws.log.root)
+	ws.tabs = container.NewAppTabs(container.NewTabItem("通信报文", ws.traffic.root), ws.logTab)
+	ws.log.onChange = func(n int) {
+		ws.logTab.Text = "日志"
+		if n > 0 {
+			ws.logTab.Text = fmt.Sprintf("日志 (%d)", n)
+		}
+		ws.tabs.Refresh()
+	}
+	bottom := container.NewHSplit(ws.tabs, ws.inspect.root)
 	bottom.Offset = 0.56
 	main := container.NewVSplit(ws.tiles, bottom)
 	main.Offset = 0.7
@@ -344,6 +360,7 @@ func (ws *Workspace) OnPacket(p modbus.Packet) {
 		ws.stats.rtt.Store(int64(p.RTT))
 	}
 	ws.evidence.observe(p)
+	ws.ring.push(p)
 	ws.traffic.push(p)
 	if id := ws.recID.Load(); id != 0 {
 		if r := currentRecorder(); r != nil {

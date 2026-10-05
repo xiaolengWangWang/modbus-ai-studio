@@ -31,8 +31,11 @@ type readWindow struct {
 
 	mu      sync.Mutex // 保护下面由轮询 goroutine 写入的字段
 	gen     int        // 每次开始轮询加 1，旧 goroutine 的结果直接丢弃
-	regs    []uint16   // 位读取时每个元素是 0 / 1
-	changed []bool     // 与上一次相比变化了的寄存器，界面高亮
+	fault   string     // 正在出的错误种类（faultKey），为空表示正常；同一种错误连续出现只记一条日志
+	faultAt time.Time
+	faultN  int
+	regs    []uint16 // 位读取时每个元素是 0 / 1
+	changed []bool   // 与上一次相比变化了的寄存器，界面高亮
 	lastOK  time.Time
 	tx      int
 	errN    int
@@ -345,6 +348,7 @@ func (w *readWindow) snapshot() ([]uint16, time.Time, error) {
 func (w *readWindow) reset() {
 	w.mu.Lock()
 	w.regs, w.changed, w.tx, w.errN, w.err = nil, nil, 0, 0, nil
+	w.fault, w.faultN = "", 0
 	w.mu.Unlock()
 	w.refresh()
 }
@@ -490,16 +494,35 @@ func (w *readWindow) run(ctx context.Context, c *modbus.Client, d readDef, gen i
 			return
 		}
 		w.tx++
+		// 日志：开始出某种错误时记一条（带这次请求的原始报文），恢复正常时再记一条
+		var logFail, logOK bool
+		since, fails := w.faultAt, w.faultN
 		if err == nil {
 			w.changed = diffRegs(w.regs, vals)
 			w.regs, w.lastOK, w.err = vals, time.Now(), nil
+			logOK = w.fault != ""
+			w.fault = ""
 		} else {
 			w.errN++
 			w.err, w.changed = err, nil
+			switch k := faultKey(err); {
+			case errors.Is(err, modbus.ErrConnection): // 连接断开由连接保持记日志
+			case k != w.fault:
+				w.fault, w.faultAt, w.faultN, logFail = k, time.Now(), 1, true
+			default:
+				w.faultN++
+			}
 		}
 		w.mu.Unlock()
 		w.ws.stats.poll(err == nil)
 		uiDo(w.refresh)
+		if logFail {
+			tx, res, _ := w.ws.ring.exchange(sameRequest(req))
+			uiDo(func() { w.ws.logReadFail(w, d, err, tx, res) })
+		}
+		if logOK {
+			uiDo(func() { w.ws.logRecovered(w, d, since, fails) })
+		}
 		if errors.Is(err, modbus.ErrConnection) {
 			return // 连接断了，由连接保持负责停轮询、重连后再启动
 		}
