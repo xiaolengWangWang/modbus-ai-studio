@@ -1,20 +1,15 @@
 package ui
 
 import (
-	"image/color"
-
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/internal/modbus"
 )
 
 // 读取窗口的控制条：功能码、显示格式、字节序和“原始值”开关放在一行，选了立即按新设置读取和显示，
-// 调试功能码和大小端时不用反复打开读取定义。另有 activator：点读取窗口里任何地方都把它设为当前窗口，
-// 当前窗口画一圈高亮边框。
+// 调试功能码和大小端时不用反复打开读取定义。另有 activator：点读取窗口里任何地方都把它设为当前窗口。
 
 var funcLabels = map[modbus.FunctionCode]string{
 	modbus.FuncReadCoils:            "01 线圈",
@@ -37,7 +32,8 @@ type readBar struct {
 	kind    *widget.Select
 	order   *widget.Select
 	raw     *widget.Check
-	syncing bool // 程序同步选项时不当作用户修改
+	syncing bool            // 程序同步选项时不当作用户修改
+	box     *fyne.Container // 控制条的内容，按它的宽度定子窗口的初始宽度
 	root    fyne.CanvasObject
 }
 
@@ -96,7 +92,8 @@ func newReadBar(w *readWindow) *readBar {
 	b.kind.PlaceHolder = string(kindUnsigned)
 	b.order.PlaceHolder = string(modbus.OrderABCD)
 	// 窄窗口里放不下时可以横向滚动，不把整个窗口撑宽
-	b.root = container.NewHScroll(container.NewHBox(b.fn, b.kind, b.order, b.raw))
+	b.box = container.NewHBox(b.fn, b.kind, b.order, b.raw)
+	b.root = container.NewHScroll(b.box)
 	return b
 }
 
@@ -178,62 +175,20 @@ func (ws *Workspace) setWindowOrder(w *readWindow, o modbus.ByteOrder) {
 	ws.redefine(w, func(d *readDef) { d.Order = o })
 }
 
-// activator 包住读取窗口：点窗口里不响应点击的地方（标题、状态行、空白）也把它设为当前窗口；
-// active 时画一圈高亮边框，看得出快捷键和“写入”作用于哪个窗口。
+// activator 包住读取窗口的内容：点窗口里不响应点击的地方（状态行、空白）也把它设为当前窗口，
+// 当前窗口提到最上面、标题栏高亮（mdi.go），看得出快捷键和“写入”作用于哪个窗口。
 type activator struct {
 	widget.BaseWidget
 	content fyne.CanvasObject
-	frame   *canvas.Rectangle
 	onTap   func()
 }
 
-const frameWidth = 2
-
 func newActivator(content fyne.CanvasObject, onTap func()) *activator {
-	a := &activator{content: content, onTap: onTap, frame: canvas.NewRectangle(color.Transparent)}
-	a.frame.StrokeWidth = frameWidth
-	a.frame.CornerRadius = theme.InputRadiusSize()
-	a.frame.Hide()
+	a := &activator{content: content, onTap: onTap}
 	a.ExtendBaseWidget(a)
 	return a
 }
 
 func (a *activator) Tapped(*fyne.PointEvent) { a.onTap() }
 
-func (a *activator) setActive(on bool) {
-	if on == a.frame.Visible() {
-		return
-	}
-	if on {
-		a.frame.StrokeColor = theme.Color(theme.ColorNamePrimary)
-		a.frame.Show()
-	} else {
-		a.frame.Hide()
-	}
-	a.frame.Refresh()
-}
-
-func (a *activator) CreateRenderer() fyne.WidgetRenderer { return &activatorRenderer{a} }
-
-type activatorRenderer struct{ a *activator }
-
-func (r *activatorRenderer) Layout(size fyne.Size) {
-	r.a.content.Move(fyne.NewPos(frameWidth, frameWidth))
-	r.a.content.Resize(size.SubtractWidthHeight(2*frameWidth, 2*frameWidth))
-	r.a.frame.Resize(size)
-}
-
-func (r *activatorRenderer) MinSize() fyne.Size {
-	return r.a.content.MinSize().AddWidthHeight(2*frameWidth, 2*frameWidth)
-}
-
-func (r *activatorRenderer) Refresh() {
-	r.a.frame.StrokeColor = theme.Color(theme.ColorNamePrimary)
-	r.a.frame.Refresh()
-	r.a.content.Refresh()
-}
-
-func (r *activatorRenderer) Objects() []fyne.CanvasObject {
-	return []fyne.CanvasObject{r.a.content, r.a.frame}
-}
-func (r *activatorRenderer) Destroy() {}
+func (a *activator) CreateRenderer() fyne.WidgetRenderer { return widget.NewSimpleRenderer(a.content) }

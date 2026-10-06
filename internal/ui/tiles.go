@@ -1,9 +1,9 @@
 package ui
 
 import (
-	"math"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -26,19 +26,33 @@ func (ws *Workspace) loadDemo() {
 	} {
 		ws.addWindow(d)
 	}
+	ws.mdi.cascade()
 	if ws.session == nil && ws.useSim.Checked && !ws.serialMode() {
 		ws.connect()
 	}
 }
 
+// addWindow 新建读取窗口，层叠放在已有窗口上面。一次建多个窗口（示例、导入点表、打开工作区）时当前窗口
+// 仍是第一个，调用方建完后层叠一次，各窗口的标题栏都露出来。
 func (ws *Workspace) addWindow(d readDef) *readWindow {
 	ws.nextWin++
 	w := newReadWindow(ws, ws.nextWin, d)
 	ws.windows = append(ws.windows, w)
+	ws.mdi.attach(w)
 	ws.relayout()
-	ws.setCurrent(ws.cur) // 一次建多个窗口（示例、导入点表、打开工作区）时当前窗口仍是第一个
+	ws.setCurrent(ws.cur)
 	w.start()
 	return w
+}
+
+// windowOf 返回子窗口 o 对应的读取窗口。
+func (ws *Workspace) windowOf(o fyne.CanvasObject) *readWindow {
+	for _, w := range ws.windows {
+		if w.inner == o {
+			return w
+		}
+	}
+	return nil
 }
 
 // current 返回当前读取窗口：最近点过、新建或改过定义的那个；它被关掉后取第一个。没有读取窗口时为 nil。
@@ -52,23 +66,16 @@ func (ws *Workspace) current() *readWindow {
 	return nil
 }
 
-// setCurrent 设为当前读取窗口。有多个读取窗口时当前窗口的标题高亮、加一圈边框，看得出快捷键和“写入”作用于哪个；
+// setCurrent 设为当前读取窗口：提到最上面、标题栏高亮，快捷键和“写入”作用于它；
 // 换到另一个窗口时取消其他窗口里的选中，同一时间只有一个选中的值。
 func (ws *Workspace) setCurrent(w *readWindow) {
 	switched := w != nil && w != ws.cur
 	ws.cur = w
 	cur := ws.current()
+	if cur != nil && ws.mdi.top() != cur.inner {
+		ws.mdi.raise(cur)
+	}
 	for _, x := range ws.windows {
-		active := x == cur && len(ws.windows) > 1
-		imp := widget.MediumImportance
-		if active {
-			imp = widget.HighImportance
-		}
-		if x.title.Importance != imp {
-			x.title.Importance = imp
-			x.title.Refresh()
-		}
-		x.root.setActive(active)
 		if switched && x != cur && x.sel >= 0 {
 			x.sel = -1
 			x.table.UnselectAll()
@@ -78,6 +85,7 @@ func (ws *Workspace) setCurrent(w *readWindow) {
 			}
 		}
 	}
+	ws.refreshWindowMenu()
 }
 
 // addReadWindow 按最后一个窗口的 Slave 和功能码新建读取窗口，并直接打开读取定义。
@@ -100,8 +108,12 @@ func (ws *Workspace) removeWindow(w *readWindow) {
 			break
 		}
 	}
+	ws.mdi.detach(w)
 	if ws.inspect.src == w {
 		ws.inspect.clear()
+	}
+	if ws.cur == w { // 关掉当前窗口后，下面一层的窗口成为当前窗口
+		ws.cur = ws.windowOf(ws.mdi.top())
 	}
 	ws.relayout()
 	ws.setCurrent(ws.cur)
@@ -131,7 +143,7 @@ func (ws *Workspace) pauseAll(pause bool) {
 	}
 }
 
-// relayout 把读取窗口平铺：列数取 ⌈√n⌉，靠后的列多放一个；分隔条初始位置按各窗口的内容大小分配。
+// relayout 没有读取窗口时显示新建提示和最近的工作区，有读取窗口时显示多文档区域。
 func (ws *Workspace) relayout() {
 	var obj fyne.CanvasObject
 	if len(ws.windows) == 0 {
@@ -147,57 +159,63 @@ func (ws *Workspace) relayout() {
 		}
 		obj = container.NewCenter(box)
 	} else {
-		obj = tile(ws.windows)
-		if len(ws.windows) > 8 {
-			obj = container.NewScroll(obj)
-		}
+		obj = ws.mdi.root
+		ws.mdi.box.Refresh()
 	}
-	ws.tiles.Objects = []fyne.CanvasObject{obj}
-	ws.tiles.Refresh()
+	if len(ws.tiles.Objects) != 1 || ws.tiles.Objects[0] != obj {
+		ws.tiles.Objects = []fyne.CanvasObject{obj}
+		ws.tiles.Refresh()
+	}
 }
 
-func tile(wins []*readWindow) fyne.CanvasObject {
-	n := len(wins)
-	cols := int(math.Ceil(math.Sqrt(float64(n))))
-	base, extra := n/cols, n%cols
-	var columns []fyne.CanvasObject
-	var widths []float32
-	i := 0
-	for c := 0; c < cols; c++ {
-		k := base
-		if c >= cols-extra {
-			k++
-		}
-		var objs []fyne.CanvasObject
-		var heights []float32
-		var width float32
-		for _, w := range wins[i : i+k] {
-			objs = append(objs, w.root)
-			heights = append(heights, w.prefHeight())
-			width = max(width, w.prefWidth())
-		}
-		i += k
-		columns = append(columns, chain(false, objs, heights))
-		widths = append(widths, width)
+// windowMenuItems 是“窗口”菜单：层叠、平铺、最大化，下面列出全部读取窗口，当前的打勾（Modbus Poll 的 Window 菜单）。
+func (ws *Workspace) windowMenuItems() []*fyne.MenuItem {
+	none := len(ws.windows) == 0
+	cascade := fyne.NewMenuItem("层叠", ws.mdi.cascade)
+	tile := fyne.NewMenuItem("平铺", ws.mdi.tile)
+	maxed := fyne.NewMenuItem("最大化", func() { ws.mdi.setMaxed(!ws.mdi.maxed) })
+	maxed.Checked = ws.mdi.maxed
+	for _, it := range []*fyne.MenuItem{cascade, tile, maxed} {
+		it.Disabled = none
 	}
-	return chain(true, columns, widths)
+	items := []*fyne.MenuItem{cascade, tile, maxed}
+	if !none {
+		items = append(items, fyne.NewMenuItemSeparator())
+	}
+	cur := ws.current()
+	for _, w := range ws.windows {
+		it := fyne.NewMenuItem(w.title(), func() { ws.setCurrent(w) })
+		it.Checked = w == cur
+		items = append(items, it)
+	}
+	return items
 }
 
-func chain(horizontal bool, objs []fyne.CanvasObject, weights []float32) fyne.CanvasObject {
-	if len(objs) == 1 {
-		return objs[0]
+// refreshWindowMenu 在读取窗口增减、切换、改定义后更新“窗口”菜单；内容没变时不重建菜单栏。
+func (ws *Workspace) refreshWindowMenu() {
+	if ws.winMenu == nil {
+		return
 	}
-	var total float32
-	for _, w := range weights {
-		total += w
+	items := ws.windowMenuItems()
+	sig := func(its []*fyne.MenuItem) string {
+		var b strings.Builder
+		for _, it := range its {
+			b.WriteString(it.Label)
+			if it.Checked {
+				b.WriteString("✓")
+			}
+			if it.Disabled {
+				b.WriteString("×")
+			}
+			b.WriteByte('\n')
+		}
+		return b.String()
 	}
-	rest := chain(horizontal, objs[1:], weights[1:])
-	var s *container.Split
-	if horizontal {
-		s = container.NewHSplit(objs[0], rest)
-	} else {
-		s = container.NewVSplit(objs[0], rest)
+	if sig(items) == sig(ws.winMenu.Items) {
+		return
 	}
-	s.Offset = float64(weights[0] / total)
-	return s
+	ws.winMenu.Items = items
+	if m := ws.win.MainMenu(); m != nil {
+		m.Refresh()
+	}
 }

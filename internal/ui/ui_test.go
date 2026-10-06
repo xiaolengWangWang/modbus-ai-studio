@@ -127,6 +127,17 @@ func TestUIWithBuiltinSimulator(t *testing.T) {
 	if !strings.Contains(hint, "设备有应答") {
 		t.Errorf("诊断说明：%q", hint)
 	}
+	// 主界面截图（README 用）：照常用的摆法，窗口 1 在左，窗口 2、3 在右边层叠，窗口 3 在最上面露出错误分析
+	locked(func() {
+		area := ws.mdi.size
+		right := area.Width - w1.size.Width - 6
+		w1.pos = fyne.Position{}
+		w2.pos, w2.size.Width = fyne.NewPos(area.Width-right, 0), right
+		w3.size.Width = right - cascadeStep()
+		w3.pos = fyne.NewPos(area.Width-w3.size.Width, area.Height-w3.size.Height)
+		ws.setCurrent(w3)
+		ws.mdi.box.Refresh()
+	})
 	snapshotPNG(t, ws.win, "modbus-ai-ui.png")
 	tap(w3.actionBtn)
 	locked(func() {
@@ -210,6 +221,88 @@ func TestInitiallyEmpty(t *testing.T) {
 		}
 		if len(ws.tiles.Objects) != 1 {
 			t.Error("应显示新建读取窗口的提示")
+		}
+	})
+}
+
+// 读取窗口是多文档区域里的子窗口（Modbus Poll 的 MDI）：新窗口层叠在上面，不并列；可以最大化（切换窗口保持最大化）、
+// 平铺、拖动（不会拖出区域）；标题栏的关闭按钮关掉读取窗口；“窗口”菜单列出全部窗口，当前的打勾。
+func TestMDI(t *testing.T) {
+	a := test.NewTempApp(t)
+	ws := openWS(t, a, false)
+	var wins []*readWindow
+	locked(func() {
+		ws.win.Resize(fyne.NewSize(1280, 820))
+		for i := 0; i < 3; i++ {
+			w := ws.addWindow(defaultDef())
+			ws.setCurrent(w) // 和“新建读取窗口”一样，新窗口成为当前窗口
+			wins = append(wins, w)
+		}
+	})
+	locked(func() {
+		m := ws.mdi
+		step := cascadeStep()
+		if m.top() != wins[2].inner || ws.current() != wins[2] {
+			t.Fatal("新建的窗口应在最上面并成为当前窗口")
+		}
+		if wins[1].pos != wins[0].pos.AddXY(step, step) || wins[2].pos != wins[1].pos.AddXY(step, step) {
+			t.Errorf("新窗口应层叠：%v %v %v", wins[0].pos, wins[1].pos, wins[2].pos)
+		}
+		if wins[0].inner.Size().Width >= m.size.Width {
+			t.Errorf("子窗口按内容的大小，不铺满：%v / %v", wins[0].inner.Size(), m.size)
+		}
+		labels := func() (out []string) {
+			for _, it := range ws.winMenu.Items {
+				l := it.Label
+				if it.Checked {
+					l += "✓"
+				}
+				out = append(out, l)
+			}
+			return out
+		}
+		if got := labels(); len(got) != 7 || got[6] != wins[2].title()+"✓" || got[0] != "层叠" || got[1] != "平铺" {
+			t.Errorf("“窗口”菜单：%q", got)
+		}
+		ws.winMenu.Items[4].Action() // 列表里的窗口 1
+		if ws.current() != wins[0] || m.top() != wins[0].inner {
+			t.Error("从“窗口”菜单切到窗口 1")
+		}
+
+		wins[0].inner.OnMaximized()
+		if !m.maxed || wins[0].inner.Position() != (fyne.Position{}) || wins[0].inner.Size() != m.size || !ws.winMenu.Items[2].Checked {
+			t.Errorf("最大化应铺满区域：%v %v / %v", wins[0].inner.Position(), wins[0].inner.Size(), m.size)
+		}
+		ws.setCurrent(wins[1])
+		if wins[1].inner.Size() != m.size {
+			t.Error("最大化时切换窗口也铺满")
+		}
+		wins[0].inner.OnDragged(&fyne.DragEvent{Dragged: fyne.Delta{DX: 50}})
+		if wins[0].pos != (fyne.Position{}) {
+			t.Error("最大化时不能拖动")
+		}
+		ws.winMenu.Items[2].Action()
+		if m.maxed || wins[0].inner.Size() == m.size {
+			t.Error("再点最大化还原")
+		}
+
+		m.tile()
+		for i, a := range wins {
+			for _, b := range wins[i+1:] {
+				ra := fyne.NewPos(a.pos.X+a.size.Width, a.pos.Y+a.size.Height)
+				if a.pos.X < b.pos.X+b.size.Width-1 && b.pos.X < ra.X-1 && a.pos.Y < b.pos.Y+b.size.Height-1 && b.pos.Y < ra.Y-1 {
+					t.Errorf("平铺后窗口 %d 和窗口 %d 重叠：%v %v / %v %v", a.no, b.no, a.pos, a.size, b.pos, b.size)
+				}
+			}
+		}
+		m.cascade()
+		wins[1].inner.OnDragged(&fyne.DragEvent{Dragged: fyne.Delta{DX: 5000, DY: 5000}})
+		if p, s := wins[1].inner.Position(), wins[1].inner.Size(); p.X+s.Width > m.size.Width+0.5 || p.Y+s.Height > m.size.Height+0.5 {
+			t.Errorf("拖到区域外应收回来：%v %v / %v", p, s, m.size)
+		}
+		wins[2].inner.CloseIntercept()
+		if len(ws.windows) != 2 || len(m.box.Objects) != 2 || len(labels()) != 6 {
+			t.Errorf("标题栏的关闭按钮应关掉读取窗口：%d 个窗口，菜单 %q", len(ws.windows), labels())
 		}
 	})
 }

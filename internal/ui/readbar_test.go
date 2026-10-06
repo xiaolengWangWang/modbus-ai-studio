@@ -14,7 +14,7 @@ import (
 	"modbus-ai-studio/internal/modbus"
 )
 
-// 点在读取窗口的标题文字上（不响应点击的地方），按真实的点击路由落到外框，设为当前窗口。
+// 点被压在下面的读取窗口露出来的标题栏，按真实的点击路由落到它，设为当前窗口并提到最上面。
 func TestTapTitleActivatesWindow(t *testing.T) {
 	a := test.NewTempApp(t)
 	ws := openWS(t, a, false)
@@ -22,10 +22,13 @@ func TestTapTitleActivatesWindow(t *testing.T) {
 		ws.win.Resize(fyne.NewSize(1280, 820))
 		ws.loadDemo()
 		w2 := ws.windows[1]
-		pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(w2.title).AddXY(10, 5)
+		if ws.mdi.top() == w2.inner {
+			t.Fatal("打开示例后窗口 2 应在下面")
+		}
+		pos := fyne.CurrentApp().Driver().AbsolutePositionForObject(w2.inner).AddXY(80, 8)
 		test.TapCanvas(ws.win.Canvas(), pos)
-		if ws.current() != w2 || !w2.root.frame.Visible() {
-			t.Errorf("点窗口 2 的标题应设为当前窗口，当前是窗口 %d", ws.current().no)
+		if ws.current() != w2 || ws.mdi.top() != w2.inner {
+			t.Errorf("点窗口 2 的标题栏应设为当前窗口并提到最上面，当前是窗口 %d", ws.current().no)
 		}
 		pressShortcut(ws, fyne.KeyT, false) // 新建读取窗口成为当前窗口
 		if n := len(ws.windows); ws.current() != ws.windows[n-1] {
@@ -63,8 +66,8 @@ func TestReadBar(t *testing.T) {
 			t.Errorf("换成 FLOAT32：%s，字节序选项 %v %s", w.def.Kind, w.bar.order.Options, w.bar.order.Selected)
 		}
 		w.bar.order.SetSelected("CDAB")
-		if w.def.Order != modbus.OrderCDAB || !strings.Contains(w.title.Text, "FLOAT32 CDAB") {
-			t.Errorf("字节序应改成 CDAB：%s，标题 %s", w.def.Order, w.title.Text)
+		if w.def.Order != modbus.OrderCDAB || !strings.Contains(w.title(), "FLOAT32 CDAB") {
+			t.Errorf("字节序应改成 CDAB：%s，标题 %s", w.def.Order, w.title())
 		}
 	})
 	waitFor(t, 5*time.Second, "按 CDAB 显示 85.5", func() bool { v, _ := w.valueText(0); return v == "85.5" })
@@ -72,8 +75,8 @@ func TestReadBar(t *testing.T) {
 	locked(func() {
 		w.bar.kind.SetSelected("Hex")
 		w.bar.order.SetSelected("BA")
-		if w.def.Order.For(modbus.TypeUint16) != modbus.OrderBA || !strings.Contains(w.title.Text, "Hex BA") {
-			t.Errorf("16 位格式应能字节交换：%s %s", w.def.Order, w.title.Text)
+		if w.def.Order.For(modbus.TypeUint16) != modbus.OrderBA || !strings.Contains(w.title(), "Hex BA") {
+			t.Errorf("16 位格式应能字节交换：%s %s", w.def.Order, w.title())
 		}
 		w.bar.raw.SetChecked(true)
 		if !slices.Contains(w.cols, colRaw) {
@@ -87,8 +90,8 @@ func TestReadBar(t *testing.T) {
 
 	locked(func() {
 		w.bar.fn.SetSelected("04 输入寄存器")
-		if w.def.Function != modbus.FuncReadInputRegisters || !strings.Contains(w.title.Text, "30701") {
-			t.Errorf("功能码应改成 04：%s %s", w.def.Function, w.title.Text)
+		if w.def.Function != modbus.FuncReadInputRegisters || !strings.Contains(w.title(), "30701") {
+			t.Errorf("功能码应改成 04：%s %s", w.def.Function, w.title())
 		}
 		w.bar.fn.SetSelected("01 线圈")
 		if w.def.Function != modbus.FuncReadCoils || !w.bar.kind.Disabled() || !w.bar.order.Disabled() || !w.bar.raw.Disabled() || slices.Contains(w.cols, colRaw) {

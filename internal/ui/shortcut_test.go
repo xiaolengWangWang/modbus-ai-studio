@@ -62,7 +62,7 @@ func TestShortcuts(t *testing.T) {
 			{fyne.KeyD, false, "识别协议"}, {fyne.KeyT, false, "新建读取窗口"}, {fyne.KeyE, false, "读取定义…"},
 			{fyne.KeyReturn, false, "写入选中的值…"}, {fyne.KeyP, false, "暂停 / 继续"}, {fyne.KeyI, false, "导入点表…"},
 			{fyne.KeyP, true, "全部暂停"}, {fyne.KeyR, true, "全部继续"}, {fyne.KeyR, false, "自定义请求…"},
-			{fyne.KeyH, true, "历史报文…"}, {fyne.KeyL, false, "清空通信报文"},
+			{fyne.KeyH, true, "历史报文…"}, {fyne.KeyL, false, "清空通信报文"}, {fyne.KeyB, false, "功能码 / 数据类型 / 字节序调试…"},
 		} {
 			name := (&desktop.CustomShortcut{KeyName: c.key, Modifier: fyne.KeyModifierShortcutDefault}).ShortcutName()
 			if c.shift {
@@ -85,25 +85,24 @@ func TestShortcuts(t *testing.T) {
 		t.Fatalf("示例应有 3 个读取窗口，实际 %d", len(wins))
 	}
 	locked(func() {
-		if ws.current() != wins[0] || !wins[0].root.frame.Visible() {
-			t.Errorf("打开示例后当前窗口应是第一个，并有高亮边框")
+		if ws.current() != wins[0] || ws.mdi.top() != wins[0].inner {
+			t.Errorf("打开示例后当前窗口应是第一个，在最上面")
 		}
 		wins[2].tapCell(widget.TableCellID{Row: 0, Col: 0})
 		if ws.current() != wins[2] || wins[2].sel != 0 {
 			t.Errorf("点了窗口 3 的值后它应成为当前窗口")
 		}
 		wins[0].tapCell(widget.TableCellID{Row: 0, Col: 0})
-		if ws.current() != wins[0] || wins[0].title.Importance != widget.HighImportance || wins[2].title.Importance == widget.HighImportance ||
-			!wins[0].root.frame.Visible() || wins[2].root.frame.Visible() {
-			t.Errorf("点了窗口 1 后它应成为当前窗口并高亮")
+		if ws.current() != wins[0] || ws.mdi.top() != wins[0].inner {
+			t.Errorf("点了窗口 1 后它应成为当前窗口并提到最上面")
 		}
 		if wins[2].sel != -1 {
 			t.Errorf("换到窗口 1 后窗口 3 的选中应取消，同一时间只有一个选中的值：sel=%d", wins[2].sel)
 		}
-		// 点窗口里不响应点击的地方（标题、状态行）也设为当前窗口
+		// 点窗口里不响应点击的地方（状态行、空白）也设为当前窗口
 		test.Tap(wins[1].root)
-		if ws.current() != wins[1] || wins[0].sel != -1 {
-			t.Errorf("点窗口 2 的空白处应设为当前窗口并取消窗口 1 的选中")
+		if ws.current() != wins[1] || ws.mdi.top() != wins[1].inner || wins[0].sel != -1 {
+			t.Errorf("点窗口 2 的空白处应设为当前窗口、提到最上面并取消窗口 1 的选中")
 		}
 		wins[0].tapCell(widget.TableCellID{Row: 0, Col: 0})
 		pressShortcut(ws, fyne.KeyP, false)
@@ -118,27 +117,27 @@ func TestShortcuts(t *testing.T) {
 		if wins[0].paused || wins[1].paused || wins[2].paused {
 			t.Error("⌘⇧R 应继续全部")
 		}
-		// 当前窗口关掉后，取第一个窗口
+		// 当前窗口关掉后，下面一层的窗口（刚才点过的窗口 2）成为当前窗口
 		ws.removeWindow(wins[0])
-		if ws.current() != wins[1] || wins[1].title.Importance != widget.HighImportance {
-			t.Error("当前窗口关掉后应取第一个窗口")
+		if ws.current() != wins[1] || ws.mdi.top() != wins[1].inner {
+			t.Error("当前窗口关掉后应取下面一层的窗口")
 		}
 		ws.removeWindow(wins[2])
-		if wins[1].title.Importance == widget.HighImportance {
-			t.Error("只剩一个读取窗口时不用高亮")
+		if ws.current() != wins[1] || len(ws.mdi.box.Objects) != 1 {
+			t.Error("只剩窗口 2")
 		}
 		pressShortcut(ws, fyne.KeyE, false)
 		if len(ws.win.Canvas().Overlays().List()) == 0 {
 			t.Error("⌘E 应打开当前窗口的读取定义")
 		}
 
-		// 读取窗口里方向键从点过的格子接着移动，空格选中（再按 ⌘↩ 写入）
+		// 读取窗口里方向键从点过的格子接着移动并直接选中（Modbus Poll 的习惯），空格不改变选中
 		w := ws.addWindow(defaultDef())
 		w.tapCell(widget.TableCellID{Row: 4, Col: 1})
 		w.table.TypedKey(&fyne.KeyEvent{Name: fyne.KeyDown})
 		w.table.TypedKey(&fyne.KeyEvent{Name: fyne.KeySpace})
 		if w.sel != 5 || ws.current() != w {
-			t.Errorf("方向键加空格应选中下一行：sel=%d", w.sel)
+			t.Errorf("方向键应选中下一行：sel=%d", w.sel)
 		}
 	})
 }

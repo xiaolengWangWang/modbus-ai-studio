@@ -7,7 +7,8 @@
 //	app.go        主窗口：布局、菜单、状态栏、后台刷新
 //	conn.go       连接：协议、会话、连接 / 断开 / 重连、协议识别、串口占用
 //	link.go       连接保持：断开后自动重连，按断开时机分析原因
-//	tiles.go      读取窗口的增删、换热站示例、平铺
+//	tiles.go      读取窗口的增删、当前窗口、换热站示例、“窗口”菜单
+//	mdi.go        读取窗口的多文档区域（Modbus Poll 的 MDI）：子窗口层叠、拖动、改大小、最大化、平铺
 //	readdef.go    读取定义：类型、列规则、定义对话框
 //	readwin.go    读取窗口：表格、轮询、显示值、错误行
 //	readbar.go    读取窗口的控制条（功能码、格式、字节序、原始值）和当前窗口边框
@@ -18,7 +19,9 @@
 //	faultlog.go   故障日志列表和原始报文关联
 //	inspector.go  解析面板（寄存器多种解读、报文逐字段）
 //	decode*.go    报文逐字段解析
+//	readmenu.go   读取窗口数据表的键盘操作（方向键、Enter、Ctrl+C）和右键菜单
 //	reqtool.go    自定义请求窗口
+//	typetool.go   功能码 / 数据类型 / 字节序调试窗口：各字节序并排解读、探测功能码、应用到读取窗口
 //	scan.go       总线工具：地址探测、从站扫描、串口参数扫描、诊断计数器
 //	points.go     点表，解析 CSV / xlsx 点表和平台导出的设备属性表
 //	xlsx.go       读取 xlsx 单元格（导入点表用）
@@ -94,7 +97,9 @@ type Workspace struct {
 	windows     []*readWindow
 	cur         *readWindow // 当前读取窗口（tiles.go 的 current），读取窗口的快捷键作用于它
 	nextWin     int
-	tiles       *fyne.Container
+	tiles       *fyne.Container // 读取窗口区：没有窗口时是新建提示，有窗口时是多文档区域
+	mdi         *mdi            // 读取窗口的多文档区域（Modbus Poll 的 MDI，mdi.go）
+	winMenu     *fyne.Menu      // “窗口”菜单，列出读取窗口
 	traffic     *trafficPanel
 	inspect     *inspector
 	log         *faultLog
@@ -107,6 +112,7 @@ type Workspace struct {
 	tools       []fyne.Window // 自定义请求等工具窗口，主窗口关闭时一起关闭
 	historyWin  fyne.Window   // 打开着的历史报文窗口，只开一个
 	requestWin  fyne.Window   // 打开着的自定义请求窗口，只开一个
+	typeTool    *typeTool     // 打开着的功能码 / 数据类型 / 字节序调试窗口，只开一个
 	done        chan struct{}
 	closed      bool
 }
@@ -143,6 +149,7 @@ func newWorkspace(app fyne.App, win fyne.Window, version string, no int) *Worksp
 	ws.log.onSelect = func(e logEntry) { ws.inspect.show("日志", e.detail()) }
 	ws.status = widget.NewLabel("")
 	ws.tiles = container.NewStack()
+	ws.mdi = newMDI(ws)
 	win.SetContent(ws.layout())
 	ws.setMenu()
 	ws.refreshTitle()
@@ -331,6 +338,7 @@ func (ws *Workspace) setMenu() {
 	ws.roItem = item("只读模式（禁止写入）", func() { ws.setReadOnly(!ws.readOnly) })
 	ws.autoUpdItem = item("自动检查更新", ws.toggleAutoUpdate)
 	ws.autoUpdItem.Checked = autoUpdate(ws.app)
+	ws.winMenu = fyne.NewMenu("窗口", ws.windowMenuItems()...)
 	ws.win.SetMainMenu(fyne.NewMainMenu(
 		fyne.NewMenu("文件",
 			key(item("新建窗口", func() { ws.openNew() }), fyne.KeyN, false),
@@ -359,12 +367,14 @@ func (ws *Workspace) setMenu() {
 			key(item("全部继续", func() { ws.pauseAll(false) }), fyne.KeyR, true)),
 		fyne.NewMenu("调试",
 			key(item("自定义请求…", ws.openRequestTool), fyne.KeyR, false),
+			key(item("功能码 / 数据类型 / 字节序调试…", func() { ws.openTypeTool(ws.current()) }), fyne.KeyB, false),
 			item("扫描从站地址…", modal(ws.scanSlavesDialog)), item("读取诊断计数器…", modal(ws.diagCountersDialog)),
 			fyne.NewMenuItemSeparator(),
 			key(item("历史报文…", modal(ws.openHistory)), fyne.KeyH, true),
 			item("打开报文数据库", modal(func() { ws.openDatabase(ws.win, false) })),
 			item("报文数据库所在文件夹", modal(func() { ws.openDatabase(ws.win, true) })),
 			key(item("清空通信报文", ws.traffic.clear), fyne.KeyL, false)),
+		ws.winMenu,
 		fyne.NewMenu("帮助",
 			item("检查更新…", modal(func() { ws.checkUpdate(true) })),
 			ws.autoUpdItem,

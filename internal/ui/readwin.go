@@ -41,7 +41,9 @@ type readWindow struct {
 	errN    int
 	err     error
 
-	title      *widget.Label
+	inner      *container.InnerWindow // 多文档区域里的子窗口，标题栏显示窗口编号、地址和格式（mdi.go）
+	pos        fyne.Position          // 子窗口不最大化时的位置和大小
+	size       fyne.Size
 	statusLbl  *widget.Label
 	errLbl     *widget.Label
 	hintLbl    *widget.Label
@@ -49,9 +51,12 @@ type readWindow struct {
 	diagBox    *fyne.Container // 错误行：错误说明和一键处理
 	writeBtn   *widget.Button
 	pauseBtn   *widget.Button
-	table      *widget.Table
-	sel        int // 选中的寄存器序号（相对 Start），-1 表示未选中
+	table      *grid                    // 数据表，加了 Modbus Poll 的键盘操作（readmenu.go）
+	tableBox   *container.ThemeOverride // 数据表套上紧凑主题，readLayout 排的是它
+	sel        int                      // 选中的寄存器序号（相对 Start），-1 表示未选中
+	selCell    widget.TableCellID       // 选中的单元格，sel >= 0 时有效
 	head       *fyne.Container
+	buttons    *fyne.Container   // 定义、写入、暂停
 	bar        *readBar          // 功能码、格式、字节序、原始值（readbar.go）
 	body       *fyne.Container   // 标题区 + 表格，readLayout 排列
 	headScroll *container.Scroll // 标题区放不下时在这里滚动
@@ -60,16 +65,14 @@ type readWindow struct {
 
 func newReadWindow(ws *Workspace, no int, d readDef) *readWindow {
 	w := &readWindow{ws: ws, no: no, sel: -1}
-	w.table = widget.NewTableWithHeaders(
+	w.table = newGrid(w,
 		func() (int, int) { return w.rows, w.groups * len(w.cols) },
-		func() fyne.CanvasObject { return newCell(w.tapCell, w.doubleTapCell) },
-		func(id widget.TableCellID, o fyne.CanvasObject) { w.updateCell(id, o.(*cell)) },
+		func() fyne.CanvasObject { return denseCell(newCell(w.tapCell, w.doubleTapCell, w.showCellMenu)) },
+		func(id widget.TableCellID, o fyne.CanvasObject) { w.updateCell(id, unwrap(o).(*cell)) },
 	)
-	w.table.ShowHeaderColumn = false
-	w.table.CreateHeader = func() fyne.CanvasObject { return widget.NewLabel("") }
+	w.table.CreateHeader = newGridHeader
 	w.table.UpdateHeader = func(id widget.TableCellID, o fyne.CanvasObject) {
-		l := o.(*widget.Label)
-		l.TextStyle = fyne.TextStyle{Bold: true}
+		l := headerLabel(o)
 		l.Alignment = fyne.TextAlignLeading
 		if id.Row < 0 && id.Col >= 0 && len(w.cols) > 0 {
 			k := w.cols[id.Col%len(w.cols)]
@@ -94,18 +97,15 @@ func newReadWindow(ws *Workspace, no int, d readDef) *readWindow {
 			w.table.Select(w.cellOf(a, id.Col%len(w.cols)))
 			return
 		}
-		w.sel = i
+		w.sel, w.selCell = i, id
 		w.updateWriteBtn()
 		ws.inspect.showRegister(w)
 	}
 
-	w.title = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	w.title.Truncation = fyne.TextTruncateEllipsis
 	w.writeBtn = widget.NewButtonWithIcon("写入", theme.DocumentCreateIcon(), func() { ws.setCurrent(w); ws.showWrite(w) })
 	w.pauseBtn = widget.NewButtonWithIcon("", theme.MediaPauseIcon(), func() { ws.setCurrent(w); w.setPaused(!w.paused) })
-	closeBtn := widget.NewButtonWithIcon("", theme.WindowCloseIcon(), func() { ws.removeWindow(w) })
 	defBtn := widget.NewButtonWithIcon("定义", theme.SettingsIcon(), func() { ws.setCurrent(w); ws.showDefinition(w) })
-	for _, b := range []*widget.Button{w.writeBtn, w.pauseBtn, closeBtn, defBtn} {
+	for _, b := range []*widget.Button{w.writeBtn, w.pauseBtn, defBtn} {
 		b.Importance = widget.LowImportance
 	}
 	w.statusLbl = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Monospace: true})
@@ -124,17 +124,23 @@ func newReadWindow(ws *Workspace, no int, d readDef) *readWindow {
 	w.diagBox = container.NewBorder(nil, nil, nil, w.actionBtn, w.errLbl)
 	w.diagBox.Hide()
 	w.hintLbl.Hide()
-	buttons := container.NewHBox(defBtn, w.writeBtn, w.pauseBtn, closeBtn)
+	w.buttons = container.NewHBox(defBtn, w.writeBtn, w.pauseBtn)
 	w.bar = newReadBar(w)
-	// 高度不够时从下往上收起：先收状态行，错误和一键处理尽量留在可见范围
-	w.head = container.NewVBox(container.NewBorder(nil, nil, nil, buttons, w.title), w.bar.root, w.diagBox, w.hintLbl, w.statusLbl)
+	// 标题在子窗口的标题栏上；第一行是控制条和按钮。高度不够时从下往上收起：先收状态行，错误和一键处理尽量留在可见范围
+	w.head = container.NewVBox(container.NewBorder(nil, nil, nil, w.buttons, w.bar.root), w.diagBox, w.hintLbl, w.statusLbl)
 	// 平铺给的高度不够时（例如错误说明占了好几行），标题区在自己的范围内滚动，表格至少留出表头和两行
 	w.headScroll = container.NewVScroll(w.head)
-	w.body = container.New(readLayout{w}, w.headScroll, w.table)
+	w.tableBox = dense(w.table)
+	w.body = container.New(readLayout{w}, w.headScroll, w.tableBox)
 	w.root = newActivator(w.body, func() { ws.setCurrent(w) })
+	w.inner = container.NewInnerWindow("", w.root)
+	w.inner.SetPadded(false)
 	w.setDef(d)
 	return w
 }
+
+// title 是子窗口标题栏上的文字。
+func (w *readWindow) title() string { return w.inner.Title }
 
 // setDef 应用新的读取定义并清空数据，调用方负责停止和重新开始轮询。
 func (w *readWindow) setDef(d readDef) {
@@ -149,7 +155,8 @@ func (w *readWindow) setDef(d readDef) {
 	if d.Name != "" {
 		name = " " + d.Name
 	}
-	w.title.SetText(fmt.Sprintf("窗口 %d%s · %s · %s", w.no, name, refSpan(d.area(), d.Start, d.Qty), d.format()))
+	w.inner.SetTitle(fmt.Sprintf("窗口 %d%s · %s · %s", w.no, name, refSpan(d.area(), d.Start, d.Qty), d.format()))
+	w.ws.refreshWindowMenu()
 	w.bar.sync()
 	w.sel = -1
 	w.table.UnselectAll()
@@ -163,10 +170,8 @@ func (w *readWindow) setDef(d readDef) {
 // （从下往上：状态行、说明，内部可滚动查看），表格至少留出表头和一行，不会画到窗口外面。
 type readLayout struct{ w *readWindow }
 
-// rowHeight 是表格一行的高度。
-func rowHeight() float32 {
-	return fyne.MeasureText("0", theme.TextSize(), fyne.TextStyle{}).Height + 2*theme.InnerPadding()
-}
+// rowHeight 是表格一行的高度（含分隔线）。
+func rowHeight() float32 { return gridRowHeight() + theme.SeparatorThicknessSize() }
 
 // headHeight 是标题区在 room 高度内能完整显示的行数对应的高度，至少保留第一、二行（标题、控制条）。
 func (l readLayout) headHeight(room float32) float32 {
@@ -199,23 +204,26 @@ func (l readLayout) Layout(_ []fyne.CanvasObject, size fyne.Size) {
 	}
 	l.w.headScroll.Move(fyne.NewPos(0, 0))
 	l.w.headScroll.Resize(fyne.NewSize(size.Width, head))
-	l.w.table.Move(fyne.NewPos(0, head))
-	l.w.table.Resize(fyne.NewSize(size.Width, max(size.Height-head, 0)))
+	l.w.tableBox.Move(fyne.NewPos(0, head))
+	l.w.tableBox.Resize(fyne.NewSize(size.Width, max(size.Height-head, 0)))
 }
 
 func (l readLayout) MinSize([]fyne.CanvasObject) fyne.Size {
-	return fyne.NewSize(max(l.w.head.MinSize().Width, l.w.table.MinSize().Width), l.headHeight(0)+2*rowHeight())
+	return fyne.NewSize(max(l.w.head.MinSize().Width, l.w.tableBox.MinSize().Width), l.headHeight(0)+2*rowHeight())
 }
 
-func (w *readWindow) prefWidth() float32 {
+// prefSize 是子窗口按内容的大小：所有列、整条控制条、标题区和最多 20 行，加上子窗口的标题栏、边框和滚动条。
+func (w *readWindow) prefSize() fyne.Size {
 	var g float32
 	for _, k := range w.cols {
-		g += w.def.colWidth(k, w.ws.points) + theme.Padding()
+		g += w.def.colWidth(k, w.ws.points) + theme.SeparatorThicknessSize()
 	}
-	return max(g*float32(w.groups), 380)
+	pad := theme.Padding()
+	bar := w.bar.box.MinSize().Width + w.buttons.MinSize().Width + pad
+	width := max(g*float32(w.groups)+theme.ScrollBarSize(), bar, 380)
+	height := w.head.MinSize().Height + float32(min(w.rows, 20)+1)*rowHeight() + theme.ScrollBarSize()
+	return fyne.NewSize(width+2*pad, height+theme.Size(theme.SizeNameWindowTitleBarHeight)+pad)
 }
-
-func (w *readWindow) prefHeight() float32 { return float32(w.rows+1)*36 + 130 }
 
 // indexOf 把表格单元换算成寄存器序号（相对 Start）；超出读取范围返回 -1。
 func (w *readWindow) indexOf(id widget.TableCellID) int {
@@ -259,6 +267,14 @@ func (w *readWindow) tapCell(id widget.TableCellID) {
 
 func (w *readWindow) doubleTapCell(id widget.TableCellID) {
 	w.tapCell(id)
+	w.writeSelected()
+}
+
+// writeSelected 写入选中的值（双击、Enter）。不能写时说明原因，免得以为坏了。
+func (w *readWindow) writeSelected() {
+	if w.sel < 0 || w.ws.dialogOpen() {
+		return
+	}
 	switch {
 	case w.canWrite():
 		w.ws.showWrite(w)

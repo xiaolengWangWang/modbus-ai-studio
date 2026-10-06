@@ -17,7 +17,8 @@ import (
 // 正式安装包不编译这个文件。终端没有屏幕录制权限时也能用：截图取的是程序自己的画面。
 
 // CaptureScenario 依次：空白启动、打开示例并连接、选中窗口 2、控制条切换格式 / 字节序 / 原始值、
-// 用菜单连开两次读取定义（应只有一个）、写入、调整点表字节序、历史报文、1024 宽，每步截图存到 dir，完成后退出。
+// 用菜单连开两次读取定义（应只有一个）、写入、调整点表字节序、历史报文、右键菜单、字节序调试窗口、1024 宽，
+// 每步截图存到 dir，完成后退出。
 func (ws *Workspace) CaptureScenario(dir string) {
 	updating.Store(true) // 不让自动检查更新的弹窗挡住截图
 	n := 0
@@ -95,6 +96,23 @@ func (ws *Workspace) CaptureScenario(dir string) {
 		do(func() { hist = ws.historyWin })
 		if hist != nil {
 			shot("历史报文", hist)
+		}
+		do(func() {
+			clear()
+			ws.windows[1].showCellMenu(widget.TableCellID{Row: 0, Col: 2}, fyne.NewPos(760, 220))
+		})
+		time.Sleep(700 * time.Millisecond)
+		shot("右键菜单", ws.win)
+		do(func() { clear(); ws.openTypeTool(ws.windows[1]) })
+		time.Sleep(2 * time.Second)
+		var tool fyne.Window
+		do(func() {
+			if ws.typeTool != nil {
+				tool = ws.typeTool.win
+			}
+		})
+		if tool != nil {
+			shot("字节序调试", tool)
 		}
 		do(func() { ws.win.Resize(fyne.NewSize(1024, 700)) })
 		time.Sleep(1500 * time.Millisecond)

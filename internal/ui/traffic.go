@@ -2,11 +2,13 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
@@ -92,11 +94,14 @@ func newTrafficPanel(ws *Workspace) *trafficPanel {
 		return b
 	}
 	t.title = widget.NewLabelWithStyle("通信报文", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	// 查找框至少 140 宽；1024 宽的屏幕上放不下整条工具栏时横向滚动，不把查找框挤没
+	searchMin := canvas.NewRectangle(color.Transparent)
+	searchMin.SetMinSize(fyne.NewSize(140, 0))
 	head := container.NewBorder(nil, nil,
 		container.NewHBox(t.title, t.pauseBtn,
 			btn("清空", theme.DeleteIcon(), t.clear), btn("复制", theme.ContentCopyIcon(), t.copy), btn("保存", theme.DocumentSaveIcon(), t.save)),
-		container.NewHBox(t.showTS, fixed(96, t.filter), t.count), t.search)
-	t.root = container.NewBorder(head, nil, nil, nil, compact(t.list))
+		container.NewHBox(t.showTS, fixed(96, t.filter), t.count), container.NewStack(searchMin, t.search))
+	t.root = container.NewBorder(container.NewHScroll(head), nil, nil, nil, compact(t.list))
 	return t
 }
 
