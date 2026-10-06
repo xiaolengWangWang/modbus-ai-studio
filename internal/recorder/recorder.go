@@ -72,6 +72,7 @@ type Recorder struct {
 	ch      chan item
 	done    chan struct{}
 	Dropped atomic.Int64 // 缓冲满或写入失败而丢掉的记录数，状态栏会提示
+	running sync.Map     // 本进程里开始了、还没结束的会话 ID
 }
 
 // DefaultPath 返回本机数据库位置：macOS 为 ~/Library/Application Support/ModbusAIStudio/packets.db，
@@ -232,13 +233,24 @@ func (r *Recorder) StartSession(mode modbus.Mode, target string, window int) (in
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err == nil {
+		r.running.Store(id, true)
+	}
+	return id, err
 }
 
 // EndSession 在断开时调用。
 func (r *Recorder) EndSession(id int64) error {
+	r.running.Delete(id)
 	_, err := r.db.Exec(`UPDATE sessions SET ended_at = ? WHERE id = ?`, time.Now().UnixMilli(), id)
 	return err
+}
+
+// Running 表示会话是本进程里正在进行的连接。没有结束时间、又不在进行中的会话，是程序异常退出留下的。
+func (r *Recorder) Running(id int64) bool {
+	_, ok := r.running.Load(id)
+	return ok
 }
 
 // 日志的种类。

@@ -132,3 +132,51 @@ func TestReadBarPointOrder(t *testing.T) {
 		}
 	})
 }
+
+// 边界情况：2000 个线圈切到保持寄存器时数量收到 125；64 位格式的字节序是八字母写法，切回 32 位按同一类换算；
+// 点表窗口没有多寄存器点时字节序不可选；ASCII + BA + 原始值保存工作区再打开不丢。
+func TestReadBarEdgeCases(t *testing.T) {
+	a := test.NewTempApp(t)
+	ws := openWS(t, a, false)
+	var data []byte
+	locked(func() {
+		d := defaultDef()
+		d.Function, d.Qty = modbus.FuncReadCoils, 2000
+		w := ws.addWindow(d)
+		w.bar.fn.SetSelected("03 保持寄存器")
+		if w.def.Qty != modbus.MaxReadRegisters {
+			t.Errorf("2000 个线圈切到保持寄存器，数量应收到 %d，实际 %d", modbus.MaxReadRegisters, w.def.Qty)
+		}
+		w.bar.kind.SetSelected("FLOAT64")
+		if !slices.Equal(w.bar.order.Options, []string{"ABCDEFGH", "GHEFCDAB", "BADCFEHG", "HGFEDCBA"}) || w.bar.order.Selected != "ABCDEFGH" {
+			t.Errorf("64 位格式的字节序选项 %v，当前 %s", w.bar.order.Options, w.bar.order.Selected)
+		}
+		w.bar.order.SetSelected("GHEFCDAB")
+		w.bar.kind.SetSelected("FLOAT32")
+		if w.bar.order.Selected != "CDAB" {
+			t.Errorf("GHEFCDAB 换到 32 位应是 CDAB，实际 %s", w.bar.order.Selected)
+		}
+		w.bar.kind.SetSelected("点表")
+		if !w.bar.order.Disabled() {
+			t.Error("点表窗口里没有多寄存器点时字节序不可选")
+		}
+		w.bar.kind.SetSelected("ASCII")
+		w.bar.order.SetSelected("BA")
+		w.bar.raw.SetChecked(true)
+		var err error
+		if data, err = ws.encodeWorkspace(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	dst := openWS(t, a, false)
+	locked(func() {
+		if err := dst.applyWorkspace(data); err != nil {
+			t.Fatal(err)
+		}
+		w := dst.windows[0]
+		if w.def.Kind != kindASCII || w.def.Order.For(modbus.TypeUint16) != modbus.OrderBA || !w.def.Raw ||
+			w.bar.order.Selected != "BA" || !w.bar.raw.Checked {
+			t.Errorf("工作区应保留 ASCII、BA 和原始值：%+v，控制条 %s %v", w.def, w.bar.order.Selected, w.bar.raw.Checked)
+		}
+	})
+}

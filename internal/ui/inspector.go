@@ -18,15 +18,16 @@ import (
 // inspector 是解析面板：选中读取窗口的单元时显示寄存器的多种解读（多解释视图，设计文档 7.3），
 // 选中通信报文时逐字段解析报文。
 type inspector struct {
-	ws       *Workspace
-	src      *readWindow // 正在显示寄存器解析的读取窗口，随轮询实时刷新；nil 表示显示的是报文或为空
-	title    *widget.Label
-	orderBtn *widget.Button
-	body     *fyne.Container
-	wrap     *container.ThemeOverride
-	rows     []rowView
-	text     string
-	root     fyne.CanvasObject
+	ws          *Workspace
+	src         *readWindow // 正在显示寄存器解析的读取窗口，随轮询实时刷新；nil 表示显示的是报文或为空
+	placeholder string      // 没有内容时的提示
+	title       *widget.Label
+	orderBtn    *widget.Button
+	body        *fyne.Container
+	wrap        *container.ThemeOverride
+	rows        []rowView
+	text        string
+	root        fyne.CanvasObject
 }
 
 type rowView struct {
@@ -36,7 +37,7 @@ type rowView struct {
 }
 
 func newInspector(ws *Workspace) *inspector {
-	in := &inspector{ws: ws}
+	in := &inspector{ws: ws, placeholder: "单击读取窗口里的值，查看它在各种数据类型和字节序下的解读；单击通信报文，逐字段解析报文。双击值可以写入。"}
 	in.title = widget.NewLabelWithStyle("解析", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	in.body = container.NewVBox()
 	copyBtn := widget.NewButtonWithIcon("复制", theme.ContentCopyIcon(), func() { ws.app.Clipboard().SetContent(in.text) })
@@ -51,7 +52,7 @@ func newInspector(ws *Workspace) *inspector {
 
 func (in *inspector) clear() {
 	in.src = nil
-	in.show("解析", []decodeRow{{Meaning: "单击读取窗口里的值，查看它在各种数据类型和字节序下的解读；单击通信报文，逐字段解析报文。双击值可以写入。"}})
+	in.show("解析", []decodeRow{{Meaning: in.placeholder}})
 }
 
 func newRowView(full bool) rowView {

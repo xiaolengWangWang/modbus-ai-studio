@@ -17,7 +17,7 @@ import (
 )
 
 // version 在打包时用 -ldflags "-X main.version=…" 覆盖。
-var version = "0.10.2"
+var version = "0.10.3"
 
 func main() {
 	start := time.Now()
@@ -44,7 +44,9 @@ func main() {
 		defer rec.Close() // 退出前写完缓冲里的记录
 	}
 	// 不设主窗口：可以用“文件 → 新建窗口”同时开多个主窗口，关掉最后一个才退出
-	ui.Open(a, version).AutoCheckUpdate()
+	ws := ui.Open(a, version)
+	ws.AutoCheckUpdate()
+	debugStart(ws)
 	log.Printf("startup window shown: %s", time.Since(start))
 	fyne.Do(func() { log.Printf("startup first UI event: %s", time.Since(start)) })
 	a.Run()

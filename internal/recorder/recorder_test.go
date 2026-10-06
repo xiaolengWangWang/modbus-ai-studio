@@ -159,3 +159,19 @@ func TestMigrateOldEvents(t *testing.T) {
 		t.Fatalf("%+v %v", ev, err)
 	}
 }
+
+// 本进程里开始、还没结束的会话是“进行中”；结束后不是。
+func TestRunningSessions(t *testing.T) {
+	r, err := Open(filepath.Join(t.TempDir(), "packets.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	id, err := r.StartSession(modbus.ModeTCP, "10.0.0.1:502", 1)
+	if err != nil || !r.Running(id) {
+		t.Fatalf("开始后应为进行中：%v %v", r.Running(id), err)
+	}
+	if err := r.EndSession(id); err != nil || r.Running(id) {
+		t.Errorf("结束后不应再是进行中：%v %v", r.Running(id), err)
+	}
+}

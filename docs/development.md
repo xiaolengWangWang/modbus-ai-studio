@@ -51,8 +51,8 @@ Linux 版目前没有专用代码和安装包：同一份代码可以在 Linux �
 
 ```sh
 go run ./cmd/modbus-ai              # 运行桌面应用（启动时为空；“读取 → 打开换热站示例”加载示例并连接内置模拟器）
-VERSION=0.10.2 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
-VERSION=0.10.2 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
+VERSION=0.10.3 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
+VERSION=0.10.3 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
 
 go build -o bin/ ./cmd/...
 
@@ -79,7 +79,7 @@ go test -race -count=3 ./...        # 并发与稳定性
 
 - 界面测试用 Fyne 的软件渲染驱动，不需要显示器和显卡。
 - `MODBUS_AI_SNAPSHOT=<目录> go test -run 'TestUIWithBuiltinSimulator|Test64BitPoints' ./internal/ui` 会把测试中的界面存成 PNG，用来检查布局；`assets/screenshots/` 里的截图就是这样生成的（`modbus-ai-ui.png` 即 `main.png`，`modbus-ai-packet.png` 即 `packet.png`）。
-- 要看真实 OpenGL 渲染，用调试构建：`go build -tags capture -o /tmp/cap ./cmd/modbus-ai && CAPTURE_DIR=/tmp /tmp/cap`，启动后第 2、8 秒各存一张截图后退出。
+- 要看真实 OpenGL 渲染，用调试构建：`go build -tags capture -o /tmp/cap ./cmd/modbus-ai && CAPTURE_DIR=/tmp /tmp/cap`。它按 `internal/ui/capture.go` 的剧本操作界面（打开示例并连接、选中窗口、控制条切换格式 / 字节序 / 原始值、用菜单连开两次读取定义、写入、调整字节序、历史报文、1024 宽），每步存一张截图后退出；终端没有屏幕录制权限也能用。注意它连的是本机真实的报文数据库和设置。
 - 持续集成（`.github/workflows/test.yml`）在 Windows、macOS、Linux 上跑 `go vet` 和全部测试，Windows 以外加 `-race`。
 
 ## 打包与发版

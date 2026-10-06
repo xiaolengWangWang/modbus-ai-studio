@@ -52,9 +52,12 @@ func (ws *Workspace) addTool(w fyne.Window, onClose func()) {
 	})
 }
 
-func sessionLabel(s recorder.Session) string {
-	end := "未正常断开"
-	if !s.End.IsZero() {
+func sessionLabel(s recorder.Session, running bool) string {
+	end := "未正常断开" // 程序异常退出，没来得及记结束时间
+	switch {
+	case running:
+		end = "进行中"
+	case !s.End.IsZero():
 		end = s.End.Format("15:04:05")
 	}
 	label := fmt.Sprintf("%s – %s · %s %s · 窗口 %d · %d 条，错误 %d", s.Start.Format("01-02 15:04:05"), end,
@@ -94,6 +97,8 @@ func (ws *Workspace) openHistory() {
 	tp.pauseBtn.Hide()
 	tp.title.Hide()
 	in := newInspector(ws)
+	in.placeholder = "单击报文，逐字段解析；单击日志，查看原因分析和出错时的原始报文。"
+	in.clear()
 	tp.onSelect = in.showPacket
 	fl := newFaultLog(ws.app)
 	fl.onSelect = func(e logEntry) { in.show("日志", e.detail()) }
@@ -109,7 +114,7 @@ func (ws *Workspace) openHistory() {
 	sel.PlaceHolder = "选择一次连接"
 	sel.OnChanged = func(name string) {
 		for _, s := range sessions {
-			if sessionLabel(s) != name {
+			if sessionLabel(s, r.Running(s.ID)) != name {
 				continue
 			}
 			go func() {
@@ -144,11 +149,13 @@ func (ws *Workspace) openHistory() {
 		sessions = ss
 		var names []string
 		for _, s := range ss {
-			names = append(names, sessionLabel(s))
+			names = append(names, sessionLabel(s, r.Running(s.ID)))
 		}
 		sel.SetOptions(names)
 		if len(ss) == 0 {
 			info.SetText(fmt.Sprintf("还没有记录。连接后全部收发会自动记录，保留 %d 天。", HistoryDays))
+		} else if sel.SelectedIndex() < 0 {
+			sel.SetSelectedIndex(0) // 打开时直接显示最近一次连接
 		}
 	}
 	load()

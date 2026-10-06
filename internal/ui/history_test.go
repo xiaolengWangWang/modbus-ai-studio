@@ -86,7 +86,7 @@ func TestSessionLabelsDistinguishRepeatedConnectionFailures(t *testing.T) {
 	first := recorder.Session{ID: 41, Start: start, Mode: modbus.ModeTCP, Target: "127.0.0.1:502", Window: 1, Faults: 1}
 	second := first
 	second.ID = 42
-	if sessionLabel(first) == sessionLabel(second) {
+	if sessionLabel(first, false) == sessionLabel(second, false) {
 		t.Fatal("同一秒内重复连接失败的两个会话，在历史列表中必须能分别选择")
 	}
 }
@@ -209,11 +209,26 @@ func TestFaultLog(t *testing.T) {
 		ss, _ = r.Sessions(10)
 		return len(ss) == 2 && ss[0].Faults == 1 && ss[1].Faults == 1
 	})
-	if !strings.Contains(sessionLabel(ss[0]), "连接失败") {
-		t.Errorf("连接失败的会话 %q", sessionLabel(ss[0]))
+	if !strings.Contains(sessionLabel(ss[0], false), "连接失败") {
+		t.Errorf("连接失败的会话 %q", sessionLabel(ss[0], false))
 	}
 	ev, err := r.Events(ss[1].ID)
 	if err != nil || len(ev) != 2 || ev[0].Kind != recorder.EventReadFail || !bytes.Equal(ev[0].RX, fail.RX) || ev[0].Analysis != fail.Analysis {
 		t.Fatalf("报文库里的日志 %+v %v", ev, err)
+	}
+}
+
+// 会话标签：进行中的连接写“进行中”，没有结束时间又不在进行的是程序异常退出留下的。
+func TestSessionLabelRunning(t *testing.T) {
+	s := recorder.Session{ID: 3, Start: time.Date(2026, 10, 6, 9, 0, 0, 0, time.Local), Mode: modbus.ModeTCP, Target: "10.0.0.1:502", Window: 1}
+	if l := sessionLabel(s, true); !strings.Contains(l, "进行中") {
+		t.Errorf("进行中的会话：%s", l)
+	}
+	if l := sessionLabel(s, false); !strings.Contains(l, "未正常断开") {
+		t.Errorf("异常退出留下的会话：%s", l)
+	}
+	s.End = s.Start.Add(time.Minute)
+	if l := sessionLabel(s, false); !strings.Contains(l, "09:01:00") {
+		t.Errorf("已结束的会话应写结束时间：%s", l)
 	}
 }

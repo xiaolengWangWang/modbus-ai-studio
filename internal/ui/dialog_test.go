@@ -14,6 +14,7 @@ import (
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 
+	"modbus-ai-studio/internal/modbus"
 	"modbus-ai-studio/internal/recorder"
 	"modbus-ai-studio/internal/update"
 	"modbus-ai-studio/platform"
@@ -30,6 +31,27 @@ func menuAction(t *testing.T, ws *Workspace, label string) func() {
 		}
 	}
 	t.Fatalf("菜单里没有“%s”", label)
+	return nil
+}
+
+// findSelects 找出界面里全部下拉框。
+func findSelects(o fyne.CanvasObject) []*widget.Select {
+	switch x := o.(type) {
+	case *widget.Select:
+		return []*widget.Select{x}
+	case *fyne.Container:
+		var out []*widget.Select
+		for _, c := range x.Objects {
+			out = append(out, findSelects(c)...)
+		}
+		return out
+	case fyne.Widget:
+		var out []*widget.Select
+		for _, c := range test.WidgetRenderer(x).Objects() {
+			out = append(out, findSelects(c)...)
+		}
+		return out
+	}
 	return nil
 }
 
@@ -130,6 +152,9 @@ func TestHistoryWindowAndDatabase(t *testing.T) {
 	showInFolderFn = func(p string) error { shown = append(shown, p); return nil }
 	t.Cleanup(func() { openFileFn, showInFolderFn = oldOpen, oldShow })
 
+	if id, err := r.StartSession(modbus.ModeTCP, "192.168.1.10:502", 1); err == nil {
+		r.EndSession(id)
+	}
 	a := test.NewTempApp(t)
 	ws := openWS(t, a, false)
 	locked(func() {
@@ -137,6 +162,13 @@ func TestHistoryWindowAndDatabase(t *testing.T) {
 		ws.openHistory()
 		if len(ws.tools) != 1 || ws.historyWin == nil {
 			t.Fatalf("历史报文应只开一个，开了 %d 个", len(ws.tools))
+		}
+		selected := false
+		for _, sel := range findSelects(ws.historyWin.Content()) {
+			selected = selected || strings.Contains(sel.Selected, "192.168.1.10:502")
+		}
+		if !selected {
+			t.Error("打开历史报文时应直接选中最近一次连接")
 		}
 		ws.historyWin.Close()
 		if ws.historyWin != nil || len(ws.tools) != 0 {
