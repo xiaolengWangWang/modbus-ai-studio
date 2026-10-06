@@ -65,7 +65,7 @@ func (ws *Workspace) checkUpdate(manual bool) {
 	}
 	var wait *dialog.ProgressInfiniteDialog
 	if manual {
-		wait = dialog.NewProgressInfinite("检查更新", "正在从 GitHub 查询最新版本…", ws.win)
+		wait = dialog.NewProgressInfinite("检查更新", "正在查询最新版本（Gitee、GitHub）…", ws.win)
 		wait.Show()
 	}
 	go func() {
@@ -117,7 +117,15 @@ func (ws *Workspace) showUpdate(rel update.Release, manual bool) {
 	case !canInstall:
 		how = "当前程序不是从安装包运行的（例如从源码运行），请到下载页面手动下载。"
 	default:
-		how = fmt.Sprintf("将下载 %s（%.1f MB），校验 SHA-256 后替换当前程序，然后重启。", asset.Name, float64(asset.Size)/(1<<20))
+		from := "从 " + rel.Source + " 下载"
+		if len(asset.Mirrors) > 0 {
+			from += "（下载不了时自动换另一个下载源）"
+		}
+		size := "" // Gitee 的接口不一定给出文件大小
+		if asset.Size > 0 {
+			size = fmt.Sprintf("（%.1f MB）", float64(asset.Size)/(1<<20))
+		}
+		how = fmt.Sprintf("将%s %s%s，校验 SHA-256 后替换当前程序，然后重启。", from, asset.Name, size)
 	}
 	head := widget.NewLabel(fmt.Sprintf("发现新版本 %s（当前 %s）。\n%s", rel.Version(), ws.Version, how))
 	head.Wrapping = fyne.TextWrapWord
@@ -144,7 +152,7 @@ func (ws *Workspace) showUpdate(rel update.Release, manual bool) {
 		b.Importance = widget.HighImportance
 		buttons = append(buttons, b)
 	}
-	buttons = append(buttons, widget.NewButton("打开下载页面", func() { ws.openReleasePage(); d.Hide() }))
+	buttons = append(buttons, widget.NewButton("打开下载页面", func() { ws.openReleasePage(rel.Page); d.Hide() }))
 	if !manual {
 		buttons = append(buttons, widget.NewButton("跳过这个版本", func() {
 			ws.app.Preferences().SetString(prefSkip, rel.Version())
@@ -253,14 +261,18 @@ func (ws *Workspace) showUpdateError(title string, err error) {
 	l.Resize(fyne.NewSize(420, 0))
 	d := dialog.NewCustomWithoutButtons(title, container.NewGridWrap(fyne.NewSize(420, l.MinSize().Height), l), ws.win)
 	d.SetButtons([]fyne.CanvasObject{
-		widget.NewButton("打开下载页面", func() { ws.openReleasePage(); d.Hide() }),
+		widget.NewButton("打开下载页面", func() { ws.openReleasePage(""); d.Hide() }),
 		widget.NewButton("关闭", d.Hide),
 	})
 	d.Show()
 }
 
-func (ws *Workspace) openReleasePage() {
-	if u, err := url.Parse(update.PageURL); err == nil {
+// openReleasePage 打开下载页面：查到了发布就用那个下载源的页面，否则用排在第一的下载源（Gitee）。
+func (ws *Workspace) openReleasePage(page string) {
+	if page == "" {
+		page = update.PageURL()
+	}
+	if u, err := url.Parse(page); err == nil {
 		ws.app.OpenURL(u)
 	}
 }

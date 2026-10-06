@@ -73,9 +73,9 @@ func TestCheckUpdate(t *testing.T) {
 		json.NewEncoder(w).Encode(rel)
 	}))
 	defer srv.Close()
-	old := update.LatestURL
-	update.LatestURL = srv.URL
-	defer func() { update.LatestURL = old }()
+	old := update.Sources
+	update.Sources = []update.Source{{Name: "测试", LatestURL: srv.URL}}
+	defer func() { update.Sources = old }()
 
 	a := test.NewTempApp(t)
 	ws := openWS(t, a, false)

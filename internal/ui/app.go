@@ -368,7 +368,7 @@ func (ws *Workspace) setMenu() {
 			item("检查更新…", modal(func() { ws.checkUpdate(true) })),
 			ws.autoUpdItem,
 			fyne.NewMenuItemSeparator(),
-			item("下载页面", ws.openReleasePage)),
+			item("下载页面", func() { ws.openReleasePage("") })),
 	))
 }
 

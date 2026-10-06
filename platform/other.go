@@ -9,4 +9,3 @@ func Setup() {}
 
 func WorkArea() (int, int)  { return 0, 0 }
 func ConfigureApp(fyne.App) {}
-func PrewarmFonts()         {}

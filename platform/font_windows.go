@@ -9,13 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/theme"
 	"github.com/go-text/typesetting/font"
 	ot "github.com/go-text/typesetting/font/opentype"
-	"github.com/go-text/typesetting/fontscan"
 )
 
 type windowsTheme struct {
@@ -61,13 +59,6 @@ func ConfigureApp(app fyne.App) {
 	}
 	app.Settings().SetTheme(windowsTheme{Theme: theme.DefaultTheme(), regular: regular, bold: bold})
 	log.Printf("startup font: Microsoft YaHei UI")
-}
-
-// PrewarmFonts 提前触发 Fyne 后续使用的 go-text 全局系统字体索引。
-func PrewarmFonts() {
-	start := time.Now()
-	_, err := fontscan.SystemFonts(nil, "")
-	log.Printf("startup font scan: %s, error=%v", time.Since(start), err)
 }
 
 func yaheiResource(path string) (fyne.Resource, error) {

@@ -23,6 +23,16 @@ jobs:
       - name: 测试（界面测试用 Fyne 的软件渲染驱动，不需要显卡）
         if: runner.os != 'Windows'
         run: go test -race -count=1 -timeout 15m ./...
-      - name: 测试（Windows）
+      - name: 测试（Windows），界面截图存下来检查中文字体和布局
         if: runner.os == 'Windows'
-        run: go test -count=1 -timeout 15m ./...
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\snapshots" | Out-Null
+          $env:MODBUS_AI_SNAPSHOT = "$env:RUNNER_TEMP\snapshots"
+          go test -count=1 -timeout 15m ./...
+      - name: 上传 Windows 界面截图
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-snapshots
+          path: ${{ runner.temp }}/snapshots
+          if-no-files-found: ignore

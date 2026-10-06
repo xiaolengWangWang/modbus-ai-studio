@@ -71,9 +71,9 @@ func TestDialogsDoNotStack(t *testing.T) {
 		json.NewEncoder(w).Encode(update.Release{Tag: "v9.9.9", Body: "## 新功能\n\n- 测试"})
 	}))
 	defer srv.Close()
-	oldURL := update.LatestURL
-	update.LatestURL = srv.URL
-	defer func() { update.LatestURL = oldURL }()
+	oldSources := update.Sources
+	update.Sources = []update.Source{{Name: "测试", LatestURL: srv.URL}}
+	defer func() { update.Sources = oldSources }()
 
 	a := test.NewTempApp(t)
 	ws := openWS(t, a, false)

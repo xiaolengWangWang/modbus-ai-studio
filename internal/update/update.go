@@ -17,37 +17,53 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// Repo 是发布安装包的 GitHub 仓库。
-const Repo = "xiaolengWangWang/modbus-ai-studio"
-
-var (
-	// LatestURL 是最新正式版的 API 地址，测试时换成本地服务器。
-	LatestURL = "https://api.github.com/repos/" + Repo + "/releases/latest"
-	// PageURL 是给用户手动下载的页面。
-	PageURL = "https://github.com/" + Repo + "/releases/latest"
+// 发布安装包的仓库：GitHub 和它在 Gitee 上的镜像，两边发布同样的安装包和说明。
+const (
+	Repo      = "xiaolengWangWang/modbus-ai-studio"
+	GiteeRepo = "sun_xuanqi/modbus_ai_studio"
 )
+
+// Source 是一个发布安装包的地方。
+type Source struct {
+	Name      string // 给用户看的名字：Gitee、GitHub
+	LatestURL string // 最新正式版的 API 地址，GitHub 和 Gitee 返回的格式相同
+	PageURL   string // 给用户手动下载的页面
+}
+
+// Sources 是检查更新时同时查询的地方，排在前面的优先：国内访问 GitHub 下载经常连不上，Gitee 在前。
+// 测试时换成本地服务器。
+var Sources = []Source{
+	{"Gitee", "https://gitee.com/api/v5/repos/" + GiteeRepo + "/releases/latest", "https://gitee.com/" + GiteeRepo + "/releases"},
+	{"GitHub", "https://api.github.com/repos/" + Repo + "/releases/latest", "https://github.com/" + Repo + "/releases/latest"},
+}
+
+// PageURL 是没查到发布时给用户的下载页面。
+func PageURL() string { return Sources[0].PageURL }
 
 // ErrUnsupported 表示当前平台或运行方式不能自动安装（Linux、从源码运行、不在 .app 里），只能手动下载。
 var ErrUnsupported = errors.New("这个平台或运行方式不支持自动安装")
 
 // Asset 是发布里的一个安装包。
 type Asset struct {
-	Name string `json:"name"`
-	URL  string `json:"browser_download_url"`
-	Size int64  `json:"size"`
+	Name    string   `json:"name"`
+	URL     string   `json:"browser_download_url"`
+	Size    int64    `json:"size"`
+	Mirrors []string `json:"-"` // 别的下载源上同一个文件的地址，下载出错时换着用
 }
 
-// Release 是 GitHub 上的一个发布。
+// Release 是一个发布。
 type Release struct {
 	Tag    string  `json:"tag_name"`
 	Name   string  `json:"name"`
 	Body   string  `json:"body"`
-	Page   string  `json:"html_url"`
 	Assets []Asset `json:"assets"`
+	Source string  `json:"-"` // 从哪个下载源查到的
+	Page   string  `json:"-"` // 这个下载源的下载页面
 }
 
 // Version 是去掉 v 前缀的版本号。
@@ -82,8 +98,56 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// Latest 取最新的正式版（GitHub 的 latest 不含草稿和预发布）。网络出错或 GitHub 返回 5xx 时重试几次。
+// Latest 同时查询全部下载源，取版本最新的发布（一样新时取排在前面的下载源）；同一个安装包在别的下载源上
+// 也有时记进 Mirrors，下载出错时换着用。全部查不到才报错。每个下载源出错时重试几次。
 func Latest(ctx context.Context) (Release, error) {
+	type result struct {
+		r   Release
+		err error
+	}
+	results := make([]result, len(Sources))
+	var wg sync.WaitGroup
+	for i, src := range Sources {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, err := latestFrom(ctx, src)
+			r.Source, r.Page = src.Name, src.PageURL
+			results[i] = result{r, err}
+		}()
+	}
+	wg.Wait()
+	best := -1
+	var errs []error
+	for i, res := range results {
+		if res.err != nil {
+			errs = append(errs, fmt.Errorf("%s：%w", Sources[i].Name, res.err))
+			continue
+		}
+		if best < 0 || Newer(res.r.Version(), results[best].r.Version()) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return Release{}, errors.Join(errs...)
+	}
+	rel := results[best].r
+	for i, res := range results {
+		if i == best || res.err != nil || res.r.Version() != rel.Version() {
+			continue
+		}
+		for k := range rel.Assets {
+			for _, other := range res.r.Assets {
+				if other.Name == rel.Assets[k].Name && other.URL != "" {
+					rel.Assets[k].Mirrors = append(rel.Assets[k].Mirrors, other.URL)
+				}
+			}
+		}
+	}
+	return rel, nil
+}
+
+func latestFrom(ctx context.Context, src Source) (Release, error) {
 	var r Release
 	var err error
 	for i := 0; i < 3; i++ {
@@ -91,7 +155,7 @@ func Latest(ctx context.Context) (Release, error) {
 			break
 		}
 		var retry bool
-		r, retry, err = latestOnce(ctx)
+		r, retry, err = latestOnce(ctx, src.LatestURL)
 		if err == nil || !retry {
 			break
 		}
@@ -99,8 +163,8 @@ func Latest(ctx context.Context) (Release, error) {
 	return r, err
 }
 
-func latestOnce(ctx context.Context) (r Release, retry bool, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, LatestURL, nil)
+func latestOnce(ctx context.Context, url string) (r Release, retry bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return r, false, err
 	}
@@ -108,11 +172,11 @@ func latestOnce(ctx context.Context) (r Release, retry bool, err error) {
 	req.Header.Set("User-Agent", "ModbusAIStudio")
 	resp, err := client.Do(req)
 	if err != nil {
-		return r, ctx.Err() == nil, fmt.Errorf("连不上 GitHub：%w", err)
+		return r, ctx.Err() == nil, fmt.Errorf("连不上：%w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return r, resp.StatusCode >= 500, fmt.Errorf("GitHub 返回 %s", resp.Status)
+		return r, resp.StatusCode >= 500, fmt.Errorf("返回 %s", resp.Status)
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&r); err != nil {
 		return r, ctx.Err() == nil, fmt.Errorf("发布信息没有读完整：%w", err)
@@ -248,13 +312,15 @@ func Download(ctx context.Context, a Asset, sum, dir string, progress func(done,
 	}
 	os.Remove(final)
 
+	// 出错后换下一个下载源接着下：同一个文件，Range 续传照样有效，最后统一校验
+	urls := append([]string{a.URL}, a.Mirrors...)
 	var err error
 	for i := 0; i < tries; i++ {
 		if i > 0 && !sleep(ctx, retryDelay) {
 			break
 		}
 		var retry bool
-		retry, err = downloadOnce(ctx, a, part, progress)
+		retry, err = downloadOnce(ctx, a, urls[i%len(urls)], part, progress)
 		if err == nil || !retry {
 			break
 		}
@@ -280,14 +346,14 @@ func Download(ctx context.Context, a Asset, sum, dir string, progress func(done,
 }
 
 // downloadOnce 接着 part 已有的内容下载一次。retry 表示出错后值得再试（网络问题、服务器 5xx）。
-func downloadOnce(ctx context.Context, a Asset, part string, progress func(done, total int64)) (retry bool, err error) {
+func downloadOnce(ctx context.Context, a Asset, url, part string, progress func(done, total int64)) (retry bool, err error) {
 	var have int64
 	if fi, err := os.Stat(part); err == nil {
 		have = fi.Size()
 	}
 	attempt, cancel := context.WithCancel(ctx)
 	defer cancel()
-	req, err := http.NewRequestWithContext(attempt, http.MethodGet, a.URL, nil)
+	req, err := http.NewRequestWithContext(attempt, http.MethodGet, url, nil)
 	if err != nil {
 		return false, err
 	}

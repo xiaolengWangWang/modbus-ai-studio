@@ -105,9 +105,7 @@ func TestLatestAndDownload(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	old := LatestURL
-	LatestURL = srv.URL + "/latest"
-	defer func() { LatestURL = old }()
+	useSources(t, Source{Name: "测试", LatestURL: srv.URL + "/latest"})
 
 	r, err := Latest(context.Background())
 	if err != nil || r.Version() != "9.9.9" {
@@ -126,7 +124,7 @@ func TestLatestAndDownload(t *testing.T) {
 	if _, err := Download(context.Background(), r.Assets[0], strings.Repeat("0", 64), t.TempDir(), nil); err == nil || !strings.Contains(err.Error(), "校验失败") {
 		t.Errorf("校验值不对应报错：%v", err)
 	}
-	LatestURL = srv.URL + "/missing"
+	useSources(t, Source{Name: "测试", LatestURL: srv.URL + "/missing"})
 	if _, err := Latest(context.Background()); err == nil {
 		t.Error("没有发布时应报错")
 	}
@@ -385,16 +383,79 @@ func TestLatestRetries(t *testing.T) {
 		json.NewEncoder(w).Encode(Release{Tag: "v1.2.3"})
 	}))
 	defer srv.Close()
-	old := LatestURL
-	LatestURL = srv.URL
-	defer func() { LatestURL = old }()
+	useSources(t, Source{Name: "测试", LatestURL: srv.URL})
 	if r, err := Latest(context.Background()); err != nil || r.Version() != "1.2.3" || n != 2 {
 		t.Fatalf("502 后应重试成功：%+v %v，请求 %d 次", r, err, n)
 	}
-	LatestURL = srv.URL + "/missing"
+	useSources(t, Source{Name: "测试", LatestURL: srv.URL + "/missing"})
 	srv.Config.Handler = http.NotFoundHandler()
 	n = 0
 	if _, err := Latest(context.Background()); err == nil {
 		t.Error("404 应报错")
+	}
+}
+
+func useSources(t *testing.T, ss ...Source) {
+	old := Sources
+	Sources = ss
+	t.Cleanup(func() { Sources = old })
+}
+
+// 同时查询各下载源：取最新的；一样新时取排在前面的（Gitee），别的下载源上同名安装包记成镜像；
+// 一个下载源连不上不影响，全都查不到才报错。
+func TestLatestFromSources(t *testing.T) {
+	fastRetry(t)
+	serve := func(tag string, assetURL string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(Release{Tag: tag, Assets: []Asset{{Name: "p.zip", URL: assetURL}}})
+		}))
+	}
+	gitee, github := serve("v1.0.1", "http://gitee/p.zip"), serve("v1.0.1", "http://github/p.zip")
+	defer gitee.Close()
+	defer github.Close()
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "x", http.StatusForbidden) }))
+	defer down.Close()
+
+	useSources(t, Source{"Gitee", gitee.URL, "https://gitee/page"}, Source{"GitHub", github.URL, "https://github/page"})
+	r, err := Latest(context.Background())
+	if err != nil || r.Source != "Gitee" || r.Page != "https://gitee/page" || r.Assets[0].URL != "http://gitee/p.zip" ||
+		len(r.Assets[0].Mirrors) != 1 || r.Assets[0].Mirrors[0] != "http://github/p.zip" {
+		t.Fatalf("一样新时应取 Gitee，GitHub 的同名安装包记成镜像：%+v %v", r, err)
+	}
+
+	newer := serve("v1.0.2", "http://github/p2.zip")
+	defer newer.Close()
+	useSources(t, Source{"Gitee", gitee.URL, ""}, Source{"GitHub", newer.URL, ""})
+	if r, err := Latest(context.Background()); err != nil || r.Source != "GitHub" || r.Version() != "1.0.2" || len(r.Assets[0].Mirrors) != 0 {
+		t.Errorf("GitHub 上更新时应取 GitHub：%+v %v", r, err)
+	}
+
+	useSources(t, Source{"Gitee", down.URL, ""}, Source{"GitHub", github.URL, ""})
+	if r, err := Latest(context.Background()); err != nil || r.Source != "GitHub" {
+		t.Errorf("Gitee 查不到时应用 GitHub：%+v %v", r, err)
+	}
+	useSources(t, Source{"Gitee", down.URL, ""}, Source{"GitHub", down.URL, ""})
+	if _, err := Latest(context.Background()); err == nil || !strings.Contains(err.Error(), "Gitee") || !strings.Contains(err.Error(), "GitHub") {
+		t.Errorf("都查不到时应说明两边的原因：%v", err)
+	}
+}
+
+// 主地址下载失败时换镜像接着下（Range 续传），最后校验。
+func TestDownloadUsesMirror(t *testing.T) {
+	fastRetry(t)
+	data := []byte(strings.Repeat("镜像", 5000))
+	sum := sha256.Sum256(data)
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "x", http.StatusBadGateway) }))
+	defer bad.Close()
+	good := &flakyServer{data: data, rangeOK: true}
+	srv := httptest.NewServer(good)
+	defer srv.Close()
+	a := Asset{Name: "p.zip", URL: bad.URL, Mirrors: []string{srv.URL}}
+	path, err := Download(context.Background(), a, hex.EncodeToString(sum[:]), t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != string(data) {
+		t.Error("从镜像下载的内容不对")
 	}
 }
