@@ -17,7 +17,7 @@
 
 ## 下载
 
-[GitHub Releases](https://github.com/xiaolengWangWang/modbus-ai-studio/releases) 提供：
+[GitHub Releases](https://github.com/xiaolengWangWang/modbus-ai-studio/releases) 提供（国内访问慢时用 [Gitee 镜像](https://gitee.com/sun_xuanqi/modbus_ai_studio/releases)）：
 
 | 文件 | 适用 |
 | --- | --- |

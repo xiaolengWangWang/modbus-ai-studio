@@ -42,7 +42,7 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 |  | `platform/macos/` | `Info.plist` 模板 |
 |  | `platform/windows/` | Windows 绿色版里的 `README.txt` 模板 |
 | 文档 | `README.md`、`docs/` | 首页；`guide.md` 使用说明、`points.md` 点表格式、`faq.md` 常见问题、`development.md` 开发与发布 |
-| 打包编译 | `build/` | `macos.sh`（.app 和 DMG）、`windows.sh`（交叉编译绿色版 zip）、`icon/`（图标生成器） |
+| 打包编译 | `build/` | `macos.sh`（.app 和 DMG）、`windows.sh`（交叉编译绿色版 zip）、`gitee.sh`（同步到 Gitee 镜像）、`icon/`（图标生成器） |
 |  | `.github/workflows/` | 持续集成：Windows、macOS、Linux 上跑 vet 和全部测试（GitHub 规定的位置） |
 
 Linux 版目前没有专用代码和安装包：同一份代码可以在 Linux 上编译运行（见 [从源码编译](#从源码编译)），持续集成里每次都测。编译输出在 `dist/`、`bin/`，不进仓库。
@@ -51,8 +51,8 @@ Linux 版目前没有专用代码和安装包：同一份代码可以在 Linux �
 
 ```sh
 go run ./cmd/modbus-ai              # 运行桌面应用（启动时为空；“读取 → 打开换热站示例”加载示例并连接内置模拟器）
-VERSION=0.10.3 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
-VERSION=0.10.3 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
+VERSION=0.10.4 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
+VERSION=0.10.4 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
 
 go build -o bin/ ./cmd/...
 
@@ -92,6 +92,7 @@ Windows 启动阶段耗时和字体预扫描结果写入 `%AppData%\ModbusAIStud
 2. `VERSION=x.y.z build/macos.sh`、`VERSION=x.y.z build/windows.sh` 打出两个 DMG 和 Windows zip。安装包文件名不要改：程序里的“检查更新”按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包。
 3. 提交并推送，等持续集成在三个平台上都通过。
 4. `git tag -a vx.y.z` 并推送；`gh release create --draft` 建草稿，`gh release upload` 逐个上传三个文件（网络慢时一次传完会超时），核对大小后 `gh release edit --draft=false --latest` 发布。发布说明末尾必须有 `## SHA-256` 段落，每行 `校验值  文件名`：自动更新按它校验下载的安装包，没有校验值的版本只能手动下载。
+5. 同步到 Gitee 镜像：`VERSION=x.y.z NOTES=发布说明.md build/gitee.sh`，用 SSH 推 main 和 tag；有 `~/.gitee_token`（Gitee 私人令牌，勾选 projects）时自动建发行版并上传三个安装包，没有令牌时按提示在网页上手动传。程序检查更新时同时查 Gitee 和 GitHub。
 
 ## 协议引擎的约定
 
