@@ -348,8 +348,12 @@ func (ws *Workspace) changePointOrder(scope pointOrderScope, w *readWindow, off 
 	return changed
 }
 
-// showPointOrderDialog 让用户明确选择字节序和作用范围；菜单与解析面板共用。
+// showPointOrderDialog 让用户明确选择字节序和作用范围；菜单与解析面板共用。主窗口上已有对话框时不再弹。
 func (ws *Workspace) showPointOrderDialog(w *readWindow) {
+	if ws.dialogOpen() {
+		ws.win.RequestFocus()
+		return
+	}
 	const all, window, one = "全部点", "本读取窗口的点", "单个点"
 	scopes := []string{all}
 	selected := all

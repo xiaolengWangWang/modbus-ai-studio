@@ -61,11 +61,19 @@ type requestTool struct {
 }
 
 func (ws *Workspace) openRequestTool() {
+	if ws.requestWin != nil { // 只开一个，再点切到已打开的
+		ws.requestWin.RequestFocus()
+		return
+	}
 	w := ws.app.NewWindow(fmt.Sprintf("自定义请求 · 窗口 %d", ws.no))
 	w.Resize(fyne.NewSize(780, 600))
 	t := &requestTool{ws: ws, win: w}
 	w.SetContent(t.build())
-	ws.addTool(w, t.stopLoop)
+	ws.requestWin = w
+	ws.addTool(w, func() {
+		t.stopLoop()
+		ws.requestWin = nil
+	})
 	w.Show()
 }
 

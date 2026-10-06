@@ -210,3 +210,68 @@ func TestHistoryWindowAndDatabase(t *testing.T) {
 		ws.historyWin.Close()
 	})
 }
+
+// findButtons 找出界面里文字是 text 的按钮（包括隐藏的）。
+func findButtons(o fyne.CanvasObject, text string) []*widget.Button {
+	var out []*widget.Button
+	switch x := o.(type) {
+	case *widget.Button:
+		if x.Text == text {
+			out = append(out, x)
+		}
+	case *fyne.Container:
+		for _, c := range x.Objects {
+			out = append(out, findButtons(c, text)...)
+		}
+	case fyne.Widget:
+		for _, c := range test.WidgetRenderer(x).Objects() {
+			out = append(out, findButtons(c, text)...)
+		}
+	}
+	return out
+}
+
+// 从主窗口以外的地方（历史报文窗口的按钮）弹对话框时，主窗口的对话框挡不住点击：
+// 调整字节序自己检查，不会叠；历史报文窗口里也不再有“字节序…”按钮。自定义请求只开一个。
+func TestDialogsFromOtherWindows(t *testing.T) {
+	r, err := recorder.Open(filepath.Join(t.TempDir(), "packets.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetRecorder(r, "packets.db", nil)
+	t.Cleanup(func() { SetRecorder(nil, "", nil); r.Close() })
+	a := test.NewTempApp(t)
+	ws := openWS(t, a, false)
+	locked(func() {
+		ws.openHistory()
+		for _, b := range findButtons(ws.historyWin.Content(), "字节序…") {
+			if b.Visible() {
+				t.Error("历史报文窗口里不应有“字节序…”按钮")
+			}
+			test.Tap(b)
+			test.Tap(b)
+		}
+		ws.showPointOrderDialog(nil)
+		ws.showPointOrderDialog(nil)
+		if n := overlayCount(ws); n != 1 {
+			t.Errorf("调整字节序连调多次，主窗口上应只有一个对话框，实际 %d 个", n)
+		}
+		clearOverlays(ws)
+		ws.historyWin.Close()
+
+		ws.openRequestTool()
+		ws.openRequestTool()
+		if len(ws.tools) != 1 || ws.requestWin == nil {
+			t.Fatalf("自定义请求应只开一个，开了 %d 个", len(ws.tools))
+		}
+		ws.requestWin.Close()
+		if ws.requestWin != nil || len(ws.tools) != 0 {
+			t.Error("关掉后应能再开自定义请求")
+		}
+		ws.openRequestTool()
+		if ws.requestWin == nil {
+			t.Error("关掉后再点应重新打开自定义请求")
+		}
+		ws.requestWin.Close()
+	})
+}

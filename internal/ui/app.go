@@ -106,6 +106,7 @@ type Workspace struct {
 	evidence    evidence
 	tools       []fyne.Window // 自定义请求等工具窗口，主窗口关闭时一起关闭
 	historyWin  fyne.Window   // 打开着的历史报文窗口，只开一个
+	requestWin  fyne.Window   // 打开着的自定义请求窗口，只开一个
 	done        chan struct{}
 	closed      bool
 }
@@ -321,7 +322,7 @@ func (ws *Workspace) setMenu() {
 	// 各平台的快捷键照样能用，不拦着就会一层层叠下去
 	modal := func(fn func()) func() {
 		return func() {
-			if ws.win.Canvas().Overlays().Top() != nil {
+			if ws.dialogOpen() {
 				return
 			}
 			fn()
@@ -371,6 +372,10 @@ func (ws *Workspace) setMenu() {
 			item("下载页面", func() { ws.openReleasePage("") })),
 	))
 }
+
+// dialogOpen 表示主窗口上已经有对话框。弹对话框前先看它，不让对话框一层层叠起来：对话框只挡住主窗口里的
+// 点击，菜单、快捷键和别的窗口（历史报文等）里的按钮照样能触发。
+func (ws *Workspace) dialogOpen() bool { return ws.win.Canvas().Overlays().Top() != nil }
 
 // openNew 新建一个主窗口，协议和目标沿用当前窗口，方便连同一网段的另一台设备。
 func (ws *Workspace) openNew() *Workspace {

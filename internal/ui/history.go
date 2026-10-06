@@ -98,6 +98,7 @@ func (ws *Workspace) openHistory() {
 	tp.title.Hide()
 	in := newInspector(ws)
 	in.placeholder = "单击报文，逐字段解析；单击日志，查看原因分析和出错时的原始报文。"
+	in.orderBtn.Hide() // 历史窗口里没有读取窗口，调字节序没有对象，点了还会在主窗口上叠对话框
 	in.clear()
 	tp.onSelect = in.showPacket
 	fl := newFaultLog(ws.app)
