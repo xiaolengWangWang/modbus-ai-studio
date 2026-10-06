@@ -22,8 +22,8 @@ for i in 1 2 3 4 5; do
 done
 
 if [ ! -s "$HOME/.gitee_token" ]; then
-	echo "没有 ~/.gitee_token：请在 https://gitee.com/$REPO/releases/new 选 tag v$VERSION，"
-	echo "标题“Modbus AI Studio $VERSION”，说明粘贴 $NOTES 的内容，上传：$FILES"
+	echo "没有 ~/.gitee_token：请在 https://gitee.com/$REPO/releases/new 选 tag v${VERSION}，"
+	echo "标题“Modbus AI Studio ${VERSION}”，说明粘贴 $NOTES 的内容，上传：$FILES"
 	exit 0
 fi
 TOKEN=$(tr -d ' \r\n' < "$HOME/.gitee_token")
@@ -37,14 +37,14 @@ if [ -z "$ID" ]; then
 		-F "name=Modbus AI Studio $VERSION" -F "body=<$NOTES" -F "target_commitish=main" |
 		python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 fi
-echo "Gitee 发布 v$VERSION（id $ID）"
+echo "Gitee 发布 v${VERSION}（id ${ID}）"
 for f in $FILES; do
 	for i in 1 2 3 4 5; do
 		if curl -sf "$API/releases/$ID/attach_files?access_token=$TOKEN" | grep -q "\"name\":\"$f\""; then
 			echo "已上传 $f"
 			break
 		fi
-		curl -sf -X POST "$API/releases/$ID/attach_files" -F "access_token=$TOKEN" -F "file=@dist/$f" >/dev/null || { echo "上传重试 $f（$i）"; sleep 10; }
+		curl -sf -X POST "$API/releases/$ID/attach_files" -F "access_token=$TOKEN" -F "file=@dist/$f" >/dev/null || { echo "上传重试 ${f}（${i}）"; sleep 10; }
 	done
 done
 echo "https://gitee.com/$REPO/releases/tag/v$VERSION"
