@@ -512,7 +512,7 @@ func (w *readWindow) setPaused(p bool) {
 // start 在已连接且未暂停时开始轮询，只在 UI 线程调用。
 func (w *readWindow) start() {
 	s := w.ws.session
-	if s == nil || s.lost != nil || w.paused || w.stop != nil || !slices.Contains(w.ws.windows, w) {
+	if s == nil || s.lost != nil || w.ws.probeRunning || w.paused || w.stop != nil || !slices.Contains(w.ws.windows, w) {
 		return // 已关闭的窗口可能被异步操作（探测、诊断）回调，不能再开始轮询
 	}
 	ctx, cancel := context.WithCancel(s.ctx)

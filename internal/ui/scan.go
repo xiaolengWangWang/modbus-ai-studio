@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -11,7 +12,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/internal/modbus"
@@ -384,57 +384,120 @@ func (ws *Workspace) showDiagCounters(s *session, slave byte, counts []diagCount
 	dlg.Show()
 }
 
-// probeRange 逐个地址读 1 个寄存器（或位），找出读取范围里哪些地址可读，定位异常 02 的来源。
-// 探测期间暂停该窗口的轮询；遇到超时等非异常错误就停止，因为那说明问题不在地址。
+// probeRange 检测读取范围，批量验证正常段，再定位到具体异常地址。
+// 和独立检测入口共用检测逻辑，异常 02 才归为非法地址。
 func (ws *Workspace) probeRange(w *readWindow) {
-	s := ws.session
-	if s == nil {
-		return
-	}
-	d := w.def
-	w.setPaused(true)
-	ctx, cancel := context.WithCancel(s.ctx)
-	prog := widget.NewProgressBar()
-	prog.Max = float64(d.Qty)
-	dlg := dialog.NewCustom("逐个探测可读地址", "停止", container.NewVBox(
-		widget.NewLabel(fmt.Sprintf("Slave %d · %s · 逐个读取 %s", d.Slave, d.Function, refSpan(d.area(), d.Start, d.Qty))), prog), ws.win)
-	dlg.SetOnClosed(cancel)
-	dlg.Show()
-	go func() {
-		defer cancel()
-		res, stopErr := probe(ctx, s.client, d, func(n int) { uiDo(func() { prog.SetValue(float64(n)) }) })
-		uiDo(func() {
-			dlg.Hide()
-			if !ws.closed {
-				ws.showProbeResult(w, d, res, stopErr)
-			}
-		})
-	}()
+	ws.runRegisterProbe(w, w.def)
 }
 
-// probe 逐个读取 d 范围内的地址：1 表示可读，-1 表示返回异常，0 表示未探测。
-func probe(ctx context.Context, c *modbus.Client, d readDef, progress func(int)) ([]int8, error) {
+// probe uses successful batch reads to verify whole ranges, bisects illegal
+// address responses, and falls back to single reads for other batch failures.
+// 1 可读，-1 单地址异常 02，-2 其他错误，-3 超时/网关 0B，0 未检测。
+// TCP 单地址未响应继续检测；无事务编号的协议超时后停止，避免错认迟到响应。
+func probe(ctx context.Context, c *modbus.Client, d readDef, progress func(int), recheck ...func(int)) ([]int8, error) {
+	if err := validateProbeDef(d); err != nil {
+		return nil, err
+	}
 	res := make([]int8, d.Qty)
-	for i := 0; i < d.Qty; i++ {
-		_, err := c.Do(ctx, modbus.Request{Slave: d.Slave, Function: d.Function, Address: d.Start + uint16(i), Quantity: 1})
+	done := 0
+	batchTimedOut := false
+	mark := func(start, n int, state int8) {
+		for i := start; i < start+n; i++ {
+			if res[i] == 0 {
+				done++
+			}
+			res[i] = state
+		}
+		progress(done)
+	}
+	var readRange func(int, int) error
+	readRange = func(start, n int) error {
 		if ctx.Err() != nil {
-			return res, nil
+			return ctx.Err()
 		}
-		if _, isEx := modbus.AsException(err); isEx {
-			res[i] = -1
-		} else if err != nil {
-			return res, fmt.Errorf("%s %s", modbus.Reference(d.area(), d.Start+uint16(i)), errSummary(err))
-		} else {
-			res[i] = 1
+		_, err := c.Do(ctx, modbus.Request{Slave: d.Slave, Function: d.Function, Address: d.Start + uint16(start), Quantity: uint16(n)})
+		if err != nil && ctx.Err() != nil {
+			return ctx.Err()
 		}
-		progress(i + 1)
+		if err == nil {
+			mark(start, n, 1)
+			return nil
+		}
+		ex, isEx := modbus.AsException(err)
+		illegal := isEx && ex.Code == modbus.ExceptionIllegalDataAddress
+		if errors.Is(err, modbus.ErrTimeout) && c.Mode() != modbus.ModeTCP {
+			mark(start, n, -2)
+			return fmt.Errorf("%s 请求超时；RTU/ASCII 无事务编号，已停止以免将迟到响应归到其他地址。请增大超时并重新连接后检测", refSpan(d.area(), d.Start+uint16(start), n))
+		}
+		if n > 1 && errors.Is(err, modbus.ErrTimeout) {
+			batchTimedOut = true
+		}
+		if n > 1 && !errors.Is(err, modbus.ErrConnection) {
+			if illegal {
+				left := n / 2
+				if err := readRange(start, left); err != nil {
+					return err
+				}
+				return readRange(start+left, n-left)
+			}
+			// Avoid repeated timeout trees: once a batch times out, test its
+			// addresses individually and continue past isolated silent holes.
+			for i := start; i < start+n; i++ {
+				if err := readRange(i, 1); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		switch {
+		case illegal:
+			mark(start, n, -1)
+		case errors.Is(err, modbus.ErrTimeout) || isEx && ex.Code == modbus.ExceptionGatewayTargetFailed:
+			mark(start, n, -3)
+		default:
+			mark(start, n, -2)
+			return fmt.Errorf("%s %s", refSpan(d.area(), d.Start+uint16(start), n), errSummary(err))
+		}
+		return nil
+	}
+	for start := 0; start < d.Qty; {
+		n := min(d.Qty-start, d.maxQty())
+		if err := readRange(start, n); err != nil {
+			if ctx.Err() != nil {
+				return res, nil
+			}
+			return res, err
+		}
+		start += n
+	}
+	if batchTimedOut {
+		// A late batch response can delay the first single reads. Recheck
+		// silent addresses after the full range so healthy neighbours are
+		// not reported as forwarding holes merely because of that backlog.
+		for i, state := range res {
+			if state == -3 {
+				if len(recheck) > 0 && ctx.Err() == nil {
+					recheck[0](i)
+				}
+				if err := readRange(i, 1); err != nil {
+					if ctx.Err() != nil {
+						return res, nil
+					}
+					return res, err
+				}
+			}
+		}
 	}
 	return res, nil
 }
 
 func (ws *Workspace) showProbeResult(w *readWindow, d readDef, res []int8, stopErr error) {
+	s := ws.session
 	type run struct{ start, n int }
-	var good, bad []string
+	spans := map[int8][]string{}
+	counts := map[int8]int{}
+	var noResponse []string
+	noResponseCount := 0
 	var best run
 	for i := 0; i < len(res); {
 		j := i
@@ -442,14 +505,16 @@ func (ws *Workspace) showProbeResult(w *readWindow, d readDef, res []int8, stopE
 			j++
 		}
 		span := refSpan(d.area(), d.Start+uint16(i), j-i)
-		switch res[i] {
-		case 1:
-			good = append(good, span)
-			if j-i > best.n {
-				best = run{i, j - i}
-			}
-		case -1:
-			bad = append(bad, span)
+		state := res[i]
+		if state == -3 {
+			noResponse = append(noResponse, span)
+			noResponseCount += j - i
+			state = -2
+		}
+		spans[state] = append(spans[state], span)
+		counts[state] += j - i
+		if res[i] == 1 && j-i > best.n {
+			best = run{i, j - i}
 		}
 		i = j
 	}
@@ -457,40 +522,50 @@ func (ws *Workspace) showProbeResult(w *readWindow, d readDef, res []int8, stopE
 		if len(s) == 0 {
 			return "无"
 		}
-		out := s[0]
-		for _, x := range s[1:] {
-			out += "、" + x
-		}
-		return out
+		return strings.Join(s, "、")
 	}
-	text := fmt.Sprintf("可读：%s\n不可读（异常）：%s", join(good), join(bad))
-	if stopErr != nil {
-		text += fmt.Sprintf("\n\n探测在 %v 停止：这不是地址问题，先按超时 / 连接问题排查。", stopErr)
+	text := fmt.Sprintf("Slave %d · %s · %s（Offset %d–%d）\n\n可读（%d）：%s\n非法地址（%d，异常 02）：%s\n无法判断（%d）：%s\n未检测（%d）：%s",
+		d.Slave, d.Function, refSpan(d.area(), d.Start, d.Qty), d.Start, int(d.Start)+d.Qty-1,
+		counts[1], join(spans[1]), counts[-1], join(spans[-1]), counts[-2], join(spans[-2]), counts[0], join(spans[0]))
+	if noResponseCount > 0 {
+		text += fmt.Sprintf("\n\n未响应 / 疑似未转发（%d）：%s\n这些单地址请求超时或返回网关异常 0B；其余地址继续检测，不能仅凭未响应断定寄存器不存在。", noResponseCount, join(noResponse))
 	}
-	body := widget.NewLabel(text)
-	body.Wrapping = fyne.TextWrapWord
-	resume := func() {
-		if w.paused {
-			w.setPaused(false)
-		}
+	if errors.Is(stopErr, context.Canceled) {
+		text += "\n\n检测已停止，保留已完成的结果；尚未完成的复核地址保留原检测结果。"
+	} else if stopErr != nil {
+		text += fmt.Sprintf("\n\n检测停止：%v。相关地址无法判断；剩余地址未检测。", stopErr)
+	} else if counts[0] > 0 {
+		text += "\n\n检测已停止，保留已完成的结果。"
 	}
-	if best.n == 0 || best.n == d.Qty {
+	text += "\n\n非法地址表示设备拒绝以当前功能码读取该单个地址，不能据此断定物理寄存器不存在。超时、设备忙或其他异常不归为非法地址。"
+	label := widget.NewLabel(text)
+	label.Wrapping = fyne.TextWrapWord
+	scroll := container.NewVScroll(label)
+	scroll.SetMinSize(fyne.NewSize(500, 260))
+	summary := widget.NewLabelWithStyle(fmt.Sprintf("可读 %d  ·  非法地址 %d  ·  无法判断 %d  ·  未检测 %d", counts[1], counts[-1], counts[-2], counts[0]), fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	if counts[-1]+counts[-2] > 0 {
+		summary.Importance = widget.WarningImportance
+	}
+	body := container.NewBorder(container.NewVBox(summary, widget.NewSeparator()), widget.NewButton("复制结果", func() { ws.app.Clipboard().SetContent(text) }), nil, nil, scroll)
+	if w == nil || best.n == 0 || best.n == d.Qty {
 		dlg := dialog.NewCustom("探测结果", "关闭", body, ws.win)
-		dlg.SetOnClosed(resume)
-		dlg.Resize(fyne.NewSize(480, 0))
+		dlg.Resize(fyne.NewSize(600, 440))
 		dlg.Show()
 		return
 	}
 	apply := fmt.Sprintf("改为读取 %s", refSpan(d.area(), d.Start+uint16(best.start), best.n))
 	dlg := dialog.NewCustomConfirm("探测结果", apply, "关闭", body, func(ok bool) {
 		if ok {
-			w.paused = false
-			w.pauseBtn.SetIcon(theme.MediaPauseIcon())
-			ws.redefine(w, func(d *readDef) { d.Start, d.Qty = d.Start+uint16(best.start), best.n })
-			return
+			if ws.closed || ws.session != s || !slices.Contains(ws.windows, w) ||
+				w.def.Slave != d.Slave || w.def.Function != d.Function || w.def.Start != d.Start || w.def.Qty != d.Qty {
+				if !ws.closed {
+					dialog.ShowInformation("检测结果已过期", "连接或读取窗口已改变，请重新检测后再调整读取范围。", ws.win)
+				}
+				return
+			}
+			ws.redefine(w, func(nd *readDef) { nd.Start, nd.Qty = d.Start+uint16(best.start), best.n })
 		}
-		resume()
 	}, ws.win)
-	dlg.Resize(fyne.NewSize(480, 0))
+	dlg.Resize(fyne.NewSize(600, 440))
 	dlg.Show()
 }

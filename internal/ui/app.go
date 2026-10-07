@@ -88,6 +88,7 @@ type Workspace struct {
 
 	session      *session
 	connecting   bool
+	probeRunning bool         // 检测及停止清理期间，同一工作区只允许一次检测
 	recID        atomic.Int64 // 正在记录的会话 ID，收发回调里读；0 表示不记录
 	points       pointTable   // 本窗口的点表，初始为空
 	readOnly     bool         // 只读模式，禁止一切写入（readonly.go）
@@ -305,6 +306,11 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 	parameters := container.New(flowLayout{}, container.NewHBox(widget.NewLabel("协议"), fixed(140, ws.proto)), ws.tcpBox, ws.serBox,
 		ws.useSim, ws.detectBn, container.NewHBox(widget.NewLabel("超时(ms)"), fixed(72, ws.timeoutE)), ws.connBtn)
 	actions := container.New(flowLayout{},
+		widget.NewButtonWithIcon("检测寄存器", theme.SearchIcon(), func() {
+			if !ws.dialogOpen() {
+				ws.registerProbeDialog()
+			}
+		}),
 		widget.NewButtonWithIcon("读取窗口", theme.ContentAddIcon(), func() {
 			if !ws.dialogOpen() {
 				ws.addReadWindow()
@@ -413,6 +419,7 @@ func (ws *Workspace) setMenu() {
 			key(item("自定义请求…", ws.openRequestTool), fyne.KeyR, false),
 			key(item("功能码 / 数据类型 / 字节序调试…", func() { ws.openTypeTool(ws.current()) }), fyne.KeyB, false),
 			item("扫描从站地址…", modal(ws.scanSlavesDialog)), item("读取诊断计数器…", modal(ws.diagCountersDialog)),
+			item("检测寄存器…", modal(ws.registerProbeDialog)),
 			fyne.NewMenuItemSeparator(),
 			key(item("历史报文…", modal(ws.openHistory)), fyne.KeyH, true),
 			item("打开报文数据库", modal(func() { ws.openDatabase(ws.win, false) })),

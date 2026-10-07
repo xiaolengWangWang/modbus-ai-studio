@@ -1,11 +1,11 @@
 #!/bin/sh
 # 构建 macOS 桌面应用：Intel 与 Apple Silicon 各一个 .app 和 DMG，ad-hoc 签名。
-# 用法：VERSION=0.11.4 build/macos.sh
+# 用法：VERSION=0.11.5 build/macos.sh
 # 图标取自 assets/icon/AppIcon.png，Info.plist 模板在 platform/macos/。
 set -eu
 cd "$(dirname "$0")/.."
 
-VERSION=${VERSION:-0.11.4}
+VERSION=${VERSION:-0.11.5}
 APP="Modbus AI Studio"
 DIST=dist
 export CGO_ENABLED=1 MACOSX_DEPLOYMENT_TARGET=12.0
