@@ -4,6 +4,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
+	"slices"
 
 	"modbus-ai-studio/internal/modbus"
 )
@@ -53,6 +54,7 @@ func newReadBar(w *readWindow) *readBar {
 				ws.setCurrent(w)
 				ws.redefine(w, func(d *readDef) {
 					d.Function = f
+					d.Formats = nil
 					d.Qty = min(d.Qty, d.maxQty())
 				})
 			}
@@ -69,7 +71,7 @@ func newReadBar(w *readWindow) *readBar {
 		for _, k := range valueKinds {
 			if kindLabel(k) == s {
 				ws.setCurrent(w)
-				ws.redefine(w, func(d *readDef) { d.Kind = k })
+				ws.redefine(w, func(d *readDef) { d.Kind = k; d.Formats = nil })
 			}
 		}
 	})
@@ -92,7 +94,7 @@ func newReadBar(w *readWindow) *readBar {
 	b.kind.PlaceHolder = string(kindUnsigned)
 	b.order.PlaceHolder = string(modbus.OrderABCD)
 	// 窄窗口里放不下时可以横向滚动，不把整个窗口撑宽
-	b.box = container.NewHBox(b.fn, b.kind, b.order, b.raw)
+	b.box = container.NewHBox(b.fn, widget.NewLabel("整窗"), b.kind, b.order, b.raw)
 	b.root = container.NewHScroll(b.box)
 	return b
 }
@@ -169,10 +171,21 @@ func (w *readWindow) orderChoice() (opts []string, cur modbus.ByteOrder, ok bool
 // setWindowOrder 按控制条选的字节序重新显示：点表窗口改本窗口里的 32 / 64 位点，其他窗口改显示格式的字节序。
 func (ws *Workspace) setWindowOrder(w *readWindow, o modbus.ByteOrder) {
 	if w.def.Kind == kindPoint {
+		w.def.Formats = slices.Clone(w.def.Formats)
+		for i := range w.def.Formats {
+			w.def.Formats[i].Order = o.For(w.def.Formats[i].Kind.dataType())
+		}
 		ws.changePointOrder(orderWindow, w, 0, o)
+		w.refreshFormats()
 		return
 	}
-	ws.redefine(w, func(d *readDef) { d.Order = o })
+	ws.redefine(w, func(d *readDef) {
+		d.Order = o
+		d.Formats = slices.Clone(d.Formats)
+		for i := range d.Formats {
+			d.Formats[i].Order = o.For(d.Formats[i].Kind.dataType())
+		}
+	})
 }
 
 // activator 包住读取窗口的内容：点窗口里不响应点击的地方（状态行、空白）也把它设为当前窗口，

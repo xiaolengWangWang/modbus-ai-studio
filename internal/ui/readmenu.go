@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/internal/modbus"
@@ -111,10 +112,19 @@ func (w *readWindow) selectedText() string {
 	if w.sel < 0 {
 		return ""
 	}
+	start, count := w.selectionRange()
+	var rows []string
+	for i := start; i < start+count; i += w.valueFormat(i).width {
+		rows = append(rows, w.rowText(i))
+	}
+	return strings.Join(rows, "\n")
+}
+
+func (w *readWindow) rowText(i int) string {
 	var parts []string
 	for c := range w.cols {
 		l := newCell(func(widget.TableCellID) {}, func(widget.TableCellID) {}, nil)
-		w.updateCell(w.cellOf(w.sel, c), l)
+		w.updateCell(w.cellOf(i, c), l)
 		parts = append(parts, l.Text)
 	}
 	return strings.TrimRight(strings.Join(parts, "\t"), "\t")
@@ -125,7 +135,10 @@ func (w *readWindow) showCellMenu(id widget.TableCellID, pos fyne.Position) {
 	if w.ws.dialogOpen() {
 		return
 	}
-	w.tapCell(id)
+	i := w.indexOf(id)
+	if !w.selectedRegister(i) {
+		w.selectCell(id, 0)
+	}
 	widget.ShowPopUpMenuAtPosition(w.cellMenu(), w.ws.win.Canvas(), pos)
 }
 
@@ -140,15 +153,30 @@ func (w *readWindow) cellMenu() *fyne.Menu {
 
 	var kinds []*fyne.MenuItem
 	for _, k := range valueKinds {
-		it := fyne.NewMenuItem(string(k), func() { ws.redefine(w, func(d *readDef) { d.Kind = k }) })
-		it.Checked = d.Kind == k
+		if k == kindPoint {
+			continue
+		}
+		it := fyne.NewMenuItem(string(k), func() {
+			start, count := w.selectionRange()
+			if w.selAnchor == w.sel {
+				count = k.width()
+			}
+			if err := w.setRegisterFormat(start, count, k, w.valueFormat(start).order); err != nil {
+				dialog.ShowError(err, ws.win)
+			}
+		})
+		it.Checked = w.sel >= 0 && w.valueFormat(w.sel).kind == k
 		kinds = append(kinds, it)
 	}
 	kindItem := fyne.NewMenuItem("显示格式", nil)
 	kindItem.ChildMenu = fyne.NewMenu("", kinds...)
-	kindItem.Disabled = d.bits()
+	kindItem.Disabled = d.bits() || w.sel < 0
+	typeItem := fyne.NewMenuItem("设置寄存器数据类型…", w.showRegisterFormat)
+	typeItem.Disabled = d.bits() || w.sel < 0
+	resetItem := fyne.NewMenuItem("恢复选中寄存器默认格式", w.clearRegisterFormats)
+	resetItem.Disabled = d.bits() || w.sel < 0 || len(d.Formats) == 0
 
-	orderItem := fyne.NewMenuItem("字节序", nil)
+	orderItem := fyne.NewMenuItem("整窗字节序", nil)
 	opts, cur, ok := w.orderChoice()
 	var orders []*fyne.MenuItem
 	for _, o := range opts {
@@ -167,6 +195,6 @@ func (w *readWindow) cellMenu() *fyne.Menu {
 	probeItem := fyne.NewMenuItem("逐个探测可读地址…", func() { ws.probeRange(w) })
 	probeItem.Disabled = ws.session == nil
 	return fyne.NewMenu("", write, copyItem, fyne.NewMenuItemSeparator(),
-		kindItem, orderItem, raw, fyne.NewMenuItemSeparator(),
+		typeItem, kindItem, resetItem, orderItem, raw, fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("读取定义…", func() { ws.showDefinition(w) }), debug, probeItem)
 }

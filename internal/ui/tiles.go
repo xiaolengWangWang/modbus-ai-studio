@@ -123,6 +123,7 @@ func (ws *Workspace) removeWindow(w *readWindow) {
 func (ws *Workspace) redefine(w *readWindow, change func(*readDef)) {
 	d := w.def
 	change(&d)
+	d.retainFormats(w.def)
 	if err := d.validate(); err != nil {
 		dialog.ShowError(err, ws.win)
 		return
@@ -131,6 +132,7 @@ func (ws *Workspace) redefine(w *readWindow, change func(*readDef)) {
 }
 
 func (ws *Workspace) applyDef(w *readWindow, d readDef) {
+	d.retainFormats(w.def)
 	w.halt()
 	w.setDef(d)
 	ws.relayout()
@@ -147,7 +149,20 @@ func (ws *Workspace) pauseAll(pause bool) {
 func (ws *Workspace) relayout() {
 	var obj fyne.CanvasObject
 	if len(ws.windows) == 0 {
-		box := container.NewVBox(widget.NewLabel("没有读取窗口。点右上角“读取窗口”新建，或用“读取”菜单里的“打开换热站示例”。"))
+		title := widget.NewLabelWithStyle("开始调试 Modbus 设备", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+		hint := widget.NewLabel("先设置上方连接参数，再新建读取窗口。\n没有设备时，可以打开换热站示例。")
+		hint.Alignment = fyne.TextAlignCenter
+		box := container.NewVBox(title, hint, container.NewHBox(
+			widget.NewButtonWithIcon("新建读取窗口", theme.ContentAddIcon(), func() {
+				if !ws.dialogOpen() {
+					ws.addReadWindow()
+				}
+			}),
+			widget.NewButtonWithIcon("打开换热站示例", theme.MediaPlayIcon(), func() {
+				if !ws.dialogOpen() {
+					ws.loadDemo()
+				}
+			})))
 		if recent := ws.recent(); len(recent) > 0 {
 			box.Add(widget.NewLabelWithStyle("最近打开的工作区", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
 			for _, p := range recent {

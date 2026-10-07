@@ -170,6 +170,7 @@ func (t *typeTool) fill(w *readWindow) {
 		d = w.def
 		start, qty = d.Start, d.Qty
 		if w.sel >= 0 {
+			d = w.displayDef(w.sel)
 			start, qty = d.Start+uint16(w.sel), max(d.Qty-w.sel, 4)
 		}
 		switch {
@@ -732,6 +733,7 @@ func (t *typeTool) apply(newWin bool) {
 		d = cur.def
 	}
 	d.Slave, d.Function, d.Start, d.Qty = req.Slave, req.Function, req.Address, int(req.Quantity)
+	d.Formats = nil // 调试工具的应用操作替换整个窗口的显示定义。
 	if !t.isBits(req.Function) {
 		d.Kind = toolKind(t.dataType())
 		if t.order.Selected != "" {

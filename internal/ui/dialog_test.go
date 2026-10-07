@@ -136,7 +136,7 @@ func TestDialogsDoNotStack(t *testing.T) {
 	tap(ws.connBtn)
 }
 
-// 历史报文只开一个；报文数据库可以直接打开，没有能打开 .db 的程序时在文件夹里显示。
+// 历史报文和数据库入口使用同一个内置查看窗口，不依赖 .db 文件关联程序。
 func TestHistoryWindowAndDatabase(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "packets.db")
 	r, err := recorder.Open(dbPath)
@@ -145,12 +145,11 @@ func TestHistoryWindowAndDatabase(t *testing.T) {
 	}
 	SetRecorder(r, dbPath, nil)
 	t.Cleanup(func() { SetRecorder(nil, "", nil); r.Close() })
-	var opened, shown []string
-	openResult := error(nil)
-	oldOpen, oldShow := openFileFn, showInFolderFn
-	openFileFn = func(p string) error { opened = append(opened, p); return openResult }
-	showInFolderFn = func(p string) error { shown = append(shown, p); return nil }
-	t.Cleanup(func() { openFileFn, showInFolderFn = oldOpen, oldShow })
+	var shown []string
+	showResult := error(nil)
+	oldShow := showInFolderFn
+	showInFolderFn = func(p string) error { shown = append(shown, p); return showResult }
+	t.Cleanup(func() { showInFolderFn = oldShow })
 
 	if id, err := r.StartSession(modbus.ModeTCP, "192.168.1.10:502", 1); err == nil {
 		r.EndSession(id)
@@ -179,23 +178,23 @@ func TestHistoryWindowAndDatabase(t *testing.T) {
 			t.Error("关掉后再点应重新打开")
 		}
 
+		history := ws.historyWin
 		ws.openDatabase(ws.win, false)
-		if len(opened) != 1 || opened[0] != dbPath || overlayCount(ws) != 0 {
-			t.Errorf("应直接用系统程序打开数据库：%v，对话框 %d", opened, overlayCount(ws))
+		if ws.historyWin != history || len(ws.tools) != 1 || overlayCount(ws) != 0 {
+			t.Errorf("打开数据库应复用内置历史窗口，对话框 %d", overlayCount(ws))
 		}
 		ws.openDatabase(ws.win, true)
 		if len(shown) != 1 || shown[0] != dbPath {
 			t.Errorf("应在文件夹里显示数据库：%v", shown)
 		}
-		openResult = platform.ErrNoApp
+		ws.historyWin.Close()
 		ws.openDatabase(ws.win, false)
-		if len(shown) != 2 || !strings.Contains(overlayText(ws), "DB Browser for SQLite") {
-			t.Errorf("没有能打开 .db 的程序时应在文件夹里显示并说明：%v\n%s", shown, overlayText(ws))
+		if ws.historyWin == nil || overlayCount(ws) != 0 || len(shown) != 1 {
+			t.Error("数据库应直接在程序内查看，无需外部 SQLite 工具")
 		}
-		clearOverlays(ws)
-		openResult = errors.New("boom")
-		ws.openDatabase(ws.win, false)
-		if !strings.Contains(overlayText(ws), "打不开报文数据库") {
+		showResult = errors.New("boom")
+		ws.openDatabase(ws.win, true)
+		if !strings.Contains(overlayText(ws), "打不开数据库所在文件夹") {
 			t.Errorf("打开失败时应说明：%s", overlayText(ws))
 		}
 		clearOverlays(ws)
@@ -207,7 +206,35 @@ func TestHistoryWindowAndDatabase(t *testing.T) {
 		if !strings.Contains(overlayText(ws), "找不到报文数据库") {
 			t.Errorf("数据库文件不在时应说明：%s", overlayText(ws))
 		}
-		ws.historyWin.Close()
+		if ws.historyWin != nil {
+			ws.historyWin.Close()
+		}
+	})
+}
+
+func TestDatabaseToolOpensStandardFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "packets.db")
+	r, err := recorder.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetRecorder(r, path, nil)
+	t.Cleanup(func() { SetRecorder(nil, "", nil); r.Close() })
+	oldOpen := openFileFn
+	var opened string
+	openFileFn = func(p string) error { opened = p; return nil }
+	t.Cleanup(func() { openFileFn = oldOpen })
+	ws := openWS(t, test.NewTempApp(t), false)
+	locked(func() {
+		ws.openDatabaseTool(ws.win)
+		if opened != path || overlayCount(ws) != 0 {
+			t.Errorf("管理工具入口应打开生成的 SQLite 文件：%s", opened)
+		}
+		openFileFn = func(string) error { return platform.ErrNoApp }
+		ws.openDatabaseTool(ws.win)
+		if text := overlayText(ws); !strings.Contains(text, path) || !strings.Contains(text, "标准 SQLite 文件") {
+			t.Errorf("无文件关联时应给出可在管理工具打开的路径：%s", text)
+		}
 	})
 }
 

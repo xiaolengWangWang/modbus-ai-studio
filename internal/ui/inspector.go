@@ -137,7 +137,7 @@ func (in *inspector) showRegister(w *readWindow) {
 // registerInsight 给出选中寄存器的全部解读：地址的各种写法、16 位的有符号 / 无符号 / 二进制 / 字节交换，
 // 以及与下一个寄存器组成 32 位时四种字节序下的 FLOAT32 / INT32 / UINT32，并标出哪些结果合理。
 func registerInsight(w *readWindow) []decodeRow {
-	d := w.def
+	d := w.displayDef(w.sel)
 	i := w.sel
 	off := d.Start + uint16(i)
 	area := d.area()

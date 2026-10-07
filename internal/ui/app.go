@@ -148,6 +148,7 @@ func newWorkspace(app fyne.App, win fyne.Window, version string, no int) *Worksp
 	ws.log = newFaultLog(app)
 	ws.log.onSelect = func(e logEntry) { ws.inspect.show("日志", e.detail()) }
 	ws.status = widget.NewLabel("")
+	ws.status.Truncation = fyne.TextTruncateEllipsis
 	ws.tiles = container.NewStack()
 	ws.mdi = newMDI(ws)
 	win.SetContent(ws.layout())
@@ -222,6 +223,7 @@ func (ws *Workspace) shutdown() {
 
 func (ws *Workspace) layout() fyne.CanvasObject {
 	ws.target = widget.NewEntry()
+	ws.target.SetPlaceHolder("IP:端口，例如 192.168.1.10:502")
 	ws.target.SetText("127.0.0.1:502")
 	ws.useSim = widget.NewCheck("内置模拟器", func(on bool) {
 		if on {
@@ -242,9 +244,8 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 	ws.frameFmt.SetSelected("8N1")
 	ws.detectBn = widget.NewButtonWithIcon("识别", theme.SearchIcon(), ws.detectProtocol)
 
-	// 连接栏按 1024 宽的工控机屏幕设计，两种协议下都不超宽
-	ws.tcpBox = container.NewHBox(widget.NewLabel("目标"), fixed(140, ws.target), ws.useSim, ws.detectBn)
-	ws.serBox = container.NewHBox(widget.NewLabel("串口"), fixed(140, ws.port), fixed(100, ws.baud), fixed(72, ws.frameFmt))
+	ws.tcpBox = container.NewHBox(widget.NewLabel("目标"), fixed(190, ws.target), ws.useSim, ws.detectBn)
+	ws.serBox = container.NewHBox(widget.NewLabel("串口"), fixed(140, ws.port), widget.NewLabel("波特率"), fixed(100, ws.baud), fixed(72, ws.frameFmt))
 	ws.serBox.Hide()
 	ws.proto = widget.NewSelect(protoNames, func(s string) {
 		if ws.serialMode() {
@@ -278,11 +279,30 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 	ws.connBtn.Importance = widget.HighImportance
 	ws.updateDetectBtn()
 
-	ws.bar = container.NewHBox(fixed(140, ws.proto), ws.tcpBox, ws.serBox,
-		widget.NewLabel("超时(ms)"), fixed(64, ws.timeoutE), ws.connBtn, layout.NewSpacer(),
-		widget.NewButtonWithIcon("读取窗口", theme.ContentAddIcon(), ws.addReadWindow),
+	// 连接参数和工作区操作分行，连接按钮固定在右侧，小屏也能操作。
+	parameters := container.NewHBox(widget.NewLabel("协议"), fixed(140, ws.proto), ws.tcpBox, ws.serBox,
+		widget.NewLabel("超时(ms)"), fixed(72, ws.timeoutE))
+	actions := container.NewHBox(
+		widget.NewButtonWithIcon("读取窗口", theme.ContentAddIcon(), func() {
+			if !ws.dialogOpen() {
+				ws.addReadWindow()
+			}
+		}),
+		widget.NewButtonWithIcon("导入点表", theme.FolderOpenIcon(), func() {
+			if !ws.dialogOpen() {
+				ws.importPoints()
+			}
+		}),
 		widget.NewButtonWithIcon("自定义请求", theme.MailSendIcon(), ws.openRequestTool),
-		widget.NewButtonWithIcon("", theme.ContentCopyIcon(), func() { ws.openNew() }))
+		widget.NewButtonWithIcon("历史记录", theme.HistoryIcon(), func() {
+			if !ws.dialogOpen() {
+				ws.openHistory()
+			}
+		}), layout.NewSpacer(),
+		widget.NewButtonWithIcon("新建主窗口", theme.ContentCopyIcon(), func() { ws.openNew() }))
+	ws.bar = container.NewVBox(
+		container.NewBorder(nil, nil, nil, ws.connBtn, container.NewHScroll(parameters)),
+		container.NewHScroll(actions))
 	bar := ws.bar
 
 	ws.logTab = container.NewTabItem("日志", ws.log.root)
@@ -355,6 +375,7 @@ func (ws *Workspace) setMenu() {
 		fyne.NewMenu("读取",
 			key(item("新建读取窗口", modal(ws.addReadWindow)), fyne.KeyT, false),
 			key(item("读取定义…", modal(cur(ws.showDefinition))), fyne.KeyE, false),
+			item("设置寄存器数据类型…", modal(cur(func(w *readWindow) { w.showRegisterFormat() }))),
 			key(item("写入选中的值…", modal(cur(ws.showWrite))), fyne.KeyReturn, false),
 			key(item("暂停 / 继续", cur(func(w *readWindow) { w.setPaused(!w.paused) })), fyne.KeyP, false),
 			item("关闭读取窗口", cur(ws.removeWindow)),
@@ -372,6 +393,7 @@ func (ws *Workspace) setMenu() {
 			fyne.NewMenuItemSeparator(),
 			key(item("历史报文…", modal(ws.openHistory)), fyne.KeyH, true),
 			item("打开报文数据库", modal(func() { ws.openDatabase(ws.win, false) })),
+			item("用管理工具打开数据库", modal(func() { ws.openDatabaseTool(ws.win) })),
 			item("报文数据库所在文件夹", modal(func() { ws.openDatabase(ws.win, true) })),
 			key(item("清空通信报文", ws.traffic.clear), fyne.KeyL, false)),
 		ws.winMenu,

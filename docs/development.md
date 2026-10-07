@@ -51,8 +51,8 @@ Linux 版目前没有专用代码和安装包：同一份代码可以在 Linux �
 
 ```sh
 go run ./cmd/modbus-ai              # 运行桌面应用（启动时为空；“读取 → 打开换热站示例”加载示例并连接内置模拟器）
-VERSION=0.11.0 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
-VERSION=0.11.0 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
+VERSION=0.11.3 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
+VERSION=0.11.3 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
 
 go build -o bin/ ./cmd/...
 
@@ -90,6 +90,7 @@ Windows 启动阶段耗时和字体预扫描结果写入 `%AppData%\ModbusAIStud
 
 1. 改代码时同步递增版本号：`cmd/modbus-ai/main.go` 的 `version`、`build/*.sh` 的默认 `VERSION`、本文里的命令示例。
 2. `VERSION=x.y.z build/macos.sh`、`VERSION=x.y.z build/windows.sh` 打出两个 DMG 和 Windows zip。安装包文件名不要改：程序里的“检查更新”按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包。
+   没有本机 macOS 编译环境时，推送后运行 GitHub Actions 的 `package` 工作流，输入版本号；它调用同一组打包脚本生成三个安装包。下载 `installers-Linux` 和 `installers-macOS` 产物，核验后再上传发行版。
 3. 提交并推送，等持续集成在三个平台上都通过。
 4. `git tag -a vx.y.z` 并推送；`gh release create --draft` 建草稿，`gh release upload` 逐个上传三个文件（网络慢时一次传完会超时），核对大小后 `gh release edit --draft=false --latest` 发布。发布说明末尾必须有 `## SHA-256` 段落，每行 `校验值  文件名`：自动更新按它校验下载的安装包，没有校验值的版本只能手动下载。
 5. 同步到 Gitee 镜像：`VERSION=x.y.z NOTES=发布说明.md build/gitee.sh`，用 SSH 推 main 和 tag；有 `~/.gitee_token`（Gitee 私人令牌，勾选 projects）时自动建发行版并上传三个安装包，没有令牌时按提示在网页上手动传。程序检查更新时同时查 Gitee 和 GitHub。

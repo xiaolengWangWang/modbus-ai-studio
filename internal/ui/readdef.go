@@ -232,6 +232,13 @@ func (ws *Workspace) showDefinition(w *readWindow) {
 		r, _ := strconv.Atoi(rows.Selected)
 		nd := readDef{Name: strings.TrimSpace(name.Text), Slave: byte(sv), Function: funcByName(fn.Selected), Start: c.Offset, Qty: n,
 			Scan: time.Duration(ms) * time.Millisecond, Kind: valueKind(kind.Selected), Order: modbus.ByteOrder(order.Selected), Rows: r, Raw: d.Raw}
+		if nd.Slave == d.Slave && nd.Function == d.Function && nd.Kind == d.Kind {
+			for _, f := range d.Formats {
+				if int(f.Offset) >= int(nd.Start) && int(f.Offset)+f.Kind.width() <= int(nd.Start)+nd.Qty {
+					nd.Formats = append(nd.Formats, f)
+				}
+			}
+		}
 		if err := nd.validate(); err != nil {
 			dialog.ShowError(err, ws.win)
 			return
@@ -254,6 +261,7 @@ type readDef struct {
 	Order    modbus.ByteOrder // 显示格式的字节序，用 For 换成格式对应宽度的写法；16 位格式 BA 表示字节交换
 	Rows     int              // 每列行数
 	Raw      bool             `json:",omitempty"` // 多显示一列寄存器的十六进制原始值
+	Formats  []registerFormat `json:",omitempty"` // 当前窗口中各个值的局部数据类型
 }
 
 var rowOptions = []int{10, 20, 50, 100}
@@ -300,11 +308,14 @@ func (d readDef) validate() error {
 	case d.Rows < 1:
 		return errors.New("每列行数至少为 1")
 	}
-	return nil
+	return d.validateFormats()
 }
 
 // format 是标题里的显示格式说明。
 func (d readDef) format() string {
+	if len(d.Formats) > 0 {
+		return "混合类型"
+	}
 	switch {
 	case d.bits() && d.usesPoints():
 		return "点表"
@@ -326,9 +337,10 @@ const (
 	colValue
 	colUnit
 	colRaw
+	colType
 )
 
-var colTitle = map[colKind]string{colAddr: "地址", colName: "名称", colValue: "值", colUnit: "单位", colRaw: "原始"}
+var colTitle = map[colKind]string{colAddr: "地址", colName: "名称", colValue: "值", colUnit: "单位", colRaw: "原始", colType: "类型"}
 
 func (d readDef) columns(pts pointTable) []colKind {
 	cols := []colKind{colAddr, colValue}
@@ -337,6 +349,9 @@ func (d readDef) columns(pts pointTable) []colKind {
 	}
 	if d.Raw && !d.bits() {
 		cols = append(cols, colRaw)
+	}
+	if len(d.Formats) > 0 {
+		cols = append(cols, colType)
 	}
 	return cols
 }
@@ -377,6 +392,13 @@ func (d readDef) colWidth(k colKind, pts pointTable) float32 {
 		return d.textWidth(pts, func(p point) string { return p.Unit }, 44, 96)
 	case colRaw:
 		return 64
+	case colType:
+		return 140
+	}
+	for _, f := range d.Formats {
+		if f.Kind == kindBinary || f.Kind == kindInt64 || f.Kind == kindUint64 {
+			return 180
+		}
 	}
 	switch {
 	case d.bits():

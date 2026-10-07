@@ -1,0 +1,52 @@
+name: package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  VERSION: ${{ inputs.version }}
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check the release version
+        shell: bash
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          grep -F "var version = \"$VERSION\"" cmd/modbus-ai/main.go
+      - name: Install the Windows cross compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64-win32 zip
+      - name: Package Windows x64
+        if: runner.os == 'Linux'
+        run: sh build/windows.sh
+      - name: Package macOS Intel and Apple Silicon
+        if: runner.os == 'macOS'
+        run: sh build/macos.sh
+      - name: Upload installers for release verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ runner.os }}
+          path: |
+            dist/ModbusAIStudio-*-Windows-x64.zip
+            dist/ModbusAIStudio-*-macOS-Intel.dmg
+            dist/ModbusAIStudio-*-macOS-AppleSilicon.dmg
+          if-no-files-found: error
+          retention-days: 14

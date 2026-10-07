@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -32,7 +33,7 @@ func TestWorkspaceRoundTrip(t *testing.T) {
 		if dst.session != nil || dst.useSim.Checked || dst.target.Text != "192.168.1.20:502" || dst.timeout != 1500*time.Millisecond || dst.proto.Selected != protoRTUTCP {
 			t.Errorf("连接参数没恢复：sim=%v target=%q timeout=%v proto=%s session=%v", dst.useSim.Checked, dst.target.Text, dst.timeout, dst.proto.Selected, dst.session)
 		}
-		if len(dst.windows) != 3 || dst.windows[1].def != src.windows[1].def || len(dst.points) != len(demoPoints()) {
+		if len(dst.windows) != 3 || !reflect.DeepEqual(dst.windows[1].def, src.windows[1].def) || len(dst.points) != len(demoPoints()) {
 			t.Errorf("读取窗口或点表没恢复：%d 个窗口，%d 个点", len(dst.windows), len(dst.points))
 		}
 		if len(dst.windows[0].cols) != 4 {

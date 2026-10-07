@@ -4,6 +4,7 @@ import (
 	"image/color"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -21,10 +22,13 @@ type cell struct {
 	onTap    func(widget.TableCellID)
 	onDouble func(widget.TableCellID)
 	onMenu   func(widget.TableCellID, fyne.Position)
+	onDrag   func(widget.TableCellID, fyne.Position)
+	dragID   *widget.TableCellID
+	bg       *canvas.Rectangle
 }
 
 func newCell(tap, double func(widget.TableCellID), menu func(widget.TableCellID, fyne.Position)) *cell {
-	c := &cell{onTap: tap, onDouble: double, onMenu: menu}
+	c := &cell{onTap: tap, onDouble: double, onMenu: menu, bg: canvas.NewRectangle(color.Transparent)}
 	c.Truncation = fyne.TextTruncateEllipsis
 	c.ExtendBaseWidget(c)
 	return c
@@ -39,6 +43,48 @@ func (c *cell) TappedSecondary(e *fyne.PointEvent) {
 		c.onMenu(c.id, e.AbsolutePosition)
 	}
 }
+
+func (c *cell) Dragged(e *fyne.DragEvent) {
+	if c.onDrag == nil {
+		return
+	}
+	if c.dragID == nil {
+		id := c.id
+		c.dragID = &id
+	}
+	c.onDrag(*c.dragID, e.Position)
+}
+
+func (c *cell) DragEnd() { c.dragID = nil }
+
+func (c *cell) setSelected(selected bool) {
+	var fill color.Color = color.Transparent
+	if selected {
+		fill = appTheme().Color(theme.ColorNameSelection, fyne.CurrentApp().Settings().ThemeVariant())
+	}
+	c.bg.FillColor = fill
+	c.bg.Refresh()
+}
+
+type cellRenderer struct {
+	fyne.WidgetRenderer
+	bg *canvas.Rectangle
+}
+
+func (c *cell) CreateRenderer() fyne.WidgetRenderer {
+	return &cellRenderer{c.Label.CreateRenderer(), c.bg}
+}
+
+func (r *cellRenderer) Objects() []fyne.CanvasObject {
+	return append([]fyne.CanvasObject{r.bg}, r.WidgetRenderer.Objects()...)
+}
+
+func (r *cellRenderer) Layout(size fyne.Size) {
+	r.bg.Resize(size)
+	r.WidgetRenderer.Layout(size)
+}
+
+func (r *cellRenderer) Refresh() { r.WidgetRenderer.Refresh(); r.bg.Refresh() }
 
 // compactTheme 缩小内边距和行距，让通信报文和解析面板一屏显示更多行（接近 Modbus Poll 的密度）。
 // 包的是应用当前的主题，Windows 上的微软雅黑和 13 号字照样生效。

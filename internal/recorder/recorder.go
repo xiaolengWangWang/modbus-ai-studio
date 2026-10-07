@@ -66,17 +66,21 @@ type item struct {
 // Recorder 写入是异步的：Record 只把记录放进缓冲，后台每 200 ms 或满 500 条批量写一次事务，
 // 磁盘再慢也不拖慢通信。缓冲满时丢弃并计数（Dropped）。
 type Recorder struct {
-	db      *sql.DB
-	mu      sync.RWMutex // 保护 closed，Close 之后的 Record 直接丢弃
-	closed  bool
-	ch      chan item
-	done    chan struct{}
-	Dropped atomic.Int64 // 缓冲满或写入失败而丢掉的记录数，状态栏会提示
-	running sync.Map     // 本进程里开始了、还没结束的会话 ID
+	db       *sql.DB
+	dbMu     sync.RWMutex // protects database rotation and synchronous queries/writes
+	root     string
+	path     string
+	sessions map[int64]sessionRecord // metadata for queued packets across file boundaries
+	mu       sync.RWMutex            // 保护 closed，Close 之后的 Record 直接丢弃
+	closed   bool
+	ch       chan item
+	done     chan struct{}
+	Dropped  atomic.Int64 // 缓冲满或写入失败而丢掉的记录数，状态栏会提示
+	running  sync.Map     // 本进程里开始了、还没结束的会话 ID
 }
 
 // DefaultPath 返回本机数据库位置：macOS 为 ~/Library/Application Support/ModbusAIStudio/packets.db，
-// Windows 为 %AppData%\ModbusAIStudio\packets.db。所有主窗口、所有进程共用一个库。
+// Windows 为 %AppData%\ModbusAIStudio\packets.db。写满后使用同目录下的编号文件。
 func DefaultPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -93,12 +97,58 @@ func DefaultPath() (string, error) {
 func Open(path string) (*Recorder, error) { return open(path, 10000) }
 
 func open(path string, buffer int) (*Recorder, error) {
+	r := &Recorder{root: path, path: path, sessions: make(map[int64]sessionRecord), ch: make(chan item, buffer), done: make(chan struct{})}
+	files, err := r.Files()
+	if err != nil {
+		return nil, err
+	}
+	if len(files) > 0 {
+		r.path = files[len(files)-1]
+	}
+	r.db, err = openDatabase(r.path)
+	if err == nil {
+		var size, pages int64
+		err = r.db.QueryRow("PRAGMA page_size").Scan(&size)
+		if err == nil {
+			err = r.db.QueryRow("PRAGMA page_count").Scan(&pages)
+		}
+		if err == nil && pages*size >= MaxFileBytes {
+			err = r.rotateLocked()
+		}
+	}
+	if err != nil {
+		if r.db != nil {
+			r.db.Close()
+		}
+		return nil, fmt.Errorf("打开报文数据库 %s 失败：%w", path, err)
+	}
+	go r.loop()
+	return r, nil
+}
+
+func openDatabase(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", path+"?_foreign_keys=on&_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL")
+	if err != nil {
+		return nil, err
+	}
+	// max_page_count is connection-local; keep the configured connection alive.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if err == nil {
 		_, err = db.Exec(schema)
 	}
 	if err == nil {
 		err = migrate(db)
+	}
+	if err == nil {
+		var size int64
+		err = db.QueryRow("PRAGMA page_size").Scan(&size)
+		if err == nil {
+			_, err = db.Exec(fmt.Sprintf("PRAGMA max_page_count = %d", MaxFileBytes/size))
+		}
+		if err == nil {
+			_, err = db.Exec("PRAGMA journal_size_limit = 0")
+		}
 	}
 	if err != nil {
 		if db != nil {
@@ -106,9 +156,7 @@ func open(path string, buffer int) (*Recorder, error) {
 		}
 		return nil, fmt.Errorf("打开报文数据库 %s 失败：%w", path, err)
 	}
-	r := &Recorder{db: db, ch: make(chan item, buffer), done: make(chan struct{})}
-	go r.loop()
-	return r, nil
+	return db, nil
 }
 
 // migrate 给旧库的 events 表补上后来加的列（0.10.0 起记录故障分析和原始报文）。
@@ -187,6 +235,32 @@ func (r *Recorder) loop() {
 }
 
 func (r *Recorder) insert(batch []item) error {
+	r.dbMu.Lock()
+	defer r.dbMu.Unlock()
+	return r.insertLocked(batch)
+}
+
+func (r *Recorder) insertLocked(batch []item) error {
+	err := r.writeLocked(func() error {
+		for _, it := range batch {
+			if err := r.ensureSessionLocked(it.session); err != nil {
+				return err
+			}
+		}
+		return r.insertBatch(batch)
+	})
+	// Split oversized transactions only when SQLite reports the size limit.
+	if isFull(err) && len(batch) > 1 {
+		middle := len(batch) / 2
+		if err := r.insertLocked(batch[:middle]); err != nil {
+			return err
+		}
+		return r.insertLocked(batch[middle:])
+	}
+	return err
+}
+
+func (r *Recorder) insertBatch(batch []item) error {
 	tx, err := r.db.Begin()
 	if err != nil {
 		return err
@@ -223,18 +297,26 @@ func (r *Recorder) Close() error {
 	close(r.ch)
 	r.mu.Unlock()
 	<-r.done
+	r.dbMu.Lock()
+	defer r.dbMu.Unlock()
 	return r.db.Close()
 }
 
 // StartSession 在连接建立时调用，返回会话 ID。
 func (r *Recorder) StartSession(mode modbus.Mode, target string, window int) (int64, error) {
-	res, err := r.db.Exec(`INSERT INTO sessions (started_at, protocol, target, window) VALUES (?, ?, ?, ?)`,
-		time.Now().UnixMilli(), string(mode), target, window)
+	r.dbMu.Lock()
+	defer r.dbMu.Unlock()
+	id, err := nextSessionID()
 	if err != nil {
 		return 0, err
 	}
-	id, err := res.LastInsertId()
+	s := sessionRecord{start: time.Now().UnixMilli(), protocol: string(mode), target: target, window: window}
+	err = r.writeLocked(func() error { return s.insert(r.db, id) })
+	if err != nil {
+		return 0, err
+	}
 	if err == nil {
+		r.sessions[id] = s
 		r.running.Store(id, true)
 	}
 	return id, err
@@ -242,8 +324,22 @@ func (r *Recorder) StartSession(mode modbus.Mode, target string, window int) (in
 
 // EndSession 在断开时调用。
 func (r *Recorder) EndSession(id int64) error {
+	r.dbMu.Lock()
+	defer r.dbMu.Unlock()
 	r.running.Delete(id)
-	_, err := r.db.Exec(`UPDATE sessions SET ended_at = ? WHERE id = ?`, time.Now().UnixMilli(), id)
+	end := time.Now().UnixMilli()
+	err := r.writeLocked(func() error {
+		if err := r.ensureSessionLocked(id); err != nil {
+			return err
+		}
+		_, err := r.db.Exec(`UPDATE sessions SET ended_at = ? WHERE id = ?`, end, id)
+		return err
+	})
+	if err == nil {
+		s := r.sessions[id]
+		s.end = sql.NullInt64{Int64: end, Valid: true}
+		r.sessions[id] = s
+	}
 	return err
 }
 
@@ -274,16 +370,25 @@ type Event struct {
 
 // Log 写一条日志。写得很少（同一种错误连续出现只记一次），直接同步写入。Time 为零值时取当前时间。
 func (r *Recorder) Log(session int64, e Event) error {
+	r.dbMu.Lock()
+	defer r.dbMu.Unlock()
 	if e.Time.IsZero() {
 		e.Time = time.Now()
 	}
-	_, err := r.db.Exec(`INSERT INTO events (session_id, time, kind, detail, window, analysis, tx, rx) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		session, e.Time.UnixMilli(), e.Kind, e.Detail, e.Window, e.Analysis, e.TX, e.RX)
-	return err
+	return r.writeLocked(func() error {
+		if err := r.ensureSessionLocked(session); err != nil {
+			return err
+		}
+		_, err := r.db.Exec(`INSERT INTO events (session_id, time, kind, detail, window, analysis, tx, rx) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			session, e.Time.UnixMilli(), e.Kind, e.Detail, e.Window, e.Analysis, e.TX, e.RX)
+		return err
+	})
 }
 
 // Events 按时间正序返回会话的日志。
 func (r *Recorder) Events(session int64) ([]Event, error) {
+	r.dbMu.RLock()
+	defer r.dbMu.RUnlock()
 	rows, err := r.db.Query(`SELECT time, kind, detail, window, analysis, tx, rx FROM events WHERE session_id = ? ORDER BY id`, session)
 	if err != nil {
 		return nil, err
@@ -317,12 +422,14 @@ type Session struct {
 
 // Sessions 按时间倒序返回最近的会话。
 func (r *Recorder) Sessions(limit int) ([]Session, error) {
+	r.dbMu.RLock()
+	defer r.dbMu.RUnlock()
 	rows, err := r.db.Query(`SELECT s.id, s.started_at, s.ended_at, s.protocol, s.target, s.window,
 		COUNT(p.id), COALESCE(SUM(p.status NOT IN ('SENT', 'SUCCESS')), 0),
 		(SELECT COUNT(*) FROM events e WHERE e.session_id = s.id AND e.kind = 'DISCONNECT'),
 		(SELECT COUNT(*) FROM events e WHERE e.session_id = s.id AND e.kind IN ('CONNECT_FAIL', 'READ_FAIL'))
 		FROM sessions s LEFT JOIN packets p ON p.session_id = s.id
-		GROUP BY s.id ORDER BY s.id DESC LIMIT ?`, limit)
+		GROUP BY s.id ORDER BY s.started_at DESC, s.id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -346,6 +453,8 @@ func (r *Recorder) Sessions(limit int) ([]Session, error) {
 
 // Packets 返回会话最后 limit 条收发记录，按时间正序。
 func (r *Recorder) Packets(session int64, limit int) ([]modbus.Packet, error) {
+	r.dbMu.RLock()
+	defer r.dbMu.RUnlock()
 	rows, err := r.db.Query(`SELECT time, request_id, direction, protocol, slave, tx_id, function, address, count, raw,
 		status, rtt_us, error FROM packets WHERE session_id = ? ORDER BY id DESC LIMIT ?`, session, limit)
 	if err != nil {
@@ -375,8 +484,9 @@ func (r *Recorder) Packets(session int64, limit int) ([]modbus.Packet, error) {
 }
 
 // Prune 删除 before 之前的收发记录，以及已经没有记录、也早于 before 的会话。
-// 目前只按时间清理，库太大时再加按大小清理
 func (r *Recorder) Prune(before time.Time) error {
+	r.dbMu.Lock()
+	defer r.dbMu.Unlock()
 	if _, err := r.db.Exec(`DELETE FROM packets WHERE time < ?`, before.UnixMicro()); err != nil {
 		return err
 	}

@@ -11,6 +11,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -50,11 +51,14 @@ type readWindow struct {
 	actionBtn  *widget.Button
 	diagBox    *fyne.Container // 错误行：错误说明和一键处理
 	writeBtn   *widget.Button
+	typeBtn    *widget.Button
 	pauseBtn   *widget.Button
 	table      *grid                    // 数据表，加了 Modbus Poll 的键盘操作（readmenu.go）
 	tableBox   *container.ThemeOverride // 数据表套上紧凑主题，readLayout 排的是它
 	sel        int                      // 选中的寄存器序号（相对 Start），-1 表示未选中
 	selCell    widget.TableCellID       // 选中的单元格，sel >= 0 时有效
+	selAnchor  int                      // Shift 连选和拖选的起始寄存器
+	extending  bool                     // 选中回调中保留选择起点
 	head       *fyne.Container
 	buttons    *fyne.Container   // 定义、写入、暂停
 	bar        *readBar          // 功能码、格式、字节序、原始值（readbar.go）
@@ -64,10 +68,14 @@ type readWindow struct {
 }
 
 func newReadWindow(ws *Workspace, no int, d readDef) *readWindow {
-	w := &readWindow{ws: ws, no: no, sel: -1}
+	w := &readWindow{ws: ws, no: no, sel: -1, selAnchor: -1}
 	w.table = newGrid(w,
 		func() (int, int) { return w.rows, w.groups * len(w.cols) },
-		func() fyne.CanvasObject { return denseCell(newCell(w.tapCell, w.doubleTapCell, w.showCellMenu)) },
+		func() fyne.CanvasObject {
+			c := newCell(w.tapCell, w.doubleTapCell, w.showCellMenu)
+			c.onDrag = w.dragCell
+			return denseCell(c)
+		},
 		func(id widget.TableCellID, o fyne.CanvasObject) { w.updateCell(id, unwrap(o).(*cell)) },
 	)
 	w.table.CreateHeader = newGridHeader
@@ -98,8 +106,12 @@ func newReadWindow(ws *Workspace, no int, d readDef) *readWindow {
 			return
 		}
 		w.sel, w.selCell = i, id
+		if !w.extending || w.selAnchor < 0 {
+			w.selAnchor = i
+		}
 		w.updateWriteBtn()
 		ws.inspect.showRegister(w)
+		w.table.Refresh()
 	}
 
 	w.writeBtn = widget.NewButtonWithIcon("写入", theme.DocumentCreateIcon(), func() { ws.setCurrent(w); ws.showWrite(w) })
@@ -124,7 +136,9 @@ func newReadWindow(ws *Workspace, no int, d readDef) *readWindow {
 	w.diagBox = container.NewBorder(nil, nil, nil, w.actionBtn, w.errLbl)
 	w.diagBox.Hide()
 	w.hintLbl.Hide()
-	w.buttons = container.NewHBox(defBtn, w.writeBtn, w.pauseBtn)
+	w.typeBtn = widget.NewButton("类型", func() { ws.setCurrent(w); w.showRegisterFormat() })
+	w.typeBtn.Importance = widget.LowImportance
+	w.buttons = container.NewHBox(defBtn, w.typeBtn, w.writeBtn, w.pauseBtn)
 	w.bar = newReadBar(w)
 	// 标题在子窗口的标题栏上；第一行是控制条和按钮。高度不够时从下往上收起：先收状态行，错误和一键处理尽量留在可见范围
 	w.head = container.NewVBox(container.NewBorder(nil, nil, nil, w.buttons, w.bar.root), w.diagBox, w.hintLbl, w.statusLbl)
@@ -151,14 +165,10 @@ func (w *readWindow) setDef(d readDef) {
 	for c := 0; c < w.groups*len(w.cols); c++ {
 		w.table.SetColumnWidth(c, d.colWidth(w.cols[c%len(w.cols)], w.ws.points))
 	}
-	name := ""
-	if d.Name != "" {
-		name = " " + d.Name
-	}
-	w.inner.SetTitle(fmt.Sprintf("窗口 %d%s · %s · %s", w.no, name, refSpan(d.area(), d.Start, d.Qty), d.format()))
-	w.ws.refreshWindowMenu()
+	w.updateTitle()
 	w.bar.sync()
 	w.sel = -1
+	w.selAnchor = -1
 	w.table.UnselectAll()
 	if w.ws.inspect.src == w {
 		w.ws.inspect.clear()
@@ -227,7 +237,7 @@ func (w *readWindow) prefSize() fyne.Size {
 
 // indexOf 把表格单元换算成寄存器序号（相对 Start）；超出读取范围返回 -1。
 func (w *readWindow) indexOf(id widget.TableCellID) int {
-	if len(w.cols) == 0 {
+	if len(w.cols) == 0 || id.Row < 0 || id.Col < 0 || id.Row >= w.rows || id.Col >= w.groups*len(w.cols) {
 		return -1
 	}
 	i := id.Col/len(w.cols)*w.rows + id.Row
@@ -244,25 +254,29 @@ func (w *readWindow) cellOf(i, col int) widget.TableCellID {
 
 // align 让选中落在一个值的第一个寄存器上：多寄存器点的后几个寄存器、32 / 64 位格式的非起始位置都往前退。
 func (w *readWindow) align(i int) int {
-	d := w.def
-	switch {
-	case d.bits():
-	case d.usesPoints():
-		for i > 0 && w.ws.points.occupied(d.area(), d.Start+uint16(i)) {
-			i--
-		}
-	case d.Kind.width() > 1:
-		return i - i%d.Kind.width()
-	}
-	return i
+	return w.valueFormat(i).start
 }
 
 func (w *readWindow) tapCell(id widget.TableCellID) {
+	var modifiers fyne.KeyModifier
+	if driver, ok := fyne.CurrentApp().Driver().(desktop.Driver); ok {
+		modifiers = driver.CurrentKeyModifiers()
+	}
+	w.selectCell(id, modifiers)
+}
+
+func (w *readWindow) selectCell(id widget.TableCellID, modifiers fyne.KeyModifier) {
 	w.ws.setCurrent(w)
 	if c := fyne.CurrentApp().Driver().CanvasForObject(w.table); c != nil {
 		c.Focus(w.table)
 	}
-	w.table.Select(id)
+	w.extending = modifiers&fyne.KeyModifierShift != 0 && w.sel >= 0
+	defer func() { w.extending = false }()
+	if w.sel >= 0 && w.selCell == id {
+		w.table.OnSelected(id)
+	} else {
+		w.table.Select(id)
+	}
 }
 
 func (w *readWindow) doubleTapCell(id widget.TableCellID) {
@@ -287,6 +301,7 @@ func (w *readWindow) updateCell(id widget.TableCellID, c *cell) {
 	c.id = id
 	c.TextStyle, c.Alignment, c.Importance = fyne.TextStyle{}, fyne.TextAlignLeading, widget.MediumImportance
 	i := w.indexOf(id)
+	c.setSelected(i >= 0 && w.selectedRegister(i))
 	if i < 0 {
 		c.SetText("")
 		return
@@ -320,6 +335,21 @@ func (w *readWindow) updateCell(id widget.TableCellID, c *cell) {
 	case colRaw:
 		c.TextStyle.Monospace, c.Alignment, c.Importance = true, fyne.TextAlignTrailing, widget.LowImportance
 		c.SetText(w.rawText(i))
+	case colType:
+		f := w.valueFormat(i)
+		if f.start != i {
+			c.SetText("—")
+			return
+		}
+		if f.kind == kindPoint {
+			if p, ok := w.ws.points.get(d.area(), off); ok {
+				c.SetText(string(p.Type) + " " + string(p.Order))
+			} else {
+				c.SetText("Unsigned AB")
+			}
+			return
+		}
+		c.SetText(string(f.kind) + " " + string(f.order.For(f.kind.dataType())))
 	}
 }
 
@@ -332,7 +362,10 @@ func (w *readWindow) valueText(i int) (string, widget.Importance) {
 	if regs == nil || i >= len(regs) {
 		return "", widget.LowImportance
 	}
-	d := w.def
+	d := w.displayDef(i)
+	if w.valueFormat(i).start != i {
+		return "—", widget.LowImportance
+	}
 	imp := func(n int) widget.Importance {
 		if stale {
 			return widget.LowImportance
@@ -377,7 +410,7 @@ func (w *readWindow) valueText(i int) (string, widget.Importance) {
 		return strconv.Itoa(int(regs[i])), imp(1)
 	case d.Kind.width() > 1:
 		n := d.Kind.width()
-		if i%n != 0 || i+n > len(regs) {
+		if i+n > len(regs) {
 			return "—", widget.LowImportance
 		}
 		text, plausible := formatWide(d.Kind, d.Order, regs[i:i+n])
@@ -405,6 +438,11 @@ func (w *readWindow) canWrite() bool {
 	if w.ws.session == nil || w.sel < 0 || w.ws.readOnly {
 		return false
 	}
+	f := w.valueFormat(w.sel)
+	_, count := w.selectionRange()
+	if count > f.width || w.sel+f.width > d.Qty {
+		return false
+	}
 	switch d.Function {
 	case modbus.FuncReadCoils:
 		if p, ok := w.ws.points.get(d.area(), d.Start+uint16(w.sel)); ok && d.usesPoints() {
@@ -412,6 +450,17 @@ func (w *readWindow) canWrite() bool {
 		}
 		return true
 	case modbus.FuncReadHoldingRegisters:
+		if d.Kind == kindPoint && len(d.Formats) > 0 {
+			for i := w.sel; i < w.sel+f.width; i++ {
+				a := d.Start + uint16(i)
+				for a > d.Start && w.ws.points.occupied(d.area(), a) {
+					a--
+				}
+				if p, ok := w.ws.points.get(d.area(), a); ok && (!p.RW || p.Type == typeString) {
+					return false
+				}
+			}
+		}
 		if p, ok := w.ws.points.get(d.area(), d.Start+uint16(w.sel)); ok && d.Kind == kindPoint {
 			return p.RW && p.Type != typeString // 字符串点只读，要写用自定义请求 FC16
 		}
@@ -421,6 +470,11 @@ func (w *readWindow) canWrite() bool {
 }
 
 func (w *readWindow) updateWriteBtn() {
+	if w.sel >= 0 && !w.def.bits() {
+		w.typeBtn.Enable()
+	} else {
+		w.typeBtn.Disable()
+	}
 	if w.canWrite() {
 		w.writeBtn.Enable()
 	} else {

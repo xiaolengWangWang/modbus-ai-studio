@@ -17,6 +17,7 @@ func TestWindowsThemeSnapshot(t *testing.T) {
 	a := test.NewTempApp(t)
 	platform.ConfigureApp(a)
 	ws := openWS(t, a, false)
+	snapshotPNG(t, ws.win, "windows-theme-empty.png")
 	locked(func() {
 		ws.win.Resize(fyne.NewSize(1280, 760))
 		ws.loadDemo()
@@ -24,6 +25,9 @@ func TestWindowsThemeSnapshot(t *testing.T) {
 	waitFor(t, 5*time.Second, "读到数据", func() bool { return hasData(ws.windows[0]) })
 	time.Sleep(1500 * time.Millisecond)
 	snapshotPNG(t, ws.win, "windows-theme-main.png")
+	locked(func() { ws.win.Resize(fyne.NewSize(960, 620)) })
+	snapshotPNG(t, ws.win, "windows-theme-small.png")
+	locked(func() { ws.win.Resize(fyne.NewSize(1280, 760)) })
 	locked(func() { ws.showDefinition(ws.windows[0]) })
 	snapshotPNG(t, ws.win, "windows-theme-definition.png")
 	locked(func() { clearOverlays(ws) })

@@ -57,7 +57,7 @@ func (ws *Workspace) showWrite(w *readWindow) {
 	if !w.canWrite() {
 		return
 	}
-	d := w.def
+	d := w.displayDef(w.sel)
 	off := d.Start + uint16(w.sel)
 	switch {
 	case d.Function == modbus.FuncReadCoils:
@@ -207,7 +207,7 @@ func (ws *Workspace) showPointWrite(w *readWindow, p point) {
 
 // showRegisterWrite 按窗口的显示格式写原始值：Signed / Unsigned / Hex / Binary 写 1 个寄存器，32 位格式写 2 个，64 位格式写 4 个。
 func (ws *Workspace) showRegisterWrite(w *readWindow, off uint16) {
-	d := w.def
+	d := w.displayDef(int(off - w.def.Start))
 	kind := d.Kind
 	if kind == kindPoint {
 		kind = kindUnsigned

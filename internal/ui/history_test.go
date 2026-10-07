@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 
@@ -18,6 +19,132 @@ import (
 	"modbus-ai-studio/internal/recorder"
 	"modbus-ai-studio/internal/simulator"
 )
+
+// 数据库文件选择和文件操作必须指向同一个文件。
+func TestHistorySelectsArchivedDatabaseAndCopiesItsPath(t *testing.T) {
+	oldOpen, oldFolder := openFileFn, showInFolderFn
+	var opened, shown string
+	openFileFn = func(path string) error { opened = path; return nil }
+	showInFolderFn = func(path string) error { shown = path; return nil }
+	t.Cleanup(func() { openFileFn, showInFolderFn = oldOpen, oldFolder })
+	path := filepath.Join(t.TempDir(), "packets.db")
+	r, err := recorder.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetRecorder(r, path, nil)
+	t.Cleanup(func() { SetRecorder(nil, "", nil); r.Close() })
+	archive := filepath.Join(filepath.Dir(path), "packets-000001.db")
+	a, err := recorder.Open(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := a.StartSession(modbus.ModeTCP, "archive:502", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Log(id, recorder.Event{Kind: recorder.EventReadFail, Detail: "归档日志"}); err != nil {
+		t.Fatal(err)
+	}
+	a.Close()
+	ws := openWS(t, test.NewTempApp(t), false)
+	locked(ws.openHistory)
+	var files *widget.Select
+	locked(func() {
+		for _, sel := range findSelects(ws.historyWin.Content()) {
+			if slices.Contains(sel.Options, "packets-000001.db") {
+				files = sel
+			}
+		}
+	})
+	if files == nil {
+		t.Fatal("历史窗口应能选择旧数据库文件")
+	}
+	locked(func() { files.SetSelected("packets-000001.db") })
+	waitFor(t, 3*time.Second, "显示旧文件中的会话", func() bool {
+		for _, sel := range findSelects(ws.historyWin.Content()) {
+			if strings.Contains(sel.Selected, "archive:502") {
+				return true
+			}
+		}
+		return false
+	})
+	locked(func() {
+		findButtons(ws.historyWin.Content(), "复制路径")[0].OnTapped()
+		if got := ws.app.Clipboard().Content(); got != archive {
+			t.Errorf("应复制所选文件路径：%s", got)
+		}
+		findButtons(ws.historyWin.Content(), "管理工具打开")[0].OnTapped()
+		findButtons(ws.historyWin.Content(), "所在文件夹")[0].OnTapped()
+		if opened != archive || shown != archive {
+			t.Errorf("应打开所选文件：管理工具 %s，文件夹 %s", opened, shown)
+		}
+	})
+	snapshotPNG(t, ws.historyWin, "history-rotation.png")
+}
+
+// 刷新应重读当前会话；会话的计数和结束时间变化后，仍按 ID 保留选择。
+func TestHistoryRefreshKeepsSessionAndReloadsLogs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "packets.db")
+	r, err := recorder.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetRecorder(r, path, nil)
+	t.Cleanup(func() { SetRecorder(nil, "", nil); r.Close() })
+	id, err := r.StartSession(modbus.ModeTCP, "192.168.1.10:502", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := openWS(t, test.NewTempApp(t), false)
+	locked(ws.openHistory)
+	var sel *widget.Select
+	var info *widget.Label
+	var refresh *widget.Button
+	locked(func() {
+		for _, s := range findSelects(ws.historyWin.Content()) {
+			if strings.Contains(s.Selected, "192.168.1.10:502") {
+				sel = s
+			}
+		}
+		refresh = findButtons(ws.historyWin.Content(), "刷新")[0]
+		var walk func(fyne.CanvasObject)
+		walk = func(o fyne.CanvasObject) {
+			switch x := o.(type) {
+			case *widget.Label:
+				if strings.HasPrefix(x.Text, "报文共 ") || x.Text == "正在读取记录…" || x.Text == "" {
+					info = x
+				}
+			case *fyne.Container:
+				for _, c := range x.Objects {
+					walk(c)
+				}
+			case *container.Scroll:
+				walk(x.Content)
+			}
+		}
+		walk(ws.historyWin.Content())
+	})
+	if sel == nil || info == nil {
+		t.Fatal("历史窗口应显示会话和记录摘要")
+	}
+	waitFor(t, 3*time.Second, "初次加载", func() bool { return strings.Contains(info.Text, "日志 0 条") })
+	if err := r.Log(id, recorder.Event{Kind: recorder.EventReadFail, Detail: "测试超时"}); err != nil {
+		t.Fatal(err)
+	}
+	r.EndSession(id)
+	if _, err := r.StartSession(modbus.ModeTCP, "192.168.1.20:502", 1); err != nil {
+		t.Fatal(err)
+	}
+	tap(refresh)
+	waitFor(t, 3*time.Second, "刷新当前会话的日志", func() bool { return strings.Contains(info.Text, "日志 1 条") })
+	locked(func() {
+		if !strings.Contains(sel.Selected, "192.168.1.10:502") || strings.Contains(sel.Selected, "进行中") {
+			t.Errorf("刷新应保留原会话，并更新结束状态：%s", sel.Selected)
+		}
+	})
+	snapshotPNG(t, ws.historyWin, "modbus-ai-history.png")
+}
 
 // 连接期间的全部收发存进 SQLite，每次连接一个会话；历史报文窗口能选会话并载入记录。
 func TestRecordingAndHistory(t *testing.T) {

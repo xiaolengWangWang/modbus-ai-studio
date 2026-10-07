@@ -3,6 +3,7 @@ package recorder
 import (
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -10,6 +11,36 @@ import (
 
 	"modbus-ai-studio/internal/modbus"
 )
+
+// 管理工具能用普通 SQLite 连接读取生成文件，数据库不是自定义格式。
+func TestDatabaseFileReadableByIndependentSQLiteConnection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "packets.db")
+	r, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	id, err := r.StartSession(modbus.ModeTCP, "192.168.1.10:502", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Log(id, Event{Kind: EventReadFail, Detail: "兼容性测试"}); err != nil {
+		t.Fatal(err)
+	}
+	header, err := os.ReadFile(path)
+	if err != nil || len(header) < 16 || string(header[:16]) != "SQLite format 3\x00" {
+		t.Fatalf("应生成标准 SQLite 文件：%v", err)
+	}
+	db, err := sql.Open("sqlite3", "file:"+filepath.ToSlash(path)+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var detail string
+	if err := db.QueryRow("SELECT detail FROM events WHERE session_id = ?", id).Scan(&detail); err != nil || detail != "兼容性测试" {
+		t.Fatalf("管理工具应能在程序运行期间直接读取日志：%s %v", detail, err)
+	}
+}
 
 func TestRecordAndRead(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "packets.db")

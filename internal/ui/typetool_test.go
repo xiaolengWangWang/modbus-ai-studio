@@ -230,16 +230,16 @@ func TestReadWindowKeysAndMenu(t *testing.T) {
 			t.Fatalf("菜单里没有“%s”", label)
 			return nil
 		}
-		if item(m, "写入…").Disabled || !item(item(m, "显示格式").ChildMenu, "FLOAT32").Checked || !item(item(m, "字节序").ChildMenu, "CDAB").Checked {
+		if item(m, "写入…").Disabled || !item(item(m, "显示格式").ChildMenu, "FLOAT32").Checked || !item(item(m, "整窗字节序").ChildMenu, "CDAB").Checked {
 			t.Error("右键菜单应可写入，当前格式、字节序打勾")
 		}
-		item(item(m, "字节序").ChildMenu, "DCBA").Action()
+		item(item(m, "整窗字节序").ChildMenu, "DCBA").Action()
 		if w.def.Order != modbus.OrderDCBA {
 			t.Errorf("右键菜单改字节序：%s", w.def.Order)
 		}
 		item(item(w.cellMenu(), "显示格式").ChildMenu, "Hex").Action()
-		if w.def.Kind != kindHex {
-			t.Errorf("右键菜单改格式：%s", w.def.Kind)
+		if w.valueFormat(0).kind != kindHex || w.def.Kind != kindFloat32 {
+			t.Errorf("右键菜单只修改选中值的格式：%s，整窗仍为 %s", w.valueFormat(0).kind, w.def.Kind)
 		}
 		item(w.cellMenu(), "显示原始值").Action()
 		if !w.def.Raw {

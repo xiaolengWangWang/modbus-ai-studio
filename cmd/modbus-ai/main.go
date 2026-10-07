@@ -17,7 +17,7 @@ import (
 )
 
 // version 在打包时用 -ldflags "-X main.version=…" 覆盖。
-var version = "0.11.0"
+var version = "0.11.3"
 
 func main() {
 	start := time.Now()
@@ -40,7 +40,6 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "报文记录不可用：", err)
 	} else {
-		go rec.Prune(time.Now().AddDate(0, 0, -ui.HistoryDays))
 		defer rec.Close() // 退出前写完缓冲里的记录
 	}
 	// 不设主窗口：可以用“文件 → 新建窗口”同时开多个主窗口，关掉最后一个才退出
