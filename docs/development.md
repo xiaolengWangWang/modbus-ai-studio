@@ -40,7 +40,7 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 |  | `tests/` | 基于模拟器的集成测试 |
 | 平台代码 | `platform/` | 各操作系统专用的 Go 代码：`windows.go`（启动日志、显卡不支持 OpenGL 时弹窗），`other.go`（macOS、Linux，目前没有专用代码） |
 |  | `platform/macos/` | `Info.plist` 模板 |
-|  | `platform/windows/` | Windows 绿色版里的 `README.txt` 模板 |
+|  | `platform/windows/` | Windows 绿色版说明模板 `README.md`，打包时生成 UTF-8 的 `README.txt` |
 | 文档 | `README.md`、`docs/` | 首页；`guide.md` 使用说明、`points.md` 点表格式、`faq.md` 常见问题、`development.md` 开发与发布 |
 | 打包编译 | `build/` | `macos.sh`（.app 和 DMG）、`windows.sh`（交叉编译绿色版 zip）、`gitee.sh`（同步到 Gitee 镜像）、`icon/`（图标生成器） |
 |  | `.github/workflows/` | 持续集成：Windows、macOS、Linux 上跑 vet 和全部测试（GitHub 规定的位置） |

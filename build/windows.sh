@@ -47,7 +47,18 @@ unset GOOS GOARCH
 
 # 说明文件用 UTF-8 BOM + CRLF，记事本打开不乱码
 printf '\357\273\277' >"$STAGE/README.txt"
-sed -e "s/{{VERSION}}/$VERSION/g" -e 's/$/\r/' platform/windows/README.txt >>"$STAGE/README.txt"
+sed -e "s/{{VERSION}}/$VERSION/g" -e 's/$/\r/' platform/windows/README.md >>"$STAGE/README.txt"
+# Check the exact packaged bytes before uploading: encrypted/invalid templates
+# must never produce an unreadable installer README.
+python3 - "$STAGE/README.txt" "$VERSION" <<'PY'
+import pathlib
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8-sig")
+assert "E-SafeNet" not in text and "\0" not in text
+assert sys.argv[2] in text and "50 MB" in text
+assert "{{VERSION}}" not in text
+PY
 
 (cd "$DIST" && zip -qr "$(basename "$ZIP")" "$(basename "$STAGE")")
 echo "  $ZIP"
