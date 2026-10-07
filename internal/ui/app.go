@@ -22,7 +22,10 @@
 //	readmenu.go   读取窗口数据表的键盘操作（方向键、Enter、Ctrl+C）和右键菜单
 //	reqtool.go    自定义请求窗口
 //	typetool.go   功能码 / 数据类型 / 字节序调试窗口：各字节序并排解读、探测功能码、应用到读取窗口
-//	scan.go       总线工具：地址探测、从站扫描、串口参数扫描、诊断计数器
+//	scan.go       总线工具：从站扫描、串口参数扫描、诊断计数器
+//	registerprobe.go         寄存器检测表单、进度和轮询暂停恢复
+//	registerprobe_scan.go    批量检测、异常地址定位和超时复核
+//	registerprobe_result.go  检测统计、具体地址、复制和应用读取范围
 //	points.go     点表，解析 CSV / xlsx 点表和平台导出的设备属性表
 //	xlsx.go       读取 xlsx 单元格（导入点表用）
 //	workspace.go  工作区文件、最近打开、导入点表
