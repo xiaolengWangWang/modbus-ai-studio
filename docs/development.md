@@ -24,7 +24,7 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 
 | 类别 | 目录 | 内容 |
 | --- | --- | --- |
-| 资源 | `assets/icon/` | macOS 图标 `AppIcon.png`；Windows 用 `windows/icon16.png` 至 `icon256.png` 分别绘制，并以 `GLFW_ICON` 资源名嵌入 exe |
+| 资源 | `assets/icon/` | macOS 图标 `AppIcon.png`；Windows 用 `windows/icon16.png` 至 `icon256.png` 分别绘制，并以 `GLFW_ICON` 资源名嵌入 exe；`resources.go` 嵌入应用、窗口和托盘图标，直接运行源码也有图标 |
 |  | `assets/examples/` | CSV 点表模板（换热站示例，测试保证与内置点表一致） |
 |  | `assets/screenshots/` | 文档里的截图，由界面测试生成（见 [测试](#测试)） |
 | 核心代码 | `cmd/modbus-ai/` | 桌面应用入口 |
@@ -38,7 +38,7 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 |  | `internal/update/` | 软件更新：查询 GitHub Releases、下载并校验 SHA-256、替换 Windows 程序文件或 macOS .app |
 |  | `internal/ui/` | 桌面界面（各文件分工见 `internal/ui/app.go` 开头的说明） |
 |  | `tests/` | 基于模拟器的集成测试 |
-| 平台代码 | `platform/` | 各操作系统专用的 Go 代码：`windows.go`（启动日志、显卡不支持 OpenGL 时弹窗），`other.go`（macOS、Linux，目前没有专用代码） |
+| 平台代码 | `platform/` | 各操作系统专用的 Go 代码：`windows.go`（按进程号追加启动日志、获取屏幕可用区域、显卡不支持 OpenGL 时弹窗），`other.go`（macOS、Linux）；`window.go` 按可用区域和 DPI 缩放限制窗口尺寸 |
 |  | `platform/macos/` | `Info.plist` 模板 |
 |  | `platform/windows/` | Windows 绿色版说明模板 `README.md`，打包时生成 UTF-8 的 `README.txt` |
 | 文档 | `README.md`、`docs/` | 首页；`guide.md` 使用说明、`points.md` 点表格式、`faq.md` 常见问题、`development.md` 开发与发布 |
@@ -51,8 +51,8 @@ Linux 版目前没有专用代码和安装包：同一份代码可以在 Linux �
 
 ```sh
 go run ./cmd/modbus-ai              # 运行桌面应用（启动时为空；“读取 → 打开换热站示例”加载示例并连接内置模拟器）
-VERSION=0.11.3 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
-VERSION=0.11.3 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
+VERSION=0.11.4 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
+VERSION=0.11.4 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
 
 go build -o bin/ ./cmd/...
 
@@ -86,7 +86,7 @@ go test -race -count=3 ./...        # 并发与稳定性
 
 `build/macos.sh` 在 Intel Mac 上同时打 Intel 和 Apple Silicon 两个 .app 和 DMG（ad-hoc 签名，最低 macOS 12）；`build/windows.sh` 在 macOS 上用 mingw-w64 交叉编译 Windows x64 绿色版 zip（静态链接，只依赖系统 DLL）。
 
-Windows 启动阶段耗时和字体预扫描结果写入 `%AppData%\ModbusAIStudio\app.log`；图标资源可用 `go-winres extract` 检查 `GLFW_ICON`。当前 Windows 字体、150% 缩放窗口、16 像素图标和启动速度尚待真机验证；遇到问题时请附 `app.log`。
+Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\ModbusAIStudio\app.log`，每行带进程号，多个实例不会相互覆盖日志；图标资源可用 `go-winres extract` 检查 `GLFW_ICON` 和高 DPI 清单。主窗口默认 1240 × 760 逻辑尺寸，并按屏幕可用区域和 DPI 缩放适配；关闭按钮默认隐藏到托盘，采集继续，托盘菜单退出时关闭本实例全部连接并写完数据库缓冲。界面测试覆盖后台轮询、独立窗口关闭和退出清理，Windows 本机已验证两个进程同时运行及隐藏后保留进程。150% 缩放、16 像素图标和启动速度仍需在不同设备上验证；遇到问题时请附 `app.log`。
 
 1. 改代码时同步递增版本号：`cmd/modbus-ai/main.go` 的 `version`、`build/*.sh` 的默认 `VERSION`、本文里的命令示例。
 2. `VERSION=x.y.z build/macos.sh`、`VERSION=x.y.z build/windows.sh` 打出两个 DMG 和 Windows zip。安装包文件名不要改：程序里的“检查更新”按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包。

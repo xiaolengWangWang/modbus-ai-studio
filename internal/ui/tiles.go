@@ -7,11 +7,13 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"modbus-ai-studio/assets/icon"
 	"modbus-ai-studio/internal/modbus"
 )
 
@@ -150,9 +152,12 @@ func (ws *Workspace) relayout() {
 	var obj fyne.CanvasObject
 	if len(ws.windows) == 0 {
 		title := widget.NewLabelWithStyle("开始调试 Modbus 设备", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+		brand := canvas.NewImageFromResource(icon.Application())
+		brand.FillMode = canvas.ImageFillContain
+		brand.SetMinSize(fyne.NewSize(48, 48))
 		hint := widget.NewLabel("先设置上方连接参数，再新建读取窗口。\n没有设备时，可以打开换热站示例。")
 		hint.Alignment = fyne.TextAlignCenter
-		box := container.NewVBox(title, hint, container.NewHBox(
+		box := container.NewVBox(container.NewCenter(brand), title, hint, container.NewHBox(
 			widget.NewButtonWithIcon("新建读取窗口", theme.ContentAddIcon(), func() {
 				if !ws.dialogOpen() {
 					ws.addReadWindow()

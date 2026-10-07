@@ -1,12 +1,12 @@
 #!/bin/sh
 # 在 macOS / Linux 上交叉编译 Windows x64 绿色版：zip 解压即用，不用安装。
 # 需要 mingw-w64（brew install mingw-w64），界面（OpenGL）和报文记录（SQLite）都要 cgo。
-# 用法：VERSION=0.11.3 build/windows.sh
+# 用法：VERSION=0.11.4 build/windows.sh
 # 图标各尺寸取自 assets/icon/windows/，zip 里的说明模板在 platform/windows/。
 set -eu
 cd "$(dirname "$0")/.."
 
-VERSION=${VERSION:-0.11.3}
+VERSION=${VERSION:-0.11.4}
 DIST=dist
 STAGE="$DIST/ModbusAIStudio-$VERSION-Windows-x64"
 ZIP="$STAGE.zip"

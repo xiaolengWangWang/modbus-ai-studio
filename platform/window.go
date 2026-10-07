@@ -7,8 +7,8 @@ func FitSize(want fyne.Size, workWidth, workHeight int, scale float32) fyne.Size
 	if workWidth <= 0 || workHeight <= 0 || scale <= 0 {
 		return want
 	}
-	width := float32(workWidth-48) / scale
-	height := float32(workHeight-72) / scale
+	width := float32(max(1, workWidth-48)) / scale
+	height := float32(max(1, workHeight-72)) / scale
 	if width < want.Width {
 		want.Width = width
 	}

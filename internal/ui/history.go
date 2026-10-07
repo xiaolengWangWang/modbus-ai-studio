@@ -15,6 +15,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"modbus-ai-studio/assets/icon"
 	"modbus-ai-studio/internal/recorder"
 	"modbus-ai-studio/platform"
 )
@@ -55,6 +56,7 @@ func currentRecorder() *recorder.Recorder {
 
 // addTool 登记一个工具窗口：主窗口关闭时一起关闭，自己关闭时从列表里去掉。
 func (ws *Workspace) addTool(w fyne.Window, onClose func()) {
+	w.SetIcon(icon.Application())
 	ws.tools = append(ws.tools, w)
 	w.SetOnClosed(func() {
 		if onClose != nil {
@@ -98,6 +100,7 @@ func (ws *Workspace) openHistory() {
 		return
 	}
 	if ws.historyWin != nil { // 只开一个，再点切到已打开的
+		ws.historyWin.Show()
 		ws.historyWin.RequestFocus()
 		return
 	}
@@ -253,7 +256,7 @@ func (ws *Workspace) openHistory() {
 	fileRow := container.NewBorder(nil, nil, widget.NewLabel("数据库文件"), widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), refresh), files)
 	w.SetContent(container.NewBorder(container.NewVBox(fileRow, top, info), container.NewBorder(nil, nil, nil, dbBtns, path), nil, nil, split))
 	ws.addTool(w, func() { closed = true; ws.historyWin = nil })
-	w.Show()
+	showTool(w)
 }
 
 // 测试时替换，不真的打开访达 / 资源管理器。

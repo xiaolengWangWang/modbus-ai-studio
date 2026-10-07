@@ -62,6 +62,7 @@ type requestTool struct {
 
 func (ws *Workspace) openRequestTool() {
 	if ws.requestWin != nil { // 只开一个，再点切到已打开的
+		ws.requestWin.Show()
 		ws.requestWin.RequestFocus()
 		return
 	}
@@ -74,7 +75,7 @@ func (ws *Workspace) openRequestTool() {
 		t.stopLoop()
 		ws.requestWin = nil
 	})
-	w.Show()
+	showTool(w)
 }
 
 func (t *requestTool) build() fyne.CanvasObject {
@@ -200,6 +201,8 @@ func (t *requestTool) onSend() {
 			})
 			select {
 			case <-ctx.Done():
+				return
+			case <-t.ws.done:
 				return
 			case <-tick.C:
 			}

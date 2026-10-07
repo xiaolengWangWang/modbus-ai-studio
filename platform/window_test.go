@@ -19,3 +19,10 @@ func TestFitSize(t *testing.T) {
 		t.Fatalf("无法查询屏幕时应使用默认大小：%v", got)
 	}
 }
+
+func TestFitSizeTinyWorkArea(t *testing.T) {
+	got := FitSize(fyne.NewSize(1280, 780), 40, 60, 2)
+	if got.Width <= 0 || got.Height <= 0 {
+		t.Fatalf("极小可用区域也不能得到负窗口尺寸：%v", got)
+	}
+}

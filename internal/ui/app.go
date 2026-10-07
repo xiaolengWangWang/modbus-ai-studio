@@ -43,10 +43,10 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
-	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"modbus-ai-studio/assets/icon"
 	"modbus-ai-studio/internal/modbus"
 	"modbus-ai-studio/internal/transport"
 	"modbus-ai-studio/platform"
@@ -68,9 +68,10 @@ func uiDo(fn func()) {
 type Workspace struct {
 	Version string
 
-	app fyne.App
-	win fyne.Window
-	no  int
+	app     fyne.App
+	win     fyne.Window
+	no      int
+	desktop *Desktop
 
 	proto    *widget.Select
 	target   *widget.Entry
@@ -85,36 +86,38 @@ type Workspace struct {
 	serBox   *fyne.Container
 	bar      *fyne.Container
 
-	session     *session
-	connecting  bool
-	recID       atomic.Int64 // 正在记录的会话 ID，收发回调里读；0 表示不记录
-	points      pointTable   // 本窗口的点表，初始为空
-	readOnly    bool         // 只读模式，禁止一切写入（readonly.go）
-	roItem      *fyne.MenuItem
-	autoUpdItem *fyne.MenuItem // “帮助 → 自动检查更新”，勾选状态随设置变化
-	path        string         // 工作区文件，未保存时为空
-	timeout     time.Duration
-	windows     []*readWindow
-	cur         *readWindow // 当前读取窗口（tiles.go 的 current），读取窗口的快捷键作用于它
-	nextWin     int
-	tiles       *fyne.Container // 读取窗口区：没有窗口时是新建提示，有窗口时是多文档区域
-	mdi         *mdi            // 读取窗口的多文档区域（Modbus Poll 的 MDI，mdi.go）
-	winMenu     *fyne.Menu      // “窗口”菜单，列出读取窗口
-	traffic     *trafficPanel
-	inspect     *inspector
-	log         *faultLog
-	tabs        *container.AppTabs // 通信报文 / 日志
-	logTab      *container.TabItem
-	ring        packetRing // 最近的收发，出错时取出原始报文记进日志
-	status      *widget.Label
-	stats       stats
-	evidence    evidence
-	tools       []fyne.Window // 自定义请求等工具窗口，主窗口关闭时一起关闭
-	historyWin  fyne.Window   // 打开着的历史报文窗口，只开一个
-	requestWin  fyne.Window   // 打开着的自定义请求窗口，只开一个
-	typeTool    *typeTool     // 打开着的功能码 / 数据类型 / 字节序调试窗口，只开一个
-	done        chan struct{}
-	closed      bool
+	session      *session
+	connecting   bool
+	recID        atomic.Int64 // 正在记录的会话 ID，收发回调里读；0 表示不记录
+	points       pointTable   // 本窗口的点表，初始为空
+	readOnly     bool         // 只读模式，禁止一切写入（readonly.go）
+	roItem       *fyne.MenuItem
+	autoUpdItem  *fyne.MenuItem // “帮助 → 自动检查更新”，勾选状态随设置变化
+	path         string         // 工作区文件，未保存时为空
+	timeout      time.Duration
+	windows      []*readWindow
+	cur          *readWindow // 当前读取窗口（tiles.go 的 current），读取窗口的快捷键作用于它
+	nextWin      int
+	tiles        *fyne.Container // 读取窗口区：没有窗口时是新建提示，有窗口时是多文档区域
+	mdi          *mdi            // 读取窗口的多文档区域（Modbus Poll 的 MDI，mdi.go）
+	winMenu      *fyne.Menu      // “窗口”菜单，列出读取窗口
+	traffic      *trafficPanel
+	inspect      *inspector
+	log          *faultLog
+	tabs         *container.AppTabs // 通信报文 / 日志
+	mainSplit    *container.Split
+	detailsSplit *container.Split
+	logTab       *container.TabItem
+	ring         packetRing // 最近的收发，出错时取出原始报文记进日志
+	status       *widget.Label
+	stats        stats
+	evidence     evidence
+	tools        []fyne.Window // 自定义请求等工具窗口，主窗口关闭时一起关闭
+	historyWin   fyne.Window   // 打开着的历史报文窗口，只开一个
+	requestWin   fyne.Window   // 打开着的自定义请求窗口，只开一个
+	typeTool     *typeTool     // 打开着的功能码 / 数据类型 / 字节序调试窗口，只开一个
+	done         chan struct{}
+	closed       bool
 }
 
 // Open 新建一个主窗口并显示。主窗口初始为空：没有读取窗口，也不自动连接。
@@ -124,8 +127,10 @@ func Open(app fyne.App, version string) *Workspace {
 }
 
 func open(app fyne.App, version string, no int) *Workspace {
+	app.SetIcon(icon.Application())
 	w := app.NewWindow("Modbus AI Studio " + version)
-	want := fyne.NewSize(1280, 820)
+	w.SetIcon(icon.Application())
+	want := preferredWindowSize(app)
 	workW, workH := platform.WorkArea()
 	if workW > 0 {
 		w.Resize(fyne.NewSize(960, 620)) // 首帧先放进小屏幕；Show 后才能取得 Fyne 的真实缩放比例
@@ -137,6 +142,7 @@ func open(app fyne.App, version string, no int) *Workspace {
 	if workW > 0 {
 		w.Resize(platform.FitSize(want, workW, workH, w.Canvas().Scale()))
 	}
+	w.CenterOnScreen()
 	return ws
 }
 
@@ -206,7 +212,22 @@ func (ws *Workspace) shutdown() {
 	if ws.closed {
 		return
 	}
+	ws.stop()
+	for _, t := range slices.Clone(ws.tools) { // 工具窗口关闭时会把自己从 ws.tools 里删掉
+		t.Close()
+	}
+	if ws.desktop != nil {
+		ws.desktop.forget(ws)
+	}
+}
+
+// stop releases acquisition resources even after the native driver has stopped.
+func (ws *Workspace) stop() {
+	if ws.closed {
+		return
+	}
 	ws.closed = true
+	ws.saveWindowSize()
 	close(ws.done)
 	for _, w := range ws.windows {
 		w.halt()
@@ -215,9 +236,6 @@ func (ws *Workspace) shutdown() {
 		ws.recID.Store(0)
 		ws.session.close()
 		ws.session = nil
-	}
-	for _, t := range slices.Clone(ws.tools) { // 工具窗口关闭时会把自己从 ws.tools 里删掉
-		t.Close()
 	}
 }
 
@@ -244,7 +262,7 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 	ws.frameFmt.SetSelected("8N1")
 	ws.detectBn = widget.NewButtonWithIcon("识别", theme.SearchIcon(), ws.detectProtocol)
 
-	ws.tcpBox = container.NewHBox(widget.NewLabel("目标"), fixed(190, ws.target), ws.useSim, ws.detectBn)
+	ws.tcpBox = container.NewHBox(widget.NewLabel("目标"), fixed(210, ws.target))
 	ws.serBox = container.NewHBox(widget.NewLabel("串口"), fixed(140, ws.port), widget.NewLabel("波特率"), fixed(100, ws.baud), fixed(72, ws.frameFmt))
 	ws.serBox.Hide()
 	ws.proto = widget.NewSelect(protoNames, func(s string) {
@@ -258,12 +276,16 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 				ws.frameFmt.SetSelected(formats[0])
 			}
 			ws.tcpBox.Hide()
+			ws.useSim.Hide()
+			ws.detectBn.Hide()
 			ws.serBox.Show()
 			list, _ := transport.ListSerialPorts()
 			ws.setPorts(list)
 		} else {
 			ws.serBox.Hide()
 			ws.tcpBox.Show()
+			ws.useSim.Show()
+			ws.detectBn.Show()
 		}
 		ws.updateDetectBtn()
 		if ws.bar != nil {
@@ -279,10 +301,10 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 	ws.connBtn.Importance = widget.HighImportance
 	ws.updateDetectBtn()
 
-	// 连接参数和工作区操作分行，连接按钮固定在右侧，小屏也能操作。
-	parameters := container.NewHBox(widget.NewLabel("协议"), fixed(140, ws.proto), ws.tcpBox, ws.serBox,
-		widget.NewLabel("超时(ms)"), fixed(72, ws.timeoutE))
-	actions := container.NewHBox(
+	// Complete label/input groups wrap when the window is narrow.
+	parameters := container.New(flowLayout{}, container.NewHBox(widget.NewLabel("协议"), fixed(140, ws.proto)), ws.tcpBox, ws.serBox,
+		ws.useSim, ws.detectBn, container.NewHBox(widget.NewLabel("超时(ms)"), fixed(72, ws.timeoutE)), ws.connBtn)
+	actions := container.New(flowLayout{},
 		widget.NewButtonWithIcon("读取窗口", theme.ContentAddIcon(), func() {
 			if !ws.dialogOpen() {
 				ws.addReadWindow()
@@ -298,15 +320,15 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 			if !ws.dialogOpen() {
 				ws.openHistory()
 			}
-		}), layout.NewSpacer(),
+		}),
 		widget.NewButtonWithIcon("新建主窗口", theme.ContentCopyIcon(), func() { ws.openNew() }))
-	ws.bar = container.NewVBox(
-		container.NewBorder(nil, nil, nil, ws.connBtn, container.NewHScroll(parameters)),
-		container.NewHScroll(actions))
-	bar := ws.bar
+	for _, o := range actions.Objects {
+		o.(*widget.Button).Importance = widget.LowImportance
+	}
+	ws.bar = container.New(toolbarLayout{}, parameters, actions)
 
-	ws.logTab = container.NewTabItem("日志", ws.log.root)
-	ws.tabs = container.NewAppTabs(container.NewTabItem("通信报文", ws.traffic.root), ws.logTab)
+	ws.logTab = container.NewTabItemWithIcon("日志", theme.InfoIcon(), ws.log.root)
+	ws.tabs = container.NewAppTabs(container.NewTabItemWithIcon("通信报文", theme.MailSendIcon(), ws.traffic.root), ws.logTab)
 	ws.log.onChange = func(n int) {
 		ws.logTab.Text = "日志"
 		if n > 0 {
@@ -315,13 +337,11 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 		ws.tabs.Refresh()
 	}
 	bottom := container.NewHSplit(ws.tabs, ws.inspect.root)
-	bottom.Offset = 0.56
+	bottom.Offset = 0.58
 	main := container.NewVSplit(ws.tiles, bottom)
-	main.Offset = 0.7
-	return container.NewBorder(
-		container.NewVBox(bar, widget.NewSeparator()),
-		container.NewVBox(widget.NewSeparator(), ws.status),
-		nil, nil, main)
+	main.Offset = 0.64
+	ws.mainSplit, ws.detailsSplit = main, bottom
+	return container.New(workspaceLayout{ws.bar}, ws.bar, container.NewVBox(widget.NewSeparator(), ws.status), main)
 }
 
 // setMenu 设置菜单和快捷键（macOS 用 ⌘，Windows、Linux 用 Ctrl）。Fyne 先按主菜单匹配快捷键，
@@ -366,7 +386,10 @@ func (ws *Workspace) setMenu() {
 			key(item("保存工作区", modal(ws.saveWorkspace)), fyne.KeyS, false),
 			key(item("工作区另存为…", modal(ws.saveWorkspaceAs)), fyne.KeyS, true),
 			fyne.NewMenuItemSeparator(),
-			key(item("关闭窗口", ws.win.Close), fyne.KeyW, false)),
+			item("隐藏到后台", ws.hide),
+			key(item("关闭窗口", ws.win.Close), fyne.KeyW, false),
+			fyne.NewMenuItemSeparator(),
+			ws.quitMenuItem()),
 		fyne.NewMenu("连接",
 			key(item("连接 / 断开", ws.toggleConnect), fyne.KeyK, false),
 			key(item("识别协议", modal(ws.detectProtocol)), fyne.KeyD, false),
@@ -397,6 +420,7 @@ func (ws *Workspace) setMenu() {
 			item("报文数据库所在文件夹", modal(func() { ws.openDatabase(ws.win, true) })),
 			key(item("清空通信报文", ws.traffic.clear), fyne.KeyL, false)),
 		ws.winMenu,
+		ws.viewMenu(),
 		fyne.NewMenu("帮助",
 			item("检查更新…", modal(func() { ws.checkUpdate(true) })),
 			ws.autoUpdItem,
@@ -411,7 +435,12 @@ func (ws *Workspace) dialogOpen() bool { return ws.win.Canvas().Overlays().Top()
 
 // openNew 新建一个主窗口，协议和目标沿用当前窗口，方便连同一网段的另一台设备。
 func (ws *Workspace) openNew() *Workspace {
-	n := Open(ws.app, ws.Version)
+	var n *Workspace
+	if ws.desktop != nil {
+		n = ws.desktop.Open()
+	} else {
+		n = Open(ws.app, ws.Version)
+	}
 	n.proto.SetSelected(ws.proto.Selected)
 	n.useSim.SetChecked(ws.useSim.Checked)
 	n.target.SetText(ws.target.Text)
@@ -453,6 +482,9 @@ func (ws *Workspace) refreshTitle() {
 		title += " · " + modeName[s.mode] + " " + s.desc
 	}
 	ws.win.SetTitle(title)
+	if ws.desktop != nil {
+		ws.desktop.refreshTray()
+	}
 }
 
 func (ws *Workspace) refreshStatus() {

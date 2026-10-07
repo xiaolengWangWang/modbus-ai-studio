@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -25,11 +26,12 @@ func Setup() {
 	if os.MkdirAll(dir, 0o755) != nil {
 		return
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	f, err := os.OpenFile(filepath.Join(dir, "app.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return
 	}
 	log.SetOutput(glWatch{f})
+	log.SetPrefix(fmt.Sprintf("[pid %d] ", os.Getpid()))
 }
 
 var systemParametersInfo = windows.NewLazySystemDLL("user32.dll").NewProc("SystemParametersInfoW")

@@ -55,6 +55,7 @@ var probeFuncs = []modbus.FunctionCode{modbus.FuncReadHoldingRegisters, modbus.F
 // openTypeTool 打开调试窗口，按读取窗口 w（可为 nil）的设置和选中的地址填好；已打开时换成 w 的设置并重新读取。
 func (ws *Workspace) openTypeTool(w *readWindow) {
 	if t := ws.typeTool; t != nil {
+		t.win.Show()
 		t.fill(w)
 		t.win.RequestFocus()
 		t.read()
@@ -70,7 +71,7 @@ func (ws *Workspace) openTypeTool(w *readWindow) {
 		t.stopLoop()
 		ws.typeTool = nil
 	})
-	win.Show()
+	showTool(win)
 	t.read()
 }
 
@@ -679,6 +680,8 @@ func (t *typeTool) startLoop() {
 			})
 			select {
 			case <-ctx.Done():
+				return
+			case <-t.ws.done:
 				return
 			case <-tick.C:
 			}

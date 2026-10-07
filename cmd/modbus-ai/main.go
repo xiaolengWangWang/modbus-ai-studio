@@ -17,7 +17,7 @@ import (
 )
 
 // version 在打包时用 -ldflags "-X main.version=…" 覆盖。
-var version = "0.11.3"
+var version = "0.11.4"
 
 func main() {
 	start := time.Now()
@@ -42,8 +42,9 @@ func main() {
 	} else {
 		defer rec.Close() // 退出前写完缓冲里的记录
 	}
-	// 不设主窗口：可以用“文件 → 新建窗口”同时开多个主窗口，关掉最后一个才退出
-	ws := ui.Open(a, version)
+	desktop := ui.NewDesktop(a, version)
+	defer desktop.Shutdown() // 先关掉全部连接，再由上面的 defer 写完数据库缓冲
+	ws := desktop.Open()
 	ws.AutoCheckUpdate()
 	debugStart(ws)
 	log.Printf("startup window shown: %s", time.Since(start))

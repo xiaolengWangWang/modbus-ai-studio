@@ -84,7 +84,7 @@ func (m *mdi) attach(w *readWindow) {
 	w.inner.OnMaximized = func() { m.setMaxed(!m.maxed) }
 	k := float32(len(m.box.Objects) % 8)
 	w.pos = fyne.NewPos(k*cascadeStep(), k*cascadeStep())
-	w.size = w.prefSize()
+	m.sizeForCascade(w)
 	w.inner.SetMaximized(m.maxed)
 	m.box.Objects = append(m.box.Objects, w.inner)
 	m.scope.Refresh() // 新窗口套上边框配色
@@ -134,13 +134,25 @@ func (m *mdi) setMaxed(on bool) {
 
 func cascadeStep() float32 { return theme.Size(theme.SizeNameWindowTitleBarHeight) }
 
+// Keep the requested cascade offset visible by shortening a new window's
+// preferred size to the remaining space, rather than moving its title upward.
+func (m *mdi) sizeForCascade(w *readWindow) {
+	w.size = w.prefSize()
+	if m.size.Width > 0 && m.size.Height > 0 {
+		minimum := w.inner.MinSize()
+		w.size.Width = min(w.size.Width, max(minimum.Width, m.size.Width-w.pos.X))
+		w.size.Height = min(w.size.Height, max(minimum.Height, m.size.Height-w.pos.Y))
+	}
+}
+
 // cascade 按叠放顺序层叠，每个窗口回到按内容的大小（Modbus Poll 的“Cascade”）。
 func (m *mdi) cascade() {
 	m.setMaxed(false)
 	for i, o := range m.box.Objects {
 		w := m.ws.windowOf(o)
 		k := float32(i % 8)
-		w.pos, w.size = fyne.NewPos(k*cascadeStep(), k*cascadeStep()), w.prefSize()
+		w.pos = fyne.NewPos(k*cascadeStep(), k*cascadeStep())
+		m.sizeForCascade(w)
 	}
 	m.box.Refresh()
 }
