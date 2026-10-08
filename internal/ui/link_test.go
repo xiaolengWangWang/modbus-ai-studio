@@ -155,8 +155,9 @@ func TestAllRequestsDisconnect(t *testing.T) {
 }
 
 // 空闲一段时间后设备断开：建议缩短扫描周期，一键改完后不再断开。
+// 空闲超时比建议的 200 ms 周期留出 400 ms 余量，-race 下 CI 机器偶尔卡顿也不会断开。
 func TestIdleDisconnect(t *testing.T) {
-	_, addr := startSim(t, simulator.Faults{IdleTimeout: 300 * time.Millisecond})
+	_, addr := startSim(t, simulator.Faults{IdleTimeout: 600 * time.Millisecond})
 	ws, wins := linkWS(t, addr, time.Second, 0)
 	waitFor(t, 6*time.Second, "空闲超时的分析", func() bool {
 		return lost(ws) && ws.session.lost.kind == lossIdle && strings.Contains(wins[0].hintLbl.Text, "空闲超时") &&

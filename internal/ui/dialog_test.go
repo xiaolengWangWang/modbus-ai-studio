@@ -74,6 +74,10 @@ func TestDialogsDoNotStack(t *testing.T) {
 	oldSources := update.Sources
 	update.Sources = []update.Source{{Name: "测试", LatestURL: srv.URL}}
 	defer func() { update.Sources = oldSources }()
+	// The update dialog keeps updating set while open, and clearOverlays removes
+	// it without the dialog's callbacks; start and leave the flag cleared.
+	updating.Store(false)
+	t.Cleanup(func() { updating.Store(false) })
 
 	a := test.NewTempApp(t)
 	ws := openWS(t, a, false)
@@ -118,8 +122,9 @@ func TestDialogsDoNotStack(t *testing.T) {
 			menuAction(t, ws, "读取定义…")() // 换一个菜单项也不行
 		})
 		if c.async {
-			// 查询进度换成结果对话框；更新对话框开着时 updating 一直为真
-			waitFor(t, 5*time.Second, c.label+"出结果", func() bool { return strings.Contains(overlayText(ws), c.want) })
+			// 查询进度换成结果对话框；更新对话框开着时 updating 一直为真。
+			// 查询在后台进行，-race 下的 CI 机器很慢，等到查询自己的超时（20 秒）为止
+			waitFor(t, 20*time.Second, c.label+"出结果", func() bool { return strings.Contains(overlayText(ws), c.want) })
 		}
 		locked(func() {
 			if n := overlayCount(ws); n != 1 {
