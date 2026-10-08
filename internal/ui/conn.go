@@ -200,13 +200,18 @@ func (ws *Workspace) connect() {
 	}
 	ws.timeout = cfg.timeout
 	ws.connecting = true
+	ws.connErr = ""
+	ws.setInputsEnabled(false)
+	ws.timeoutE.Disable()
 	ws.connBtn.Disable()
 	ws.connBtn.SetText("连接中…")
+	ws.refreshStatus()
 	go func() {
 		s, err := ws.open(cfg)
 		uiDo(func() {
 			ws.connecting = false
 			ws.connBtn.Enable()
+			ws.timeoutE.Enable()
 			if ws.closed {
 				if s != nil {
 					s.close()
@@ -214,8 +219,11 @@ func (ws *Workspace) connect() {
 				return
 			}
 			if err != nil {
+				ws.connErr = dialErrText(err)
 				ws.connBtn.SetText("连接")
+				ws.setInputsEnabled(true)
 				ws.logConnectFail(cfg, err)
+				ws.refreshStatus()
 				dialog.ShowError(err, ws.win)
 				return
 			}
@@ -351,10 +359,28 @@ func (ws *Workspace) updateDetectBtn() {
 	if ws.detectBn == nil {
 		return
 	}
-	if !ws.serialMode() && !ws.useSim.Checked {
+	if !ws.connecting && ws.session == nil && !ws.serialMode() && !ws.useSim.Checked {
 		ws.detectBn.Enable()
 	} else {
 		ws.detectBn.Disable()
+	}
+}
+
+// connectionState 统一顶部连接状态和底部状态栏的状态文字。
+func (ws *Workspace) connectionState() (string, widget.Importance) {
+	switch {
+	case ws.connecting:
+		return "连接中…", widget.WarningImportance
+	case ws.session == nil && ws.connErr != "":
+		return "连接失败", widget.DangerImportance
+	case ws.session == nil:
+		return "未连接", widget.MediumImportance
+	case ws.session.lost != nil && ws.session.mode.Serial():
+		return "串口断开", widget.DangerImportance
+	case ws.session.lost != nil:
+		return "重连中…", widget.WarningImportance
+	default:
+		return "已连接", widget.SuccessImportance
 	}
 }
 
@@ -379,6 +405,9 @@ func (ws *Workspace) setTimeout(t time.Duration) {
 
 // detectProtocol 自动识别 Modbus TCP / RTU over TCP / ASCII over TCP。识别要新建连接，已连接时先断开，识别完按结果重新连接。
 func (ws *Workspace) detectProtocol() {
+	if ws.connecting || ws.closed || ws.dialogOpen() {
+		return
+	}
 	if ws.serialMode() || ws.useSim.Checked {
 		dialog.ShowInformation("识别协议", "协议识别用于只知道 IP 和端口的网络设备。内置模拟器和串口不需要识别。", ws.win)
 		return

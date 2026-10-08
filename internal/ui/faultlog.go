@@ -34,7 +34,9 @@ var logKindName = map[string]string{
 // logEntry 是一条日志。rows 是选中时解析面板显示的内容；从报文库读回的记录没有 rows，按 Analysis 文字显示。
 type logEntry struct {
 	recorder.Event
-	rows []decodeRow
+	rows    []decodeRow
+	mode    modbus.Mode
+	tx, res *modbus.Packet // in-memory structured evidence; historical entries decode stored frames
 }
 
 // newLogEntry 生成一条日志：cause 是原因分析（每行一段），tx、res 是抓到的请求和结果，没有时 Raw 为空。
@@ -55,8 +57,18 @@ func newLogEntry(kind string, window int, detail string, cause []string, tx, res
 		}
 		rows = append(rows, describePacket(res, pts)...)
 	}
-	return logEntry{Event: recorder.Event{Time: time.Now(), Kind: kind, Window: window, Detail: detail,
-		Analysis: rowsText(rows), TX: tx.Raw, RX: res.Raw}, rows: rows}
+	e := logEntry{Event: recorder.Event{Time: time.Now(), Kind: kind, Window: window, Detail: detail,
+		Analysis: rowsText(rows), TX: tx.Raw, RX: res.Raw}, rows: rows, mode: tx.Mode}
+	if e.mode == "" {
+		e.mode = res.Mode
+	}
+	if tx.Dir != "" || len(tx.Raw) > 0 {
+		e.tx = cloneAIPacket(&tx)
+	}
+	if res.Status != "" || res.Dir != "" || len(res.Raw) > 0 {
+		e.res = cloneAIPacket(&res)
+	}
+	return e
 }
 
 func (e logEntry) line() (string, widget.Importance) {
@@ -202,7 +214,7 @@ func (r *packetRing) exchange(match func(modbus.Packet) bool) (tx, res modbus.Pa
 			}
 			continue
 		}
-		if p.Dir == modbus.DirTX && p.RequestID == res.RequestID {
+		if p.Dir == modbus.DirTX && p.RequestID == res.RequestID && p.ConnectionID == res.ConnectionID {
 			return p, res, true
 		}
 	}
@@ -263,7 +275,7 @@ func (ws *Workspace) logRecovered(w *readWindow, d readDef, since time.Time, fai
 		return
 	}
 	detail := windowText(w.no, d) + fmt.Sprintf(" · 恢复正常，出错 %d 次，持续 %s", fails, roundDur(time.Since(since)))
-	ws.addLog(logEntry{Event: recorder.Event{Time: time.Now(), Kind: recorder.EventReadOK, Window: w.no, Detail: detail}}, s.recID)
+	ws.addLog(logEntry{Event: recorder.Event{Time: time.Now(), Kind: recorder.EventReadOK, Window: w.no, Detail: detail}, mode: s.mode}, s.recID)
 }
 
 // connectFailCause 解释连接失败：连接被拒绝、超时、串口打不开分别给出检查方向。
@@ -293,6 +305,7 @@ func (ws *Workspace) logConnectFail(cfg connConfig, err error) {
 	}
 	e := newLogEntry(recorder.EventConnectFail, 0, fmt.Sprintf("%s %s · %s", modeName[cfg.mode], desc, errSummary(err)),
 		connectFailCause(cfg, err), modbus.Packet{}, modbus.Packet{}, nil)
+	e.mode = cfg.mode
 	ws.log.add(e)
 	if r := currentRecorder(); r != nil {
 		if id, err := r.StartSession(cfg.mode, desc, ws.no); err == nil {

@@ -133,6 +133,9 @@ func (w *readWindow) setRegisterFormat(start, count int, kind valueKind, order m
 }
 
 func (w *readWindow) refreshFormats() {
+	w.bar.sync()
+	w.head.Refresh()
+	w.body.Refresh()
 	col := colValue
 	if w.sel >= 0 {
 		col = w.cols[w.selCol()]
@@ -152,11 +155,7 @@ func (w *readWindow) refreshFormats() {
 		w.table.Select(w.selCell)
 		w.extending = false
 	}
-	w.table.Refresh()
-	w.updateWriteBtn()
-	if w.sel >= 0 {
-		w.ws.inspect.showRegister(w)
-	}
+	w.refresh()
 }
 
 func (w *readWindow) updateTitle() {

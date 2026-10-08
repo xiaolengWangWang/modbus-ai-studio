@@ -36,6 +36,9 @@ func readOnlyPDU(pdu []byte) bool {
 
 func (ws *Workspace) setReadOnly(on bool) {
 	ws.readOnly = on
+	if ws.readOnlyCheck != nil && ws.readOnlyCheck.Checked != on {
+		ws.readOnlyCheck.SetChecked(on)
+	}
 	if ws.roItem != nil {
 		ws.roItem.Checked = on
 		if m := ws.win.MainMenu(); m != nil {

@@ -40,6 +40,7 @@ func (ws *Workspace) addWindow(d readDef) *readWindow {
 	ws.nextWin++
 	w := newReadWindow(ws, ws.nextWin, d)
 	ws.windows = append(ws.windows, w)
+	ws.refreshReadActions()
 	ws.mdi.attach(w)
 	ws.relayout()
 	ws.setCurrent(ws.cur)
@@ -111,6 +112,7 @@ func (ws *Workspace) removeWindow(w *readWindow) {
 		}
 	}
 	ws.mdi.detach(w)
+	ws.refreshReadActions()
 	if ws.inspect.src == w {
 		ws.inspect.clear()
 	}
@@ -144,6 +146,37 @@ func (ws *Workspace) applyDef(w *readWindow, d readDef) {
 func (ws *Workspace) pauseAll(pause bool) {
 	for _, w := range ws.windows {
 		w.setPaused(pause)
+	}
+}
+
+func (ws *Workspace) allReadsPaused() bool {
+	if len(ws.windows) == 0 {
+		return false
+	}
+	for _, w := range ws.windows {
+		if !w.paused {
+			return false
+		}
+	}
+	return true
+}
+
+// 单个窗口和菜单修改暂停状态时，同步工具栏的全部暂停 / 继续按钮。
+func (ws *Workspace) refreshReadActions() {
+	if ws.pauseAllBtn == nil {
+		return
+	}
+	if ws.allReadsPaused() {
+		ws.pauseAllBtn.SetText("全部继续")
+		ws.pauseAllBtn.SetIcon(theme.MediaPlayIcon())
+	} else {
+		ws.pauseAllBtn.SetText("全部暂停")
+		ws.pauseAllBtn.SetIcon(theme.MediaPauseIcon())
+	}
+	if len(ws.windows) == 0 {
+		ws.pauseAllBtn.Disable()
+	} else {
+		ws.pauseAllBtn.Enable()
 	}
 }
 

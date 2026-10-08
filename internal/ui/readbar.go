@@ -9,7 +9,7 @@ import (
 	"modbus-ai-studio/internal/modbus"
 )
 
-// 读取窗口的控制条：功能码、显示格式、字节序和“原始值”开关放在一行，选了立即按新设置读取和显示，
+// 读取窗口的控制条：功能码、显示格式、字节序和“原始值”开关随宽度换行，选了立即按新设置读取和显示，
 // 调试功能码和大小端时不用反复打开读取定义。另有 activator：点读取窗口里任何地方都把它设为当前窗口。
 
 var funcLabels = map[modbus.FunctionCode]string{
@@ -28,14 +28,13 @@ func kindLabel(k valueKind) string {
 }
 
 type readBar struct {
-	w       *readWindow
-	fn      *widget.Select
-	kind    *widget.Select
-	order   *widget.Select
-	raw     *widget.Check
-	syncing bool            // 程序同步选项时不当作用户修改
-	box     *fyne.Container // 控制条的内容，按它的宽度定子窗口的初始宽度
-	root    fyne.CanvasObject
+	w        *readWindow
+	fn       *widget.Select
+	kind     *widget.Select
+	order    *widget.Select
+	raw      *widget.Check
+	syncing  bool                // 程序同步选项时不当作用户修改
+	controls []fyne.CanvasObject // complete controls shared with the wrapping read header
 }
 
 func newReadBar(w *readWindow) *readBar {
@@ -93,9 +92,7 @@ func newReadBar(w *readWindow) *readBar {
 	b.fn.PlaceHolder = funcLabels[modbus.FuncReadInputRegisters]
 	b.kind.PlaceHolder = string(kindUnsigned)
 	b.order.PlaceHolder = string(modbus.OrderABCD)
-	// 窄窗口里放不下时可以横向滚动，不把整个窗口撑宽
-	b.box = container.NewHBox(b.fn, widget.NewLabel("整窗"), b.kind, b.order, b.raw)
-	b.root = container.NewHScroll(b.box)
+	b.controls = []fyne.CanvasObject{b.fn, container.NewHBox(widget.NewLabel("整窗"), b.kind), b.order, b.raw}
 	return b
 }
 
@@ -149,8 +146,13 @@ func (w *readWindow) orderChoice() (opts []string, cur modbus.ByteOrder, ok bool
 		return nil, "", false
 	case d.Kind == kindPoint:
 		count := map[modbus.ByteOrder]int{}
+		for _, f := range d.Formats {
+			if f.Kind.width() > 1 {
+				count[f.Order.For(modbus.TypeFloat32)]++
+			}
+		}
 		for k, p := range w.ws.points {
-			if k.area == d.area() && int(k.off) >= int(d.Start) && int(k.off)+p.regs() <= int(d.Start)+d.Qty && p.Type != typeString && p.regs() > 1 {
+			if k.area == d.area() && int(k.off) >= int(d.Start) && int(k.off)+p.regs() <= int(d.Start)+d.Qty && p.Type != typeString && p.regs() > 1 && w.valueFormat(int(k.off)-int(d.Start)).kind == kindPoint {
 				count[p.Order.For(modbus.TypeFloat32)]++
 			}
 		}
@@ -179,13 +181,12 @@ func (ws *Workspace) setWindowOrder(w *readWindow, o modbus.ByteOrder) {
 		w.refreshFormats()
 		return
 	}
-	ws.redefine(w, func(d *readDef) {
-		d.Order = o
-		d.Formats = slices.Clone(d.Formats)
-		for i := range d.Formats {
-			d.Formats[i].Order = o.For(d.Formats[i].Kind.dataType())
-		}
-	})
+	w.def.Order = o.For(w.def.Kind.dataType())
+	w.def.Formats = slices.Clone(w.def.Formats)
+	for i := range w.def.Formats {
+		w.def.Formats[i].Order = o.For(w.def.Formats[i].Kind.dataType())
+	}
+	w.refreshFormats()
 }
 
 // activator 包住读取窗口的内容：点窗口里不响应点击的地方（状态行、空白）也把它设为当前窗口，

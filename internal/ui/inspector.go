@@ -18,16 +18,20 @@ import (
 // inspector 是解析面板：选中读取窗口的单元时显示寄存器的多种解读（多解释视图，设计文档 7.3），
 // 选中通信报文时逐字段解析报文。
 type inspector struct {
-	ws          *Workspace
-	src         *readWindow // 正在显示寄存器解析的读取窗口，随轮询实时刷新；nil 表示显示的是报文或为空
-	placeholder string      // 没有内容时的提示
-	title       *widget.Label
-	orderBtn    *widget.Button
-	body        *fyne.Container
-	wrap        *container.ThemeOverride
-	rows        []rowView
-	text        string
-	root        fyne.CanvasObject
+	ws                    *Workspace
+	src                   *readWindow     // 正在显示寄存器解析的读取窗口，随轮询实时刷新；nil 表示显示的是报文或为空
+	packet                *modbus.Packet  // immutable copy of a selected packet for explicit AI analysis
+	packetContext         []modbus.Packet // only the selected historical session
+	event                 *logEntry
+	closed, selectionOnly bool
+	placeholder           string // 没有内容时的提示
+	title                 *widget.Label
+	orderBtn              *widget.Button
+	body                  *fyne.Container
+	wrap                  *container.ThemeOverride
+	rows                  []rowView
+	text                  string
+	root                  fyne.CanvasObject
 }
 
 type rowView struct {
@@ -39,19 +43,23 @@ type rowView struct {
 func newInspector(ws *Workspace) *inspector {
 	in := &inspector{ws: ws, placeholder: "单击读取窗口里的值，查看它在各种数据类型和字节序下的解读；单击通信报文，逐字段解析报文。双击值可以写入。"}
 	in.title = widget.NewLabelWithStyle("解析", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	in.title.Truncation = fyne.TextTruncateEllipsis
 	in.body = container.NewVBox()
 	copyBtn := widget.NewButtonWithIcon("复制", theme.ContentCopyIcon(), func() { ws.app.Clipboard().SetContent(in.text) })
 	copyBtn.Importance = widget.LowImportance
 	in.orderBtn = widget.NewButton("字节序…", func() { ws.showPointOrderDialog(in.src) })
 	in.orderBtn.Importance = widget.LowImportance
 	in.wrap = compact(in.body)
-	in.root = container.NewBorder(container.NewBorder(nil, nil, nil, container.NewHBox(in.orderBtn, copyBtn), in.title), nil, nil, nil, container.NewVScroll(in.wrap))
+	aiBtn := widget.NewButton("AI解释", in.openAI)
+	aiBtn.Importance = widget.LowImportance
+	in.root = container.NewBorder(container.NewBorder(nil, nil, nil, container.NewHBox(in.orderBtn, copyBtn, aiBtn), in.title), nil, nil, nil, container.NewVScroll(in.wrap))
 	in.clear()
 	return in
 }
 
 func (in *inspector) clear() {
 	in.src = nil
+	in.packet = nil
 	in.show("解析", []decodeRow{{Meaning: in.placeholder}})
 }
 
@@ -92,6 +100,12 @@ func (l rowLayout) Layout(objs []fyne.CanvasObject, size fyne.Size) {
 
 // show 显示解析结果。行结构不变时只更新文字，轮询刷新时不会闪烁，也不会丢失滚动位置。
 func (in *inspector) show(title string, rows []decodeRow) {
+	if title != "日志" {
+		in.event = nil
+	}
+	if title != "报文解析" {
+		in.packet = nil
+	}
 	in.title.SetText(title)
 	in.text = title + "\n" + rowsText(rows)
 	same := len(rows) == len(in.rows)
@@ -122,6 +136,7 @@ func (in *inspector) show(title string, rows []decodeRow) {
 
 func (in *inspector) showPacket(p modbus.Packet) {
 	in.src = nil
+	in.packet = cloneAIPacket(&p)
 	rows := append([]decodeRow{{Name: "原始报文", Hex: "", Meaning: frameText(p.Mode, p.Raw)}}, describePacket(p, in.ws.points)...)
 	in.show("报文解析", rows)
 }
@@ -133,6 +148,31 @@ func (in *inspector) showRegister(w *readWindow) {
 	in.src = w
 	in.show(fmt.Sprintf("寄存器解析 · 窗口 %d", w.no), registerInsight(w))
 }
+
+func (in *inspector) showLog(e logEntry) {
+	in.src = nil
+	in.packet = nil
+	in.event = cloneAILog(&e)
+	in.show("日志", e.detail())
+}
+
+func (in *inspector) aiTarget() aiTarget {
+	if in.event != nil {
+		return aiTarget{event: in.event}
+	}
+	if in.packet != nil {
+		return aiTarget{packet: in.packet}
+	}
+	if in.src != nil {
+		return aiTarget{read: in.src}
+	}
+	if in.selectionOnly {
+		return aiTarget{}
+	}
+	return aiTarget{read: in.ws.current()}
+}
+
+func (in *inspector) openAI() { in.ws.openAIFrom(in.aiTarget(), in) }
 
 // registerInsight 给出选中寄存器的全部解读：地址的各种写法、16 位的有符号 / 无符号 / 二进制 / 字节交换，
 // 以及与下一个寄存器组成 32 位时四种字节序下的 FLOAT32 / INT32 / UINT32，并标出哪些结果合理。

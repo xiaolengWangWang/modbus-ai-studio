@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS packets (
 	raw        BLOB,             -- 超时等没有收到字节的结果行为空
 	status     TEXT    NOT NULL, -- SENT、SUCCESS、TIMEOUT、EXCEPTION、CRC_ERROR、LATE_RESPONSE ……
 	rtt_us     INTEGER NOT NULL, -- 仅结果行
+	connection_id TEXT NOT NULL DEFAULT '',
 	error      TEXT
 );
 CREATE TABLE IF NOT EXISTS events (
@@ -186,7 +187,33 @@ func migrate(db *sql.DB) error {
 			}
 		}
 	}
-	return nil
+	columns, err := databaseColumns(db, "packets")
+	if err != nil {
+		return err
+	}
+	if !columns["connection_id"] {
+		_, err = db.Exec(`ALTER TABLE packets ADD COLUMN connection_id TEXT NOT NULL DEFAULT ''`)
+	}
+	return err
+}
+
+func databaseColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	have := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		have[name] = true
+	}
+	return have, rows.Err()
 }
 
 // Record 记录一条收发。不阻塞，可以在收发回调里直接调用。
@@ -267,7 +294,7 @@ func (r *Recorder) insertBatch(batch []item) error {
 	}
 	defer tx.Rollback()
 	st, err := tx.Prepare(`INSERT INTO packets (session_id, time, request_id, direction, protocol, slave, tx_id, function,
-		address, count, raw, status, rtt_us, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		address, count, raw, status, rtt_us, error, connection_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
@@ -279,7 +306,7 @@ func (r *Recorder) insertBatch(batch []item) error {
 			e = p.Err.Error()
 		}
 		if _, err := st.Exec(it.session, p.Time.UnixMicro(), p.RequestID, string(p.Dir), string(p.Mode), p.Slave, p.TxID,
-			byte(p.Function), p.Address, p.Count, p.Raw, string(p.Status), p.RTT.Microseconds(), e); err != nil {
+			byte(p.Function), p.Address, p.Count, p.Raw, string(p.Status), p.RTT.Microseconds(), e, p.ConnectionID); err != nil {
 			return err
 		}
 	}
@@ -455,8 +482,16 @@ func (r *Recorder) Sessions(limit int) ([]Session, error) {
 func (r *Recorder) Packets(session int64, limit int) ([]modbus.Packet, error) {
 	r.dbMu.RLock()
 	defer r.dbMu.RUnlock()
+	columns, err := databaseColumns(r.db, "packets")
+	if err != nil {
+		return nil, err
+	}
+	connectionColumn := "''"
+	if columns["connection_id"] {
+		connectionColumn = "connection_id"
+	}
 	rows, err := r.db.Query(`SELECT time, request_id, direction, protocol, slave, tx_id, function, address, count, raw,
-		status, rtt_us, error FROM packets WHERE session_id = ? ORDER BY id DESC LIMIT ?`, session, limit)
+		status, rtt_us, error, `+connectionColumn+` FROM packets WHERE session_id = ? ORDER BY id DESC LIMIT ?`, session, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -468,7 +503,7 @@ func (r *Recorder) Packets(session int64, limit int) ([]modbus.Packet, error) {
 		var fn byte
 		var e sql.NullString
 		if err := rows.Scan(&t, &p.RequestID, &p.Dir, &p.Mode, &p.Slave, &p.TxID, &fn, &p.Address, &p.Count, &p.Raw,
-			&p.Status, &rtt, &e); err != nil {
+			&p.Status, &rtt, &e, &p.ConnectionID); err != nil {
 			return nil, err
 		}
 		p.Time, p.Function, p.RTT = time.UnixMicro(t), modbus.FunctionCode(fn), time.Duration(rtt)*time.Microsecond

@@ -142,6 +142,7 @@ func (ws *Workspace) runRegisterProbe(w *readWindow, d readDef) {
 			x.setPaused(true)
 		}
 	}
+	ws.refreshStatus()
 	ctx, cancel := context.WithCancel(s.ctx)
 	prog := widget.NewProgressBar()
 	prog.Max = float64(d.Qty)
@@ -193,6 +194,7 @@ func (ws *Workspace) runRegisterProbe(w *readWindow, d readDef) {
 			for _, x := range ws.windows {
 				x.start()
 			}
+			ws.refreshStatus()
 			if ws.session != s || !slices.Contains(ws.windows, w) {
 				w = nil
 			}

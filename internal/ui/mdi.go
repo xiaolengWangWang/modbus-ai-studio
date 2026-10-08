@@ -49,10 +49,10 @@ func (t mdiTheme) Color(n fyne.ThemeColorName, v fyne.ThemeVariant) color.Color 
 	return t.Theme.Color(n, v)
 }
 
-// areaColor 是子窗口后面的底色，比窗口背景深一些，看得出窗口边界（Modbus Poll 的灰色 MDI 底）。
+// The work area uses a soft neutral tint, with contrast in either theme variant.
 func areaColor() color.Color {
 	bg := appTheme().Color(theme.ColorNameBackground, fyne.CurrentApp().Settings().ThemeVariant())
-	return mix(bg, color.Black, 0.18)
+	return mix(bg, appTheme().Color(theme.ColorNameForeground, fyne.CurrentApp().Settings().ThemeVariant()), 0.055)
 }
 
 // mix 按比例 k（0–1）把 b 混进 a。

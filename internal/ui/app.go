@@ -76,21 +76,25 @@ type Workspace struct {
 	no      int
 	desktop *Desktop
 
-	proto    *widget.Select
-	target   *widget.Entry
-	useSim   *widget.Check
-	port     *widget.Select
-	baud     *widget.SelectEntry
-	frameFmt *widget.Select // 数据位、校验位、停止位，例如 8N1
-	timeoutE *widget.Entry
-	connBtn  *widget.Button
-	detectBn *widget.Button
-	tcpBox   *fyne.Container
-	serBox   *fyne.Container
-	bar      *fyne.Container
+	proto         *widget.Select
+	target        *widget.Entry
+	useSim        *widget.Check
+	port          *widget.Select
+	baud          *widget.SelectEntry
+	frameFmt      *widget.Select // 数据位、校验位、停止位，例如 8N1
+	timeoutE      *widget.Entry
+	connBtn       *widget.Button
+	connState     *widget.Label
+	detectBn      *widget.Button
+	tcpBox        *fyne.Container
+	serBox        *fyne.Container
+	bar           *fyne.Container
+	pauseAllBtn   *widget.Button
+	readOnlyCheck *widget.Check
 
 	session      *session
 	connecting   bool
+	connErr      string       // 上次连接失败的原因，重试时清空。
 	probeRunning bool         // 检测及停止清理期间，同一工作区只允许一次检测
 	recID        atomic.Int64 // 正在记录的会话 ID，收发回调里读；0 表示不记录
 	points       pointTable   // 本窗口的点表，初始为空
@@ -120,6 +124,7 @@ type Workspace struct {
 	historyWin   fyne.Window   // 打开着的历史报文窗口，只开一个
 	requestWin   fyne.Window   // 打开着的自定义请求窗口，只开一个
 	typeTool     *typeTool     // 打开着的功能码 / 数据类型 / 字节序调试窗口，只开一个
+	ai           *aiTool
 	done         chan struct{}
 	closed       bool
 }
@@ -156,7 +161,7 @@ func newWorkspace(app fyne.App, win fyne.Window, version string, no int) *Worksp
 	ws.traffic.title.Hide() // 页签已经写了“通信报文”
 	ws.inspect = newInspector(ws)
 	ws.log = newFaultLog(app)
-	ws.log.onSelect = func(e logEntry) { ws.inspect.show("日志", e.detail()) }
+	ws.log.onSelect = ws.inspect.showLog
 	ws.status = widget.NewLabel("")
 	ws.status.Truncation = fyne.TextTruncateEllipsis
 	ws.tiles = container.NewStack()
@@ -231,6 +236,9 @@ func (ws *Workspace) stop() {
 		return
 	}
 	ws.closed = true
+	if ws.ai != nil {
+		ws.ai.cancelRequest()
+	}
 	ws.saveWindowSize()
 	close(ws.done)
 	for _, w := range ws.windows {
@@ -303,20 +311,32 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 	ws.timeoutE.OnSubmitted = func(string) { ws.applyTimeoutEntry() }
 	ws.connBtn = widget.NewButtonWithIcon("连接", theme.LoginIcon(), ws.toggleConnect)
 	ws.connBtn.Importance = widget.HighImportance
+	ws.connState = widget.NewLabelWithStyle("未连接", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	ws.connState.Truncation = fyne.TextTruncateEllipsis
 	ws.updateDetectBtn()
+	ws.pauseAllBtn = widget.NewButtonWithIcon("全部暂停", theme.MediaPauseIcon(), func() {
+		ws.pauseAll(!ws.allReadsPaused())
+	})
+	ws.readOnlyCheck = widget.NewCheck("只读模式", func(on bool) {
+		if ws.readOnly != on {
+			ws.setReadOnly(on)
+		}
+	})
+	ws.refreshReadActions()
 
 	// Complete label/input groups wrap when the window is narrow.
 	parameters := container.New(flowLayout{}, container.NewHBox(widget.NewLabel("协议"), fixed(140, ws.proto)), ws.tcpBox, ws.serBox,
-		ws.useSim, ws.detectBn, container.NewHBox(widget.NewLabel("超时(ms)"), fixed(72, ws.timeoutE)), ws.connBtn)
+		ws.useSim, ws.detectBn, container.NewHBox(widget.NewLabel("超时(ms)"), fixed(72, ws.timeoutE)), ws.connBtn, fixed(96, ws.connState))
 	actions := container.New(flowLayout{},
+		widget.NewButtonWithIcon("新建读取窗口", theme.ContentAddIcon(), func() {
+			if !ws.dialogOpen() {
+				ws.addReadWindow()
+			}
+		}),
+		ws.pauseAllBtn,
 		widget.NewButtonWithIcon("检测寄存器", theme.SearchIcon(), func() {
 			if !ws.dialogOpen() {
 				ws.registerProbeDialog()
-			}
-		}),
-		widget.NewButtonWithIcon("读取窗口", theme.ContentAddIcon(), func() {
-			if !ws.dialogOpen() {
-				ws.addReadWindow()
 			}
 		}),
 		widget.NewButtonWithIcon("导入点表", theme.FolderOpenIcon(), func() {
@@ -330,11 +350,14 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 				ws.openHistory()
 			}
 		}),
-		widget.NewButtonWithIcon("新建主窗口", theme.ContentCopyIcon(), func() { ws.openNew() }))
+		widget.NewButtonWithIcon("新建主窗口", theme.ContentCopyIcon(), func() { ws.openNew() }), ws.readOnlyCheck)
 	for _, o := range actions.Objects {
-		o.(*widget.Button).Importance = widget.LowImportance
+		if b, ok := o.(*widget.Button); ok {
+			b.Importance = widget.LowImportance
+		}
 	}
-	ws.bar = container.New(toolbarLayout{}, parameters, actions)
+	actions.Objects[0].(*widget.Button).Importance = widget.HighImportance
+	ws.bar = container.New(toolbarLayout{}, parameters, widget.NewSeparator(), actions)
 
 	ws.logTab = container.NewTabItemWithIcon("日志", theme.InfoIcon(), ws.log.root)
 	ws.tabs = container.NewAppTabs(container.NewTabItemWithIcon("通信报文", theme.MailSendIcon(), ws.traffic.root), ws.logTab)
@@ -348,7 +371,7 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 	bottom := container.NewHSplit(ws.tabs, ws.inspect.root)
 	bottom.Offset = 0.58
 	main := container.NewVSplit(ws.tiles, bottom)
-	main.Offset = 0.64
+	main.Offset = 0.72
 	ws.mainSplit, ws.detailsSplit = main, bottom
 	return container.New(workspaceLayout{ws.bar}, ws.bar, container.NewVBox(widget.NewSeparator(), ws.status), main)
 }
@@ -413,12 +436,13 @@ func (ws *Workspace) setMenu() {
 			item("关闭读取窗口", cur(ws.removeWindow)),
 			fyne.NewMenuItemSeparator(),
 			key(item("导入点表…", modal(ws.importPoints)), fyne.KeyI, false),
-			item("调整点表字节序…", modal(func() { ws.showPointOrderDialog(ws.current()) })),
+			item("调整字节序…", modal(func() { ws.showPointOrderDialog(ws.current()) })),
 			item("打开换热站示例", ws.loadDemo),
 			fyne.NewMenuItemSeparator(),
 			key(item("全部暂停", func() { ws.pauseAll(true) }), fyne.KeyP, true),
 			key(item("全部继续", func() { ws.pauseAll(false) }), fyne.KeyR, true)),
 		fyne.NewMenu("调试",
+			item("AI 诊断助手…", ws.inspect.openAI),
 			key(item("自定义请求…", ws.openRequestTool), fyne.KeyR, false),
 			key(item("功能码 / 数据类型 / 字节序调试…", func() { ws.openTypeTool(ws.current()) }), fyne.KeyB, false),
 			item("扫描从站地址…", modal(ws.scanSlavesDialog)), item("读取诊断计数器…", modal(ws.diagCountersDialog)),
@@ -498,6 +522,14 @@ func (ws *Workspace) refreshTitle() {
 }
 
 func (ws *Workspace) refreshStatus() {
+	for _, w := range ws.windows {
+		w.refreshState()
+	}
+	state, importance := ws.connectionState()
+	if ws.connState != nil {
+		ws.connState.Importance = importance
+		ws.connState.SetText(state)
+	}
 	pts := ""
 	if n := len(ws.points); n > 0 {
 		pts = fmt.Sprintf(" · 点表 %d 点", n)
@@ -506,16 +538,18 @@ func (ws *Workspace) refreshStatus() {
 		pts += " · 只读模式"
 	}
 	if ws.session == nil {
-		ws.status.SetText(fmt.Sprintf("○ 未连接 · Modbus AI Studio %s · 窗口 %d%s%s", ws.Version, ws.no, pts, updateStatus()))
+		if ws.connErr != "" {
+			state += "：" + ws.connErr
+		}
+		ws.status.SetText(fmt.Sprintf("%s · Modbus AI Studio %s · 窗口 %d%s%s", state, ws.Version, ws.no, pts, updateStatus()))
 		return
 	}
 	rtt := "—"
 	if v := ws.stats.rtt.Load(); v > 0 {
 		rtt = formatRTT(time.Duration(v))
 	}
-	state := "● 已连接"
 	if ws.session.lost != nil {
-		state = "◐ 连接断开"
+		state = "连接断开"
 	}
 	text := fmt.Sprintf("%s · %s %s%s · 超时 %d ms · 轮询 %d · 有效响应 %d · 错误 %d", state,
 		modeName[ws.session.mode], ws.session.desc, ws.session.linkStatus(), ws.timeout.Milliseconds(), ws.stats.polls.Load(), ws.stats.ok.Load(), ws.stats.errs.Load())

@@ -32,6 +32,7 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 |  | `internal/modbus/` | 协议核心：PDU、MBAP / RTU / ASCII 分帧、客户端、数据类型与字节序、地址解析 |
 |  | `internal/transport/` | TCP 与串口 |
 |  | `internal/detect/` | 协议自动识别 |
+|  | `internal/ai/` | DeepSeek JSON 诊断客户端、证据 / 结果校验、Windows DPAPI 密钥存储；不依赖设备和界面 |
 |  | `internal/control/` | 写入与控制验证：多次回读，判定 PASS / 未生效 / 被覆盖 / 值不符 |
 |  | `internal/simulator/` | 模拟从站与故障注入 |
 |  | `internal/recorder/` | 报文记录：会话、收发、断开重连事件存进本机 SQLite |
@@ -49,14 +50,18 @@ Linux 版目前没有专用代码和安装包：同一份代码可以在 Linux �
 
 寄存器检测按职责集中在 `internal/ui/` 的四个文件：`registerprobe.go` 管理参数表单、进度和轮询暂停恢复；`registerprobe_scan.go` 执行批量检测、异常地址定位和超时复核；`registerprobe_result.go` 展示统计、具体地址并处理复制和应用范围；`registerprobe_test.go` 保留协议、地址缺口与界面的回归测试。`scan.go` 负责从站、串口参数扫描和通信诊断计数器。
 
+AI 界面由 `ai.go` 管理设置、来源、异步请求与取消；`ai_context.go` 在界面线程复制冻结证据并校验日志帧，`ai_report.go` 用纯文本显示报告并导出冻结证据。`ai_test.go` 和 `ai_workflow_test.go` 覆盖隐私默认值、快照不可变、最小连接测试、来源切换、无效帧、未知历史字段、报告导出、取消 / 关闭、重试保留上次报告、范围数量匹配和亚毫秒延迟。`internal/ai/client_test.go` 使用本地 HTTP 测试服务验证请求、证据引用、错误、重定向、超时及大小边界；CI 不需要实际 API Key，不请求外部模型。调试截图的 AI 报告使用本地合成响应。
+
+`toolbar.go` 的分组换行与面板布局根据当前宽度预留工具栏高度，供主窗口、读取窗口、报文区和 AI 助手使用。读取窗口嵌套诊断区按实际宽度计算高度，顶部滚动区域显式保留完整内容范围，表格独立布局。`gui_test.go` 验证窄面板按钮、查找输入框、计数、AI 顶部操作以及空记录 / 无匹配 / 暂停提示；回归同时覆盖窄读取窗口、完整错误宽度、矮窗口滚动、实际连接过程和检测期间的状态恢复；原生截图另覆盖紧凑 AI 窗口、报文无匹配与读取诊断滚动。
+
 本地发版后仅保留最新版本的安装包、校验值和验证记录；旧安装包、重复解压目录、临时截图和旧版本发版脚本清理。必要工具保留在 `bin/`，源码、资源和测试按上表存放。
 
 ## 常用命令
 
 ```sh
 go run ./cmd/modbus-ai              # 运行桌面应用（启动时为空；“读取 → 打开换热站示例”加载示例并连接内置模拟器）
-VERSION=0.11.6 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
-VERSION=0.11.6 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
+VERSION=0.11.14 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
+VERSION=0.11.14 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
 
 go build -o bin/ ./cmd/...
 
@@ -82,15 +87,16 @@ go test -race -count=3 ./...        # 并发与稳定性
 ```
 
 - 界面测试用 Fyne 的软件渲染驱动，不需要显示器和显卡。
-- `MODBUS_AI_SNAPSHOT=<目录> go test -run 'TestUIWithBuiltinSimulator|Test64BitPoints' ./internal/ui` 会把测试中的界面存成 PNG，用来检查布局；`assets/screenshots/` 里的截图就是这样生成的（`modbus-ai-ui.png` 即 `main.png`，`modbus-ai-packet.png` 即 `packet.png`）。
-- 要看真实 OpenGL 渲染，用调试构建：`go build -tags capture -o /tmp/cap ./cmd/modbus-ai && CAPTURE_DIR=/tmp /tmp/cap`。它按 `internal/ui/capture.go` 的剧本操作界面（打开示例并连接、选中窗口、控制条切换格式 / 字节序 / 原始值、用菜单连开两次读取定义、写入、调整字节序、历史报文、1024 宽），每步存一张截图后退出；终端没有屏幕录制权限也能用。注意它连的是本机真实的报文数据库和设置。
+- `MODBUS_AI_SNAPSHOT=<目录> go test -run 'TestUIWithBuiltinSimulator|Test64BitPoints' ./internal/ui` 会把测试中的界面存成 PNG，用来检查布局；该命令生成 `modbus-ai-ui.png` 和 `modbus-ai-packet.png`；当前 `assets/screenshots/` 的主窗口、报文和 AI 图使用下面的原生调试构建生成。
+- 要看真实 OpenGL 渲染，用调试构建：`go build -tags capture -o /tmp/cap ./cmd/modbus-ai && CAPTURE_DIR=/tmp /tmp/cap`。它按 `internal/ui/capture.go` 的剧本操作界面（打开示例、读取定义、写入、字节序、历史报文、报文筛选、960 / 1024 宽布局，以及 AI 报告、发送内容、设置、故障 / 日志来源、导出对话框、紧凑 AI 布局、报文无匹配提示、窄读取窗口、诊断滚动和 AI 重试失败保留报告、证据详情与完整 JSON、窄设置页、检测结果和暂停读数字节序调整 / 生效），每步存一张截图后退出，共 32 张；终端没有屏幕录制权限也能用。运行时应隔离用户数据目录；AI 使用本地合成响应，截图不是实际 DeepSeek 诊断结果。
+- 真实接口回归仅在显式启用时运行：设置 `MODBUS_AI_LIVE_TEST=1` 后执行 `go test -tags deepseek_live ./internal/ui -run '^TestDeepSeekLiveDiagnosticWorkflow$' -v -count=1 -timeout 4m`。它读取环境变量或已有加密密钥，不修改设置，仅向官方接口发送三个合成场景，产生实际 API 用量。可设置 `MODBUS_AI_LIVE_REPORT_DIR` 保存合成诊断报告；常规测试不编译此文件。
 - 持续集成（`.github/workflows/test.yml`）在 Windows、macOS、Linux 上跑 `go vet` 和全部测试，Windows 以外加 `-race`。
 
 ## 打包与发版
 
 `build/macos.sh` 在 Intel Mac 上同时打 Intel 和 Apple Silicon 两个 .app 和 DMG（ad-hoc 签名，最低 macOS 12）；`build/windows.sh` 在 macOS 上用 mingw-w64 交叉编译 Windows x64 绿色版 zip（静态链接，只依赖系统 DLL）。
 
-Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\ModbusAIStudio\app.log`，每行带进程号，多个实例不会相互覆盖日志；图标资源可用 `go-winres extract` 检查 `GLFW_ICON` 和高 DPI 清单。主窗口默认 1240 × 760 逻辑尺寸，并按屏幕可用区域和 DPI 缩放适配；关闭按钮默认隐藏到托盘，采集继续，托盘菜单退出时关闭本实例全部连接并写完数据库缓冲。界面测试覆盖后台轮询、独立窗口关闭和退出清理，Windows 本机已验证两个进程同时运行及隐藏后保留进程。150% 缩放、16 像素图标和启动速度仍需在不同设备上验证；遇到问题时请附 `app.log`。
+Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\ModbusAIStudio\app.log`，每行带进程号，多个实例不会相互覆盖日志；图标资源可用 `go-winres extract` 检查 `GLFW_ICON` 和高 DPI 清单。主窗口默认 1040 × 680 逻辑尺寸，并按屏幕可用区域和 DPI 缩放适配；关闭按钮默认隐藏到托盘，采集继续，托盘菜单退出时关闭本实例全部连接并写完数据库缓冲。界面测试覆盖后台轮询、独立窗口关闭和退出清理，Windows 本机已验证两个进程同时运行及隐藏后保留进程。150% 缩放、16 像素图标和启动速度仍需在不同设备上验证；遇到问题时请附 `app.log`。
 
 1. 改代码时同步递增版本号：`cmd/modbus-ai/main.go` 的 `version`、`build/*.sh` 的默认 `VERSION`、本文里的命令示例。
 2. `VERSION=x.y.z build/macos.sh`、`VERSION=x.y.z build/windows.sh` 打出两个 DMG 和 Windows zip。安装包文件名不要改：程序里的“检查更新”按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包。

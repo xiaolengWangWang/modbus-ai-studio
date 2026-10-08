@@ -2,6 +2,7 @@ package modbus
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -12,6 +13,24 @@ import (
 	"testing"
 	"time"
 )
+
+func TestPacketConnectionIdentitySurvivesRequestNumberReuse(t *testing.T) {
+	var ids []string
+	for i := 0; i < 2; i++ {
+		c := NewClient(nil, Options{Observer: ObserverFunc(func(p Packet) {
+			b, _ := json.Marshal(p)
+			var v map[string]any
+			json.Unmarshal(b, &v)
+			id, _ := v["ConnectionID"].(string)
+			ids = append(ids, id)
+		})})
+		c.emit(Packet{RequestID: 1, Dir: DirTX})
+		c.emit(Packet{RequestID: 1, Dir: DirRX})
+	}
+	if len(ids) != 4 || ids[0] == "" || ids[0] != ids[1] || ids[2] != ids[3] || ids[0] == ids[2] {
+		t.Fatalf("requests from different clients must carry distinct connection identities: %v", ids)
+	}
+}
 
 func mustHex(t *testing.T, s string) []byte {
 	t.Helper()

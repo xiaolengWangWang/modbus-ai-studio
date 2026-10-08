@@ -2,13 +2,11 @@ package ui
 
 import (
 	"fmt"
-	"image/color"
 	"strings"
 	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
@@ -22,6 +20,8 @@ const maxTraffic = 5000
 const (
 	filterAll    = "全部"
 	filterErrors = "仅错误"
+	filterTX     = "仅发送"
+	filterRX     = "仅接收"
 )
 
 // trafficPanel 是 Modbus Poll 式通信报文窗口：Tx:000001-01 03 …。收发回调只把记录放进 pending，
@@ -29,8 +29,9 @@ const (
 type trafficPanel struct {
 	ws *Workspace
 
-	mu      sync.Mutex
-	pending []modbus.Packet
+	mu           sync.Mutex
+	pending      []modbus.Packet
+	pendingTotal int // 包括界面刷新前因缓冲上限而移出的报文。
 
 	all    []modbus.Packet // 以下只在 UI 线程读写
 	held   []modbus.Packet // 暂停期间到达的记录，继续时并入
@@ -38,15 +39,18 @@ type trafficPanel struct {
 	total  int
 	paused bool
 
-	filter   *widget.Select
-	search   *widget.Entry
-	showTS   *widget.Check
-	list     *widget.List
-	count    *widget.Label
-	pauseBtn *widget.Button
-	title    *widget.Label
-	root     fyne.CanvasObject
-	onSelect func(modbus.Packet) // 选中一行时调用，默认交给主窗口的解析面板
+	filter     *widget.Select
+	search     *widget.Entry
+	resetBtn   *widget.Button
+	showTS     *widget.Check
+	list       *widget.List
+	count      *widget.Label
+	empty      *widget.Label
+	pauseBtn   *widget.Button
+	title      *widget.Label
+	root       fyne.CanvasObject
+	onSelect   func(modbus.Packet) // 选中一行时调用，默认交给主窗口的解析面板
+	onUnselect func()              // 筛选或清空时，同步清除对应解析面板中的旧报文。
 }
 
 func newTrafficPanel(ws *Workspace) *trafficPanel {
@@ -70,39 +74,62 @@ func newTrafficPanel(ws *Workspace) *trafficPanel {
 		},
 	)
 	t.list.OnSelected = func(i widget.ListItemID) {
-		if i >= len(t.view) {
+		if i < 0 || i >= len(t.view) {
 			return
 		}
-		if !t.paused {
+		if !t.paused && t.pauseBtn.Visible() {
 			t.setPaused(true)
 		}
 		t.onSelect(t.all[t.view[i]])
 	}
 	t.onSelect = func(p modbus.Packet) { ws.inspect.showPacket(p) }
-	t.count = widget.NewLabel("0 条")
+	t.onUnselect = func() {
+		if ws.inspect.title.Text == "报文解析" {
+			ws.inspect.clear()
+		}
+	}
+	t.list.OnUnselected = func(widget.ListItemID) { t.onUnselect() }
+	t.count = widget.NewLabel("显示 0 / 0 · 累计 0")
+	t.count.Wrapping = fyne.TextWrapWord
 	t.pauseBtn = widget.NewButtonWithIcon("暂停", theme.MediaPauseIcon(), func() { t.setPaused(!t.paused) })
+	t.pauseBtn.Importance = widget.LowImportance
 	t.showTS = widget.NewCheck("时间戳", func(bool) { t.list.Refresh() })
 	t.showTS.SetChecked(true)
-	t.filter = widget.NewSelect([]string{filterAll, filterErrors}, func(string) { t.rebuild() })
+	t.filter = widget.NewSelect([]string{filterAll, filterErrors, filterTX, filterRX}, func(string) {
+		t.list.UnselectAll()
+		t.rebuild()
+	})
 	t.filter.SetSelected(filterAll)
 	t.search = widget.NewEntry()
 	t.search.SetPlaceHolder("查找字节")
-	t.search.OnChanged = func(string) { t.rebuild() }
+	t.search.OnChanged = func(string) {
+		t.list.UnselectAll()
+		t.rebuild()
+	}
 	btn := func(label string, icon fyne.Resource, fn func()) *widget.Button {
 		b := widget.NewButtonWithIcon(label, icon, fn)
 		b.Importance = widget.LowImportance
 		return b
 	}
 	t.title = widget.NewLabelWithStyle("通信报文", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	// 查找框至少 140 宽；1024 宽的屏幕上放不下整条工具栏时横向滚动，不把查找框挤没
-	searchMin := canvas.NewRectangle(color.Transparent)
-	searchMin.SetMinSize(fyne.NewSize(140, 0))
-	actions := container.NewHBox(t.title, t.pauseBtn,
-		btn("清空", theme.DeleteIcon(), t.clear), btn("复制", theme.ContentCopyIcon(), t.copy), btn("保存", theme.DocumentSaveIcon(), t.save))
-	filters := container.NewBorder(nil, nil, container.NewHBox(t.showTS, fixed(96, t.filter)), t.count,
-		container.NewStack(searchMin, t.search))
-	head := container.NewVBox(container.NewHScroll(actions), container.NewHScroll(filters))
-	t.root = container.NewBorder(head, nil, nil, nil, compact(t.list))
+	t.resetBtn = btn("清除筛选", theme.ViewRefreshIcon(), func() {
+		t.filter.SetSelected(filterAll)
+		t.search.SetText("")
+	})
+	t.resetBtn.Disable()
+	// Actions, filters and counts share one wrapping row, so the header takes as
+	// few rows as the width allows and the reading area above keeps the space.
+	// The count goes last: when buffering lengthens it, it wraps instead of
+	// pushing the pause/copy/save actions out of view.
+	controls := container.New(flowLayout{}, t.title, t.pauseBtn,
+		btn("清空", theme.DeleteIcon(), t.clear), btn("复制", theme.ContentCopyIcon(), t.copy), btn("保存", theme.DocumentSaveIcon(), t.save),
+		t.showTS, fixed(96, t.filter), fixed(140, t.search), t.resetBtn, t.count)
+	t.empty = widget.NewLabel("暂无报文记录，收发记录会显示在这里。")
+	t.empty.Alignment = fyne.TextAlignCenter
+	t.empty.Wrapping = fyne.TextWrapWord
+	head := container.New(toolbarLayout{}, controls)
+	body := container.NewStack(compact(t.list), container.New(centerTextLayout{}, t.empty))
+	t.root = container.New(panelLayout{header: head, wrapped: true}, head, body)
 	return t
 }
 
@@ -144,6 +171,7 @@ func isError(p modbus.Packet) bool {
 // push 可以在任意 goroutine 调用。
 func (t *trafficPanel) push(p modbus.Packet) {
 	t.mu.Lock()
+	t.pendingTotal++
 	t.pending = append(t.pending, p)
 	if len(t.pending) > maxTraffic {
 		t.pending = t.pending[len(t.pending)-maxTraffic:]
@@ -168,12 +196,14 @@ func trim(ps []modbus.Packet) []modbus.Packet {
 func (t *trafficPanel) flush() {
 	t.mu.Lock()
 	batch := t.pending
+	total := t.pendingTotal
 	t.pending = nil
+	t.pendingTotal = 0
 	t.mu.Unlock()
 	if len(batch) == 0 {
 		return
 	}
-	t.total += len(batch)
+	t.total += total
 	if t.paused {
 		t.held = trim(append(t.held, batch...))
 		t.updateCount()
@@ -185,11 +215,35 @@ func (t *trafficPanel) flush() {
 }
 
 func (t *trafficPanel) updateCount() {
-	text := fmt.Sprintf("%d 条", t.total)
-	if n := len(t.held); n > 0 {
-		text += fmt.Sprintf("（暂停中 +%d）", n)
+	previousSize := t.count.MinSize()
+	text := fmt.Sprintf("显示 %d / %d · 累计 %d", len(t.view), len(t.all), t.total)
+	if t.paused {
+		text += fmt.Sprintf(" · 已暂停，待显示 %d", len(t.held))
 	}
 	t.count.SetText(text)
+	t.updateEmpty()
+	// Wrapped counters may need another line when buffering grows.
+	if t.root != nil && t.count.MinSize() != previousSize {
+		t.root.Refresh()
+	}
+}
+
+func (t *trafficPanel) updateEmpty() {
+	if t.empty == nil {
+		return
+	}
+	if len(t.view) > 0 {
+		t.empty.Hide()
+		return
+	}
+	text := "暂无报文记录，收发记录会显示在这里。"
+	if t.paused {
+		text = "报文显示已暂停，点击“继续”显示缓冲中的记录。"
+	} else if t.filter.Selected != filterAll || strings.TrimSpace(t.search.Text) != "" {
+		text = "没有匹配的报文，调整筛选条件或点击“清除筛选”。"
+	}
+	t.empty.SetText(text)
+	t.empty.Show()
 }
 
 // rebuild 按筛选条件重建可见行。“仅错误”同时保留出错请求的 Tx 行，方便对照。
@@ -209,6 +263,9 @@ func (t *trafficPanel) rebuild() {
 	}
 	t.view = t.view[:0]
 	for i, p := range t.all {
+		if t.filter.Selected == filterTX && p.Dir != modbus.DirTX || t.filter.Selected == filterRX && p.Dir != modbus.DirRX {
+			continue
+		}
 		if errOnly && !bad[p.RequestID] {
 			continue
 		}
@@ -218,16 +275,26 @@ func (t *trafficPanel) rebuild() {
 		t.view = append(t.view, i)
 	}
 	t.updateCount()
+	if t.resetBtn != nil {
+		if t.filter.Selected != filterAll || strings.TrimSpace(t.search.Text) != "" {
+			t.resetBtn.Enable()
+		} else {
+			t.resetBtn.Disable()
+		}
+	}
 	t.list.Refresh()
 }
 
 func (t *trafficPanel) setPaused(p bool) {
 	t.paused = p
 	if p {
+		t.pauseBtn.Importance = widget.HighImportance
 		t.pauseBtn.SetText("继续")
 		t.pauseBtn.SetIcon(theme.MediaPlayIcon())
+		t.updateCount()
 		return
 	}
+	t.pauseBtn.Importance = widget.LowImportance
 	t.pauseBtn.SetText("暂停")
 	t.pauseBtn.SetIcon(theme.MediaPauseIcon())
 	t.all = trim(append(t.all, t.held...))
@@ -239,8 +306,8 @@ func (t *trafficPanel) setPaused(p bool) {
 
 // setPackets 显示一批已有的记录（历史报文），替换原来的内容。
 func (t *trafficPanel) setPackets(ps []modbus.Packet) {
-	t.all, t.held, t.total = ps, nil, len(ps)
 	t.list.UnselectAll()
+	t.all, t.held, t.total = trim(ps), nil, len(ps)
 	t.rebuild()
 	t.list.ScrollToBottom()
 }
@@ -248,6 +315,7 @@ func (t *trafficPanel) setPackets(ps []modbus.Packet) {
 func (t *trafficPanel) clear() {
 	t.mu.Lock()
 	t.pending = nil
+	t.pendingTotal = 0
 	t.mu.Unlock()
 	t.all, t.held, t.view, t.total = nil, nil, nil, 0
 	t.list.UnselectAll()

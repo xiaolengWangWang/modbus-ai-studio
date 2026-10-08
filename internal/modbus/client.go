@@ -2,6 +2,7 @@ package modbus
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"sync"
@@ -36,19 +37,20 @@ const (
 // Packet 是一条收发记录。同一请求的 TX 和结果行共用 RequestID；
 // RX 行的地址和数量取自配对的请求，因为 FC03 等响应本身不含地址。
 type Packet struct {
-	Time      time.Time
-	RequestID uint64
-	Dir       Direction
-	Mode      Mode
-	Slave     byte
-	TxID      uint16 // 仅 Modbus TCP
-	Function  FunctionCode
-	Address   uint16
-	Count     uint16
-	Raw       []byte // 超时等没有收到字节的结果行为空
-	Status    Status
-	RTT       time.Duration // 仅结果行
-	Err       error
+	Time         time.Time
+	RequestID    uint64
+	ConnectionID string // non-identifying connection generation; empty in legacy recordings
+	Dir          Direction
+	Mode         Mode
+	Slave        byte
+	TxID         uint16 // 仅 Modbus TCP
+	Function     FunctionCode
+	Address      uint16
+	Count        uint16
+	Raw          []byte // 超时等没有收到字节的结果行为空
+	Status       Status
+	RTT          time.Duration // 仅结果行
+	Err          error
 }
 
 // Observer 接收全部收发记录。Packet Recorder 通过它同时分发给界面和 SQLite。
@@ -81,13 +83,14 @@ func DefaultOptions(mode Mode) Options {
 // Client 是 Modbus 主站。同一时刻只有一个未完成请求（设计文档 5.5），
 // 响应必须通过严格校验才与请求匹配，校验不过的字节只记录、不采用。
 type Client struct {
-	mu      sync.Mutex
-	t       Transport
-	r       frameReader
-	opts    Options
-	timeout atomic.Int64 // 响应超时（纳秒），可在运行中修改
-	txID    uint16
-	reqID   uint64
+	mu           sync.Mutex
+	t            Transport
+	r            frameReader
+	opts         Options
+	timeout      atomic.Int64 // 响应超时（纳秒），可在运行中修改
+	txID         uint16
+	reqID        uint64
+	connectionID string
 }
 
 // NewClient 在已建立的连接上创建客户端。零值参数使用默认值（ReadRetries 除外）。
@@ -107,7 +110,7 @@ func NewClient(t Transport, opts Options) *Client {
 	if opts.CharGap <= 0 {
 		opts.CharGap = 20 * time.Millisecond
 	}
-	c := &Client{t: t, r: frameReader{t: t}, opts: opts}
+	c := &Client{t: t, r: frameReader{t: t}, opts: opts, connectionID: rand.Text()}
 	c.timeout.Store(int64(opts.Timeout))
 	return c
 }
@@ -149,6 +152,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 func (c *Client) emit(p Packet) {
 	if c.opts.Observer != nil {
 		p.Time = time.Now()
+		p.ConnectionID = c.connectionID
 		c.opts.Observer.OnPacket(p)
 	}
 }

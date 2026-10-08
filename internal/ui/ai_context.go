@@ -1,0 +1,308 @@
+package ui
+
+import (
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"strconv"
+	"sync/atomic"
+	"time"
+
+	"modbus-ai-studio/internal/ai"
+	"modbus-ai-studio/internal/modbus"
+)
+
+var aiSnapshotSeq atomic.Uint64
+
+type aiTarget struct {
+	packet         *modbus.Packet
+	read           *readWindow
+	event          *logEntry
+	registerOffset *uint16
+	probe          *aiProbeResult
+	related        []modbus.Packet
+}
+
+func cloneAITarget(target aiTarget) aiTarget {
+	target.packet = cloneAIPacket(target.packet)
+	target.event = cloneAILog(target.event)
+	if target.probe != nil {
+		p := *target.probe
+		p.states = slices.Clone(p.states)
+		target.probe = &p
+	}
+	target.related = slices.Clone(target.related)
+	for i := range target.related {
+		target.related[i] = *cloneAIPacket(&target.related[i])
+	}
+	if target.registerOffset != nil {
+		offset := *target.registerOffset
+		target.registerOffset = &offset
+	} else if w := target.read; w != nil && w.sel >= 0 && w.sel < w.def.Qty {
+		offset := w.def.Start + uint16(w.sel)
+		target.registerOffset = &offset
+	}
+	return target
+}
+
+func cloneAILog(e *logEntry) *logEntry {
+	if e == nil {
+		return nil
+	}
+	cp := *e
+	cp.TX = append([]byte(nil), e.TX...)
+	cp.RX = append([]byte(nil), e.RX...)
+	cp.rows = append([]decodeRow(nil), e.rows...)
+	cp.tx, cp.res = cloneAIPacket(e.tx), cloneAIPacket(e.res)
+	return &cp
+}
+
+func (s aiTarget) label() string {
+	if p := s.probe; p != nil {
+		return fmt.Sprintf("检测结果 · Slave %d · FC%02X · %s", p.def.Slave, byte(p.def.Function), refSpan(p.def.area(), p.def.Start, p.def.Qty))
+	}
+	if e := s.event; e != nil {
+		kind := logKindName[e.Kind]
+		if kind == "" {
+			kind = "事件"
+		}
+		return fmt.Sprintf("日志 · %s · 窗口 %d · %s", kind, e.Window, e.Time.Format("2006-01-02 15:04:05"))
+	}
+	if p := s.packet; p != nil {
+		if p.Status == modbus.StatusLate {
+			return "报文 · 晚到帧（请求归属未知） · " + p.Time.Format("15:04:05.000")
+		}
+		return fmt.Sprintf("报文 · Slave %d · FC%02X · 地址 %d · %s", p.Slave, byte(p.Function), p.Address, p.Time.Format("15:04:05.000"))
+	}
+	if w := s.read; w != nil {
+		d := w.def
+		label := fmt.Sprintf("窗口 %d · Slave %d · FC%02X · %s", w.no, d.Slave, byte(d.Function), refSpan(d.area(), d.Start, d.Qty))
+		if s.registerOffset != nil {
+			label += " · 选中 " + modbus.Reference(d.area(), *s.registerOffset)
+		}
+		return label
+	}
+	return "工作区连接状态"
+}
+
+// aiSnapshot runs on the UI thread. Every leaf is serialized immediately, so
+// acquisition and subsequent selection changes cannot mutate a request.
+func (ws *Workspace) aiSnapshot(selected *modbus.Packet, raw, values bool) ai.Snapshot {
+	target := aiTarget{packet: selected}
+	if selected == nil {
+		target.read = ws.current()
+	}
+	return ws.aiSnapshotFor(cloneAITarget(target), raw, values)
+}
+
+func (ws *Workspace) aiSnapshotFor(target aiTarget, raw, values bool) ai.Snapshot {
+	now := time.Now()
+	s := ai.Snapshot{ID: fmt.Sprintf("W%d-%d-%d", ws.no, now.UnixNano(), aiSnapshotSeq.Add(1)), Source: target.label(), CapturedAt: now.Format(time.RFC3339Nano), Note: "仅诊断，不执行设备操作。未包含主机、串口、路径、点名称或日志自由文本。报文和日志只包含该选中对象及可信关联报文，不混入当前读取状态。相同 connection_id 和 request_id 标记同一次请求；旧记录及无法确认归属的晚到帧标为未知。原始报文可能包含过程值。"}
+	add := func(kind string, v any) {
+		b, _ := json.Marshal(v)
+		s.Evidence = append(s.Evidence, ai.Evidence{ID: fmt.Sprintf("E%d", len(s.Evidence)+1), Kind: kind, Data: b})
+	}
+	if p := target.probe; p != nil {
+		add("register_probe", p.data())
+		return s
+	}
+	if e := target.event; e != nil {
+		add("selected_log", map[string]any{"time": e.Time.Format(time.RFC3339Nano), "kind": e.Kind, "window": e.Window, "protocol": string(e.mode), "has_tx": len(e.TX) > 0, "has_rx": len(e.RX) > 0, "note": "自由文本说明和逐字段解读不发送；未保存的通信状态未知"})
+		addAILogEvidence(*e, raw, add)
+		return s
+	}
+	if target.packet != nil {
+		add("selected_packet", aiPacket(*target.packet, raw))
+		for _, p := range target.related {
+			add("related_packet", aiPacket(p, raw))
+		}
+		return s
+	}
+	add("workspace_state", map[string]any{"version": ws.Version, "protocol": string(protoModes[ws.proto.Selected]), "connected": ws.session != nil, "timeout_ms": ws.timeout.Milliseconds(), "read_only": ws.readOnly})
+	w := target.read
+	if w != nil && slices.Contains(ws.windows, w) {
+		d := w.def
+		definition := map[string]any{"window": w.no, "slave": d.Slave, "function": byte(d.Function), "address": d.Start, "reference": modbus.Reference(d.area(), d.Start), "quantity": d.Qty, "scan_ms": d.Scan.Milliseconds(), "format": string(d.Kind), "order": string(d.Order), "paused": w.paused}
+		if target.registerOffset != nil {
+			definition["selected_register_offset"] = *target.registerOffset
+		}
+		add("current_read_definition", definition)
+		regs, at, err := w.snapshot()
+		state := map[string]any{"last_success": at.Format(time.RFC3339Nano), "status": "SUCCESS"}
+		if at.IsZero() {
+			state["last_success"] = ""
+			state["status"] = "NO_DATA"
+		}
+		if err != nil {
+			state["status"] = aiErrorKind(err)
+			// Hints are generated by local rules, not free-form transport error text.
+			state["local_rule_hint"] = ws.diagnose(w, err).Hint
+		}
+		add("current_read_state", state)
+		if values {
+			add("current_registers", map[string]any{"registers": regs, "note": "原始uint16；多寄存器整型应按字节序解码并保留十进制字符串精度"})
+		}
+	}
+	ws.ring.mu.Lock()
+	packets := make([]modbus.Packet, 0, 64)
+	for i := max(0, ws.ring.n-len(ws.ring.buf)); i < ws.ring.n; i++ {
+		packets = append(packets, ws.ring.buf[i%len(ws.ring.buf)])
+	}
+	ws.ring.mu.Unlock()
+	limit := 64
+	start := max(0, len(packets)-limit)
+	for _, p := range packets[start:] {
+		if p.Time.Before(now.Add(-60 * time.Second)) {
+			continue
+		}
+		if w != nil && (p.Slave != w.def.Slave || p.Function != w.def.Function || p.Address != w.def.Start || int(p.Count) != w.def.Qty) {
+			continue
+		}
+		add("packet", aiPacket(p, raw))
+	}
+	return s
+}
+
+// Historical event rows contain no parsed packet fields. Decode only validated
+// frames using the recorded session protocol, never a current connection.
+func aiLogFrame(mode modbus.Mode, raw []byte) (slave byte, txID uint16, pdu []byte, err error) {
+	switch mode {
+	case modbus.ModeTCP:
+		if len(raw) < 8 || len(raw) > 260 || binary.BigEndian.Uint16(raw[2:4]) != 0 || int(binary.BigEndian.Uint16(raw[4:6])) != len(raw)-6 {
+			return 0, 0, nil, modbus.ErrMalformed
+		}
+		return raw[6], binary.BigEndian.Uint16(raw[:2]), raw[7:], nil
+	case modbus.ModeRTU, modbus.ModeRTUOverTCP:
+		if len(raw) < 4 || len(raw) > 256 || !modbus.CheckCRC(raw) {
+			return 0, 0, nil, modbus.ErrCRC
+		}
+		return raw[0], 0, raw[1 : len(raw)-2], nil
+	case modbus.ModeASCII, modbus.ModeASCIIOverTCP:
+		data, _, err := modbus.ParseASCII(raw)
+		if err != nil || len(data) < 2 {
+			return 0, 0, nil, modbus.ErrMalformed
+		}
+		return data[0], 0, data[1:], nil
+	}
+	return 0, 0, nil, modbus.ErrMalformed
+}
+
+func addAILogEvidence(e logEntry, raw bool, add func(string, any)) {
+	// Observed timing and result status exist only for live packets. Historical
+	// rows preserve event time, not individual packet timestamps or latency.
+	emit := func(kind string, v map[string]any, frame []byte) {
+		p := e.tx
+		if kind == "log_result" {
+			p = e.res
+		}
+		if p != nil {
+			v["time"] = p.Time.Format(time.RFC3339Nano)
+			v["request_id"] = strconv.FormatUint(p.RequestID, 10)
+			if p.RTT > 0 {
+				v["rtt_ms"] = float64(p.RTT) / float64(time.Millisecond)
+			}
+			v["status"] = string(p.Status)
+			if p.Err != nil {
+				v["error_kind"] = aiErrorKind(p.Err)
+			}
+		}
+		if raw {
+			v["raw_hex"] = hexs(frame)
+		}
+		add(kind, v)
+	}
+	unknown := func(kind string, frame []byte) {
+		if len(frame) == 0 && !(kind == "log_result" && e.res != nil) && !(kind == "log_tx" && e.tx != nil) {
+			return
+		}
+		v := map[string]any{"protocol": string(e.mode), "metadata_valid": false, "note": "原始帧或协议未通过校验，字段未知"}
+		emit(kind, v, frame)
+	}
+	slave, id, pdu, err := aiLogFrame(e.mode, e.TX)
+	if err != nil {
+		unknown("log_tx", e.TX)
+		unknown("log_result", e.RX)
+		return
+	}
+	req, err := modbus.ParseRequestPDU(slave, pdu)
+	if err != nil {
+		unknown("log_tx", e.TX)
+		unknown("log_result", e.RX)
+		return
+	}
+	verified := func(direction modbus.Direction, frameKind string) map[string]any {
+		v := map[string]any{"protocol": string(e.mode), "metadata_valid": true, "direction": string(direction), "frame_kind": frameKind, "slave": slave, "function": byte(req.Function), "address": req.Address, "quantity": req.Count()}
+		if e.mode == modbus.ModeTCP {
+			v["transaction_id"] = id
+		}
+		return v
+	}
+	emit("log_tx", verified(modbus.DirTX, "request"), e.TX)
+	if len(e.RX) == 0 {
+		unknown("log_result", e.RX)
+		return
+	}
+	rs, rid, rpdu, err := aiLogFrame(e.mode, e.RX)
+	if err != nil || rs != slave || rid != id || (rpdu[0]&0x80 != 0 && len(rpdu) != 2) {
+		unknown("log_result", e.RX)
+		return
+	}
+	_, err = modbus.ParseResponsePDU(req, rpdu)
+	if err != nil {
+		if _, ok := modbus.AsException(err); !ok {
+			unknown("log_result", e.RX)
+			return
+		}
+	}
+	v := verified(modbus.DirRX, "normal_response")
+	if ex, ok := modbus.AsException(err); ok {
+		v["frame_kind"] = "exception_response"
+		v["exception_code"] = byte(ex.Code)
+	}
+	emit("log_result", v, e.RX)
+}
+func aiErrorKind(err error) string {
+	if ex, ok := modbus.AsException(err); ok {
+		return fmt.Sprintf("EXCEPTION_%02X", byte(ex.Code))
+	}
+	for _, v := range []struct {
+		err  error
+		kind string
+	}{{modbus.ErrTimeout, "TIMEOUT"}, {modbus.ErrCRC, "CRC_ERROR"}, {modbus.ErrLRC, "LRC_ERROR"}, {modbus.ErrConnection, "CONNECTION_ERROR"}} {
+		if errors.Is(err, v.err) {
+			return v.kind
+		}
+	}
+	return "OTHER_ERROR"
+}
+func aiPacket(p modbus.Packet, raw bool) map[string]any {
+	v := map[string]any{"time": p.Time.Format(time.RFC3339Nano), "request_id": strconv.FormatUint(p.RequestID, 10), "direction": string(p.Dir), "protocol": string(p.Mode), "slave": p.Slave, "function": byte(p.Function), "address": p.Address, "quantity": p.Count, "status": string(p.Status)}
+	if p.RTT > 0 {
+		v["rtt_ms"] = float64(p.RTT) / float64(time.Millisecond)
+	}
+	if p.ConnectionID != "" {
+		v["connection_id"] = p.ConnectionID
+		if p.Status != modbus.StatusLate {
+			v["request_group"] = p.ConnectionID + ":" + strconv.FormatUint(p.RequestID, 10)
+		}
+	}
+	if ex, ok := modbus.AsException(p.Err); ok {
+		v["exception_code"] = byte(ex.Code)
+	}
+	if p.ConnectionID == "" {
+		v["association"] = "unknown_legacy_connection"
+	}
+	if p.Status == modbus.StatusLate {
+		for _, key := range []string{"request_id", "address", "quantity", "slave", "function"} {
+			delete(v, key)
+		}
+		v["association"] = "unknown_late_frame_owner"
+		v["note"] = "晚到帧可能在另一请求期间被排空；不能使用记录行的请求参数判断它属于哪个地址。"
+	}
+	if raw {
+		v["raw_hex"] = hexs(p.Raw)
+	}
+	return v
+}

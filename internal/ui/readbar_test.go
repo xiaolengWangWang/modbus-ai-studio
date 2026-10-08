@@ -136,6 +136,102 @@ func TestReadBarPointOrder(t *testing.T) {
 	})
 }
 
+func TestByteOrderImmediatelyReinterpretsPausedAndOfflineData(t *testing.T) {
+	ws := openWS(t, test.NewTempApp(t), false)
+	locked(func() {
+		d := defaultDef()
+		d.Kind, d.Order, d.Qty = kindFloat32, modbus.OrderABCD, 4
+		w := ws.addWindow(d)
+		w.setPaused(true)
+		regs, _ := modbus.EncodeRaw(modbus.TypeFloat32, modbus.OrderCDAB, 85.5)
+		w.mu.Lock()
+		w.regs = append(regs, regs...)
+		gen := w.gen
+		w.mu.Unlock()
+		w.bar.order.SetSelected("CDAB")
+		if v, _ := w.valueText(0); v != "85.5" {
+			t.Errorf("byte-order change must reinterpret existing data immediately, got %q", v)
+		}
+		w.mu.Lock()
+		if len(w.regs) != 4 || w.gen != gen {
+			t.Error("display-only change cleared data or restarted polling")
+		}
+		w.mu.Unlock()
+		if !w.paused || w.bar.order.Selected != "CDAB" {
+			t.Error("pause or toolbar state was lost")
+		}
+	})
+}
+
+func TestByteOrderDialogAppliesToRawWindowAndLocalFormats(t *testing.T) {
+	ws := openWS(t, test.NewTempApp(t), false)
+	locked(func() {
+		d := defaultDef()
+		d.Kind, d.Order, d.Qty = kindFloat32, modbus.OrderABCD, 4
+		w := ws.addWindow(d)
+		regs, _ := modbus.EncodeRaw(modbus.TypeFloat32, modbus.OrderCDAB, 85.5)
+		w.mu.Lock()
+		w.regs = append(regs, regs...)
+		w.mu.Unlock()
+		w.tapCell(w.cellOf(0, 1))
+		ws.showPointOrderDialog(w)
+		var choice *widget.Select
+		for _, s := range findSelects(ws.win.Canvas().Overlays().Top()) {
+			if slices.Contains(s.Options, "CDAB") {
+				choice = s
+			}
+		}
+		if choice == nil {
+			t.Fatal("byte-order choices unavailable")
+		}
+		choice.SetSelected("CDAB")
+		pressButton(t, ws, "应用")
+		if v, _ := w.valueText(0); v != "85.5" {
+			t.Errorf("dialog did not change the selected raw value: %q", v)
+		}
+		clearOverlays(ws)
+		d.Kind = kindPoint
+		mixed := ws.addWindow(d)
+		if err := mixed.setRegisterFormat(0, 2, kindFloat32, modbus.OrderABCD); err != nil {
+			t.Fatal(err)
+		}
+		mixed.mu.Lock()
+		mixed.regs = append(regs, regs...)
+		mixed.mu.Unlock()
+		if mixed.bar.order.Disabled() {
+			t.Error("local FLOAT32 format has no usable order control")
+		}
+		mixed.bar.order.SetSelected("CDAB")
+		if v, _ := mixed.valueText(0); v != "85.5" {
+			t.Errorf("local format ignored the window order: %q", v)
+		}
+	})
+}
+
+func TestLocalByteOrderCorrectionRemovesObsoleteWholeWindowHint(t *testing.T) {
+	ws := openWS(t, test.NewTempApp(t), false)
+	locked(func() {
+		d := defaultDef()
+		d.Kind, d.Qty, d.Order = kindFloat32, 2, modbus.OrderABCD
+		w := ws.addWindow(d)
+		w.setPaused(true)
+		regs, _ := modbus.EncodeRaw(modbus.TypeFloat32, modbus.OrderCDAB, 85.5)
+		w.mu.Lock()
+		w.regs = regs
+		w.mu.Unlock()
+		w.refresh()
+		if !w.hintLbl.Visible() {
+			t.Fatal("fixture lacks the original byte-order hint")
+		}
+		if err := w.setRegisterFormat(0, 2, kindFloat32, modbus.OrderCDAB); err != nil {
+			t.Fatal(err)
+		}
+		if w.hintLbl.Visible() || w.actionBtn.Visible() {
+			t.Error("corrected local format still shows obsolete ABCD warning")
+		}
+	})
+}
+
 // 边界情况：2000 个线圈切到保持寄存器时数量收到 125；64 位格式的字节序是八字母写法，切回 32 位按同一类换算；
 // 点表窗口没有多寄存器点时字节序不可选；ASCII + BA + 原始值保存工作区再打开不丢。
 func TestReadBarEdgeCases(t *testing.T) {

@@ -68,7 +68,9 @@ func (ws *Workspace) showProbeResult(w *readWindow, d readDef, res []int8, stopE
 	if counts[-1]+counts[-2] > 0 {
 		summary.Importance = widget.WarningImportance
 	}
-	body := container.NewBorder(container.NewVBox(summary, widget.NewSeparator()), widget.NewButton("复制结果", func() { ws.app.Clipboard().SetContent(text) }), nil, nil, scroll)
+	result := newAIProbeResult(d, res, stopErr)
+	aiBtn := widget.NewButton("AI分析结果", func() { ws.openAIFrom(aiTarget{probe: result}, nil) })
+	body := container.NewBorder(container.NewVBox(summary, widget.NewSeparator()), container.New(flowLayout{}, widget.NewButton("复制结果", func() { ws.app.Clipboard().SetContent(text) }), aiBtn), nil, nil, scroll)
 	if w == nil || best.n == 0 || best.n == d.Qty {
 		dlg := dialog.NewCustom("探测结果", "关闭", body, ws.win)
 		dlg.Resize(fyne.NewSize(600, 440))

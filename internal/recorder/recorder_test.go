@@ -2,15 +2,95 @@ package recorder
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"modbus-ai-studio/internal/modbus"
 )
+
+func TestPacketConnectionIdentityAndLegacyDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := strings.Replace(schema, "connection_id TEXT NOT NULL DEFAULT '',", "", 1)
+	if _, err := db.Exec(legacy); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	r, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := r.StartSession(modbus.ModeTCP, "synthetic", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := modbus.Packet{Time: time.Now(), RequestID: 1, Dir: modbus.DirTX, Mode: modbus.ModeTCP}
+	json.Unmarshal([]byte(`{"ConnectionID":"synthetic-connection"}`), &p)
+	r.Record(id, p)
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	ps, err := r.PacketsFile(path, id, 10)
+	if err != nil || len(ps) != 1 {
+		t.Fatalf("recorded packet unavailable: %v", err)
+	}
+	b, _ := json.Marshal(ps[0])
+	if !strings.Contains(string(b), `"ConnectionID":"synthetic-connection"`) {
+		t.Error("connection identity was lost while recording or reading")
+	}
+}
+
+func TestReadLegacyArchiveWithoutMigratingIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-readonly.db")
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := strings.Replace(schema, "connection_id TEXT NOT NULL DEFAULT '',", "", 1)
+	if _, err = db.Exec(legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO sessions(id,started_at,protocol,target,window) VALUES(1,0,'MODBUS_TCP','synthetic',1);
+	INSERT INTO packets(session_id,time,request_id,direction,protocol,slave,tx_id,function,address,count,status,rtt_us) VALUES(1,0,1,'TX','MODBUS_TCP',1,1,3,10,2,'SENT',0);`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	r, err := Open(filepath.Join(t.TempDir(), "current.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	packets, err := r.PacketsFile(path, 1, 10)
+	if err != nil || len(packets) != 1 || packets[0].ConnectionID != "" || packets[0].Address != 10 {
+		t.Fatalf("legacy archive lost data: %v %+v", err, packets)
+	}
+	db, err = sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	columns, err := databaseColumns(db, "packets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if columns["connection_id"] {
+		t.Error("read-only archive was migrated")
+	}
+}
 
 // 管理工具能用普通 SQLite 连接读取生成文件，数据库不是自定义格式。
 func TestDatabaseFileReadableByIndependentSQLiteConnection(t *testing.T) {

@@ -354,6 +354,10 @@ func (ws *Workspace) showPointOrderDialog(w *readWindow) {
 		ws.win.RequestFocus()
 		return
 	}
+	if w != nil && !w.def.bits() && (w.def.Kind != kindPoint || w.sel >= 0 && w.valueFormat(w.sel).kind != kindPoint || w.sel < 0 && len(w.def.Formats) > 0) {
+		w.showByteOrderDialog()
+		return
+	}
 	const all, window, one = "全部点", "本读取窗口的点", "单个点"
 	scopes := []string{all}
 	selected := all

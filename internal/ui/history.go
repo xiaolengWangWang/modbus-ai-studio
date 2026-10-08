@@ -114,12 +114,18 @@ func (ws *Workspace) openHistory() {
 	tp.pauseBtn.Hide()
 	tp.title.Hide()
 	in := newInspector(ws)
+	in.selectionOnly = true
 	in.placeholder = "单击报文，逐字段解析；单击日志，查看原因分析和出错时的原始报文。"
 	in.orderBtn.Hide() // 历史窗口里没有读取窗口，调字节序没有对象，点了还会在主窗口上叠对话框
 	in.clear()
 	tp.onSelect = in.showPacket
+	tp.onUnselect = func() {
+		if in.title.Text == "报文解析" {
+			in.clear()
+		}
+	}
 	fl := newFaultLog(ws.app)
-	fl.onSelect = func(e logEntry) { in.show("日志", e.detail()) }
+	fl.onSelect = in.showLog
 	logTab := container.NewTabItem("日志", fl.root)
 	tabs := container.NewAppTabs(container.NewTabItem("报文", tp.root), logTab)
 	fl.onChange = func(n int) {
@@ -145,6 +151,7 @@ func (ws *Workspace) openHistory() {
 			queryPath := selectedPath
 			info.SetText("正在读取记录…")
 			tp.clear()
+			in.packetContext = nil
 			fl.set(nil)
 			in.clear()
 			go func() {
@@ -159,9 +166,10 @@ func (ws *Workspace) openHistory() {
 						return
 					}
 					tp.setPackets(ps)
+					in.packetContext = ps
 					var es []logEntry
 					for _, e := range events {
-						es = append(es, logEntry{Event: e})
+						es = append(es, logEntry{Event: e, mode: s.Mode})
 					}
 					fl.set(es)
 					text := fmt.Sprintf("报文共 %d 条，显示最后 %d 条；日志 %d 条", s.Packets, len(ps), len(es))
@@ -255,7 +263,7 @@ func (ws *Workspace) openHistory() {
 	top := container.NewBorder(nil, nil, widget.NewLabel("连接"), nil, sel)
 	fileRow := container.NewBorder(nil, nil, widget.NewLabel("数据库文件"), widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), refresh), files)
 	w.SetContent(container.NewBorder(container.NewVBox(fileRow, top, info), container.NewBorder(nil, nil, nil, dbBtns, path), nil, nil, split))
-	ws.addTool(w, func() { closed = true; ws.historyWin = nil })
+	ws.addTool(w, func() { closed = true; in.closed = true; ws.historyWin = nil })
 	showTool(w)
 }
 

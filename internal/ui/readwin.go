@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"slices"
 	"strconv"
 	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
@@ -46,9 +48,11 @@ type readWindow struct {
 	pos        fyne.Position          // 子窗口不最大化时的位置和大小
 	size       fyne.Size
 	statusLbl  *widget.Label
+	stateLbl   *widget.Label
 	errLbl     *widget.Label
 	hintLbl    *widget.Label
 	actionBtn  *widget.Button
+	aiBtn      *widget.Button
 	diagBox    *fyne.Container // 错误行：错误说明和一键处理
 	writeBtn   *widget.Button
 	typeBtn    *widget.Button
@@ -60,6 +64,7 @@ type readWindow struct {
 	selAnchor  int                      // Shift 连选和拖选的起始寄存器
 	extending  bool                     // 选中回调中保留选择起点
 	head       *fyne.Container
+	headExtent *canvas.Rectangle // invisible measured extent for the scrollable wrapping header
 	buttons    *fyne.Container   // 定义、写入、暂停
 	bar        *readBar          // 功能码、格式、字节序、原始值（readbar.go）
 	body       *fyne.Container   // 标题区 + 表格，readLayout 排列
@@ -115,12 +120,13 @@ func newReadWindow(ws *Workspace, no int, d readDef) *readWindow {
 	}
 
 	w.writeBtn = widget.NewButtonWithIcon("写入", theme.DocumentCreateIcon(), func() { ws.setCurrent(w); ws.showWrite(w) })
-	w.pauseBtn = widget.NewButtonWithIcon("", theme.MediaPauseIcon(), func() { ws.setCurrent(w); w.setPaused(!w.paused) })
+	w.pauseBtn = widget.NewButtonWithIcon("暂停", theme.MediaPauseIcon(), func() { ws.setCurrent(w); w.setPaused(!w.paused) })
 	defBtn := widget.NewButtonWithIcon("定义", theme.SettingsIcon(), func() { ws.setCurrent(w); ws.showDefinition(w) })
 	for _, b := range []*widget.Button{w.writeBtn, w.pauseBtn, defBtn} {
 		b.Importance = widget.LowImportance
 	}
 	w.statusLbl = widget.NewLabelWithStyle("", fyne.TextAlignLeading, fyne.TextStyle{Monospace: true})
+	w.stateLbl = widget.NewLabelWithStyle("未连接", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	w.errLbl = widget.NewLabel("")
 	w.errLbl.Importance = widget.DangerImportance
 	w.errLbl.Wrapping = fyne.TextWrapWord
@@ -132,8 +138,10 @@ func newReadWindow(ws *Workspace, no int, d readDef) *readWindow {
 		}
 	})
 	w.actionBtn.Importance = widget.HighImportance
-	// 一键处理放在错误行右侧，说明另起一行占满宽度，窄窗口里也不会被挤成好几行
-	w.diagBox = container.NewBorder(nil, nil, nil, w.actionBtn, w.errLbl)
+	w.aiBtn = widget.NewButton("AI分析", func() { ws.openAITarget(aiTarget{read: w}) })
+	w.aiBtn.Importance = widget.LowImportance
+	// Error text uses the full width; manual actions wrap on the following row.
+	w.diagBox = container.New(toolbarLayout{}, w.errLbl, container.New(flowLayout{}, w.actionBtn, w.aiBtn))
 	w.diagBox.Hide()
 	w.hintLbl.Hide()
 	w.typeBtn = widget.NewButton("类型", func() { ws.setCurrent(w); w.showRegisterFormat() })
@@ -141,9 +149,13 @@ func newReadWindow(ws *Workspace, no int, d readDef) *readWindow {
 	w.buttons = container.NewHBox(defBtn, w.typeBtn, w.writeBtn, w.pauseBtn)
 	w.bar = newReadBar(w)
 	// 标题在子窗口的标题栏上；第一行是控制条和按钮。高度不够时从下往上收起：先收状态行，错误和一键处理尽量留在可见范围
-	w.head = container.NewVBox(container.NewBorder(nil, nil, nil, w.buttons, w.bar.root), w.diagBox, w.hintLbl, w.statusLbl)
+	controls := append([]fyne.CanvasObject{w.stateLbl}, w.bar.controls...)
+	controls = append(controls, w.buttons.Objects...)
+	w.head = container.New(toolbarLayout{}, container.New(flowLayout{}, controls...), w.diagBox, w.hintLbl, w.statusLbl)
+	w.statusLbl.Wrapping = fyne.TextWrapWord
 	// 平铺给的高度不够时（例如错误说明占了好几行），标题区在自己的范围内滚动，表格至少留出表头和两行
-	w.headScroll = container.NewVScroll(w.head)
+	w.headExtent = canvas.NewRectangle(color.Transparent)
+	w.headScroll = container.NewVScroll(container.NewStack(w.headExtent, w.head))
 	w.tableBox = dense(w.table)
 	w.body = container.New(readLayout{w}, w.headScroll, w.tableBox)
 	w.root = newActivator(w.body, func() { ws.setCurrent(w) })
@@ -183,15 +195,16 @@ type readLayout struct{ w *readWindow }
 // rowHeight 是表格一行的高度（含分隔线）。
 func rowHeight() float32 { return gridRowHeight() + theme.SeparatorThicknessSize() }
 
-// headHeight 是标题区在 room 高度内能完整显示的行数对应的高度，至少保留第一、二行（标题、控制条）。
-func (l readLayout) headHeight(room float32) float32 {
+// Prefer complete control and diagnosis groups; the viewport is then capped
+// by the space available above the table, with remaining content scrollable.
+func (l readLayout) headHeight(room float32, width float32) float32 {
 	var h float32
 	n := 0
 	for _, o := range l.w.head.Objects {
 		if !o.Visible() {
 			continue
 		}
-		next := h + o.MinSize().Height
+		next := h + toolbarRowHeight(o, width)
 		if n > 0 {
 			next += theme.Padding()
 		}
@@ -204,14 +217,16 @@ func (l readLayout) headHeight(room float32) float32 {
 }
 
 func (l readLayout) Layout(_ []fyne.CanvasObject, size fyne.Size) {
-	head := l.w.head.MinSize().Height
+	head := toolbarHeight(l.w.head.Objects, size.Width)
+	l.w.headExtent.SetMinSize(fyne.NewSize(0, head))
 	reserve := 2 * rowHeight() // 表头加一行
 	if l.w.diagBox.Visible() {
 		reserve = rowHeight() // 出错时数据是旧的，先保证错误和一键处理看得见
 	}
 	if room := size.Height - reserve; head > room {
-		head = l.headHeight(room)
+		head = l.headHeight(room, size.Width)
 	}
+	head = min(head, max(0, size.Height-reserve))
 	l.w.headScroll.Move(fyne.NewPos(0, 0))
 	l.w.headScroll.Resize(fyne.NewSize(size.Width, head))
 	l.w.tableBox.Move(fyne.NewPos(0, head))
@@ -219,7 +234,7 @@ func (l readLayout) Layout(_ []fyne.CanvasObject, size fyne.Size) {
 }
 
 func (l readLayout) MinSize([]fyne.CanvasObject) fyne.Size {
-	return fyne.NewSize(max(l.w.head.MinSize().Width, l.w.tableBox.MinSize().Width), l.headHeight(0)+2*rowHeight())
+	return fyne.NewSize(max(l.w.head.MinSize().Width, l.w.tableBox.MinSize().Width), l.w.head.Objects[0].MinSize().Height+2*rowHeight())
 }
 
 // prefSize 是子窗口按内容的大小：所有列、整条控制条、标题区和最多 20 行，加上子窗口的标题栏、边框和滚动条。
@@ -229,10 +244,15 @@ func (w *readWindow) prefSize() fyne.Size {
 		g += w.def.colWidth(k, w.ws.points) + theme.SeparatorThicknessSize()
 	}
 	pad := theme.Padding()
-	bar := w.bar.box.MinSize().Width + w.buttons.MinSize().Width + pad
-	width := max(g*float32(w.groups)+theme.ScrollBarSize(), bar, 380)
-	height := w.head.MinSize().Height + float32(min(w.rows, 20)+1)*rowHeight() + theme.ScrollBarSize()
-	return fyne.NewSize(width+2*pad, height+theme.Size(theme.SizeNameWindowTitleBarHeight)+pad)
+	var bar float32
+	for _, o := range w.head.Objects[0].(*fyne.Container).Objects {
+		if o.Visible() {
+			bar += o.MinSize().Width + pad
+		}
+	}
+	width := max(g*float32(w.groups)+theme.ScrollBarSize(), min(bar, 960), 880)
+	height := toolbarHeight(w.head.Objects, width) + float32(min(w.rows, 20)+1)*rowHeight() + theme.ScrollBarSize()
+	return fyne.NewSize(width+2*pad, max(340, height+theme.Size(theme.SizeNameWindowTitleBarHeight)+pad))
 }
 
 // indexOf 把表格单元换算成寄存器序号（相对 Start）；超出读取范围返回 -1。
@@ -501,12 +521,17 @@ func (w *readWindow) setPaused(p bool) {
 	w.paused = p
 	if p {
 		w.halt()
+		w.pauseBtn.Importance = widget.HighImportance
+		w.pauseBtn.SetText("继续")
 		w.pauseBtn.SetIcon(theme.MediaPlayIcon())
 	} else {
+		w.pauseBtn.Importance = widget.LowImportance
+		w.pauseBtn.SetText("暂停")
 		w.pauseBtn.SetIcon(theme.MediaPauseIcon())
 		w.start()
 	}
 	w.refresh()
+	w.ws.refreshReadActions()
 }
 
 // start 在已连接且未暂停时开始轮询，只在 UI 线程调用。
@@ -534,11 +559,46 @@ func (w *readWindow) halt() {
 	w.mu.Unlock()
 }
 
+// refreshState 同步连接与检测状态，不重做表格和诊断，只在 UI 线程调用。
+func (w *readWindow) refreshState() {
+	w.mu.Lock()
+	err, hasData := w.err, len(w.regs) > 0 && !w.lastOK.IsZero()
+	w.mu.Unlock()
+	w.updateState(err, hasData)
+}
+
+func (w *readWindow) updateState(err error, hasData bool) {
+	state, importance := "读取正常", widget.SuccessImportance
+	switch {
+	case w.ws.connecting:
+		state, importance = "连接中", widget.MediumImportance
+	case w.ws.session == nil:
+		state, importance = "未连接", widget.MediumImportance
+	case w.ws.session.lost != nil:
+		state, importance = "等待重连", widget.DangerImportance
+	case w.ws.probeRunning:
+		state, importance = "检测中", widget.WarningImportance
+	case w.paused:
+		state, importance = "已暂停", widget.WarningImportance
+	case err != nil:
+		state, importance = "读取失败", widget.DangerImportance
+	case !hasData:
+		state, importance = "等待数据", widget.MediumImportance
+	}
+	if w.stateLbl.Text != state || w.stateLbl.Importance != importance {
+		w.stateLbl.Importance = importance
+		w.stateLbl.SetText(state)
+		w.head.Refresh()
+		w.body.Refresh()
+	}
+}
+
 // refresh 刷新状态行、错误分析和表格，只在 UI 线程调用。
 func (w *readWindow) refresh() {
 	w.mu.Lock()
 	tx, errN, err, lastOK, regs := w.tx, w.errN, w.err, w.lastOK, w.regs
 	w.mu.Unlock()
+	w.updateState(err, len(regs) > 0 && !lastOK.IsZero())
 	d := w.def
 	status := fmt.Sprintf("Tx = %d: Err = %d: ID = %d: F = %02X: SR = %dms", tx, errN, d.Slave, byte(d.Function), d.Scan.Milliseconds())
 	if w.paused {
@@ -557,13 +617,13 @@ func (w *readWindow) refresh() {
 		if regs != nil {
 			dg.Text += " · 灰色为 " + lastOK.Format("15:04:05") + " 的值"
 		}
-	case regs != nil && d.Kind.dataType().Float() && !d.bits():
+	case regs != nil && d.Kind.dataType().Float() && !d.bits() && len(d.Formats) == 0:
 		dt := d.Kind.dataType()
 		if o, ok := suggestFloatOrder(dt, regs, d.Order.For(dt)); ok {
 			dg.Hint = fmt.Sprintf("按 %s 解出的 %s 多数不合理（灰色），按 %s 全部合理：字节序可能是 %s。", d.Order.For(dt), dt, o, o)
-			dg.Action, dg.Do = "改用 "+string(o), func() { w.ws.redefine(w, func(d *readDef) { d.Order = o }) }
+			dg.Action, dg.Do = "改用 "+string(o), func() { w.ws.setWindowOrder(w, o) }
 		}
-	case regs != nil && d.usesPoints():
+	case regs != nil && d.usesPoints() && len(d.Formats) == 0:
 		if cur, o, ok := suggestPointOrder(w.ws.points, d, regs); ok {
 			dg.Hint = fmt.Sprintf("点表里的浮点数按 %s 解出多数不合理（灰色），按 %s 全部合理：设备的字节序可能是 %s。", cur, o, o)
 			dg.Action, dg.Do = "点表改用 "+string(o), func() { w.ws.setPointOrder(cur, o) }
@@ -578,8 +638,8 @@ func (w *readWindow) refresh() {
 }
 
 func (w *readWindow) setDiagnosis(dg diagnosis) {
-	rowVisible := dg.Text != "" || dg.Action != ""
-	relayout := rowVisible != w.diagBox.Visible() || (dg.Hint != "") != w.hintLbl.Visible() || dg.Hint != w.hintLbl.Text
+	rowVisible := dg.Text != "" || dg.Action != "" || dg.Hint != ""
+	relayout := rowVisible != w.diagBox.Visible() || (dg.Hint != "") != w.hintLbl.Visible() || dg.Hint != w.hintLbl.Text || dg.Text != w.errLbl.Text || dg.Action != w.actionBtn.Text
 	w.errLbl.SetText(dg.Text)
 	w.hintLbl.SetText(dg.Hint)
 	w.diagDo = dg.Do

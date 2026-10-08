@@ -321,11 +321,17 @@ func TestRegisterProbeDialogDefaultsRangeAndCopy(t *testing.T) {
 			t.Fatal("Per-address scan must support a range exceeding 125 registers")
 		}
 		test.Tap(start)
+		if running.stateLbl.Text != "检测中" || paused.stateLbl.Text != "检测中" {
+			t.Errorf("Active detection must be visible in both polling and manually paused windows: %q / %q", running.stateLbl.Text, paused.stateLbl.Text)
+		}
 	})
 	waitFor(t, 15*time.Second, "scan result", func() bool { return strings.Contains(overlayText(ws), "非法地址（125") })
 	locked(func() {
 		if !paused.paused || running.paused {
 			t.Error("Detection must restore each window's original pause state")
+		}
+		if paused.stateLbl.Text != "已暂停" {
+			t.Errorf("Completed detection must restore the manually paused window's visible state: %q", paused.stateLbl.Text)
 		}
 		test.Tap(findButtons(ws.win.Canvas().Overlays().Top(), "复制结果")[0])
 		copied := ws.app.Clipboard().Content()
