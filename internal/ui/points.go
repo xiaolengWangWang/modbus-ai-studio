@@ -91,15 +91,20 @@ func (t pointTable) get(area modbus.Area, off uint16) (point, bool) {
 	return p, ok
 }
 
-// occupied 表示 off 是某个多寄存器点（32 位或字符串）的第 2 个及以后的寄存器。
+// cover 返回占用 off 的多寄存器点（32 位或字符串）：off 是它的第 2 个及以后的寄存器。
 // 点之间不重叠，往前找到的第一个点就是唯一可能覆盖 off 的点。
-func (t pointTable) occupied(area modbus.Area, off uint16) bool {
+func (t pointTable) cover(area modbus.Area, off uint16) (point, bool) {
 	for d := 1; d <= (maxStringLen+1)/2 && d <= int(off); d++ {
 		if p, ok := t.get(area, off-uint16(d)); ok {
-			return d < p.regs()
+			return p, d < p.regs()
 		}
 	}
-	return false
+	return point{}, false
+}
+
+func (t pointTable) occupied(area modbus.Area, off uint16) bool {
+	_, ok := t.cover(area, off)
+	return ok
 }
 
 // list 按数据区、地址排序返回全部点，用于保存工作区。
@@ -147,11 +152,12 @@ var typeAliases = map[string]modbus.DataType{
 
 // pointImport 是一次导入的结果。
 type pointImport struct {
-	format  string // 文件格式，显示给用户
-	points  []point
-	skipped []string // 跳过的行和原因：平台导出的属性表里可能有布尔、日期、虚拟点位
-	notes   []string // 其他提示，例如计算公式无法换算
-	noOrder bool     // 文件里没有字节序，32 / 64 位点按标准大端（ABCD，也是 Telegraf 的默认值）
+	format   string // 文件格式，显示给用户
+	points   []point
+	skipped  []string // 跳过的行和原因：平台导出的属性表里可能有布尔、日期、虚拟点位
+	overlaps int      // 其中与前面的点地址重叠的行数
+	notes    []string // 其他提示，例如计算公式无法换算
+	noOrder  bool     // 文件里没有字节序，32 / 64 位点按标准大端（ABCD，也是 Telegraf 的默认值）
 }
 
 // parsePointsFile 解析点表文件。.xlsx 读第一个能识别的工作表，其他按 CSV。两种文件都可以是
@@ -230,18 +236,26 @@ func cellGetter(col map[string]int, row []string) func(string) string {
 	}
 }
 
-// add 加入一个点，与已有的点重复或重叠时报错。
+// overlapError 是新点与已有的点地址重复或重叠，导入设备属性表时单独统计。
+type overlapError string
+
+func (e overlapError) Error() string { return string(e) }
+
+// add 加入一个点，与已有的点重复或重叠时报错，说明是和哪个点冲突。
 func (t pointTable) add(p point) error {
 	ref := modbus.Reference(p.Area, p.Offset)
 	if int(p.Offset)+p.regs() > 0x10000 {
 		return fmt.Errorf("%s 占用 %d 个地址，超出协议地址范围", ref, p.regs())
 	}
-	if _, dup := t.get(p.Area, p.Offset); dup || t.occupied(p.Area, p.Offset) {
-		return fmt.Errorf("地址 %s 与前面的点重复，或被前面的多寄存器点（32 / 64 位、字符串）占用", ref)
+	if prev, dup := t.get(p.Area, p.Offset); dup {
+		return overlapError(fmt.Sprintf("地址 %s 与“%s”重复", ref, prev.Name))
+	}
+	if prev, ok := t.cover(p.Area, p.Offset); ok {
+		return overlapError(fmt.Sprintf("地址 %s 被“%s”占用：它是 %s，占 %s", ref, prev.Name, prev.Type, refSpan(prev.Area, prev.Offset, prev.regs())))
 	}
 	for k := 1; k < p.regs(); k++ {
 		if next, ok := t.get(p.Area, p.Offset+uint16(k)); ok {
-			return fmt.Errorf("%s 占用 %d 个寄存器，其中 %s 已经是“%s”", ref, p.regs(), modbus.Reference(p.Area, next.Offset), next.Name)
+			return overlapError(fmt.Sprintf("%s 占用 %d 个寄存器，其中 %s 已经是“%s”", ref, p.regs(), modbus.Reference(p.Area, next.Offset), next.Name))
 		}
 	}
 	t[ptKey{p.Area, p.Offset}] = p
@@ -339,6 +353,9 @@ func parseAttrRows(rows [][]string) (pointImport, error) {
 			err = seen.add(p)
 		}
 		if err != nil {
+			if errors.As(err, new(overlapError)) {
+				imp.overlaps++
+			}
 			skip(err.Error())
 			continue
 		}

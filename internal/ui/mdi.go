@@ -145,12 +145,14 @@ func (m *mdi) sizeForCascade(w *readWindow) {
 	}
 }
 
-// cascade 按叠放顺序层叠，每个窗口回到按内容的大小（Modbus Poll 的“Cascade”）。
+// cascade 按叠放顺序层叠，每个窗口回到按内容的大小（Modbus Poll 的“Cascade”）。最多错开 8 层：
+// 更多时最下面的几个叠在原点，上面 8 个的标题栏都露出来（从头再排的话第 9 个会盖住前面所有标题栏）。
 func (m *mdi) cascade() {
 	m.setMaxed(false)
+	n := len(m.box.Objects)
 	for i, o := range m.box.Objects {
 		w := m.ws.windowOf(o)
-		k := float32(i % 8)
+		k := float32(max(0, i-(n-8)))
 		w.pos = fyne.NewPos(k*cascadeStep(), k*cascadeStep())
 		m.sizeForCascade(w)
 	}

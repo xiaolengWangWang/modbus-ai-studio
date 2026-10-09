@@ -84,6 +84,9 @@ func (ws *Workspace) applyWorkspace(data []byte) error {
 	for _, d := range f.Windows {
 		ws.addWindow(d)
 	}
+	if len(ws.windows) > 1 {
+		ws.mdi.cascade() // 和导入点表一样层叠一次，各窗口的标题栏都露出来
+	}
 	return nil
 }
 
@@ -238,12 +241,21 @@ func (ws *Workspace) applyImport(imp pointImport) string {
 	}
 	if len(spans) > 0 {
 		lines = append(lines, "按点表新建了读取窗口："+strings.Join(spans, "、")+"。")
+		// 一次读取最多 125 个寄存器，点表分散时要建多个窗口；层叠后各窗口的标题栏都露出来，不会被第一个窗口整个盖住
+		if len(ws.windows) > 1 {
+			ws.mdi.cascade()
+			lines = append(lines, fmt.Sprintf("%d 个读取窗口层叠排列，点标题栏切换；要同时看可以用“窗口 → 平铺”。", len(ws.windows)))
+		}
 	}
 	if imp.noOrder && slices.ContainsFunc(imp.points, func(p point) bool { return p.Type != typeString && p.regs() > 1 }) {
 		lines = append(lines, "文件里没有字节序，32 / 64 位点先按 ABCD（Telegraf 的默认值）解码；数值不对时读取窗口会提示改用哪种，一键改好。")
 	}
 	if n := len(imp.skipped); n > 0 {
 		lines = append(lines, fmt.Sprintf("\n跳过 %d 行：", n))
+		if imp.overlaps > 0 {
+			lines = append(lines, fmt.Sprintf("其中 %d 行和前面的点地址重叠，只导入了先出现的点。32 位点（REAL、DINT 等）占 2 个寄存器、64 位点占 4 个，"+
+				"下一个点的地址要往后隔开这么多；平台按这张表采集时，重叠的点至少有一个读数是错的，请对照设备手册核对属性标识里的地址。", imp.overlaps))
+		}
 		lines = append(lines, imp.skipped[:min(n, 12)]...)
 		if n > 12 {
 			lines = append(lines, "……")

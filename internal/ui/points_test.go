@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/test"
 
 	"modbus-ai-studio/internal/modbus"
@@ -170,7 +171,8 @@ func TestStringPoints(t *testing.T) {
 	}
 	for _, bad := range []struct{ csv, want string }{
 		{"地址,名称,类型\n40001,a,STRING\n", "长度"},
-		{"地址,名称,类型,长度\n40001,a,STRING,8\n40003,b,INT16,\n", "第 3 行：地址 40003 与前面的点重复，或被前面的多寄存器点"},
+		{"地址,名称,类型,长度\n40001,a,STRING,8\n40003,b,INT16,\n", "第 3 行：地址 40003 被“a”占用：它是 STRING，占 40001–40004"},
+		{"地址,名称,类型\n40001,a,INT16\n40001,b,INT16\n", "第 3 行：地址 40001 与“a”重复"},
 		{"地址,名称,类型,长度\n40003,b,INT16,\n40001,a,STRING,8\n", "占用 4 个寄存器，其中 40003"},
 		{"地址,名称,类型,长度,字节序\n40001,a,STRING,8,CDAB\n", "只能是 AB"},
 	} {
@@ -376,10 +378,13 @@ func TestImportAttrTable(t *testing.T) {
 		}
 	}
 	skipped := strings.Join(imp.skipped, "\n")
-	for _, s := range []string{"日均温度：虚拟点位", "线圈：0x 位区只能", "重叠：地址 40002"} {
+	for _, s := range []string{"日均温度：虚拟点位", "线圈：0x 位区只能", "重叠：地址 40002 被“一次供温”占用：它是 FLOAT32，占 40001–40002"} {
 		if !strings.Contains(skipped, s) {
 			t.Errorf("跳过说明缺少“%s”：\n%s", s, skipped)
 		}
+	}
+	if imp.overlaps != 1 {
+		t.Errorf("地址重叠的行数 %d，期望 1", imp.overlaps)
 	}
 	if len(imp.notes) != 1 || !strings.Contains(imp.notes[0], "x*0.1+5") {
 		t.Errorf("计算公式提示 %v", imp.notes)
@@ -481,6 +486,66 @@ func TestImportAddsWindowsForUncoveredPoints(t *testing.T) {
 			if !found {
 				t.Errorf("点 %s 没有被完整覆盖", p.Name)
 			}
+		}
+	})
+}
+
+// 点表分散，导入时建了多个窗口：层叠排列，第一个（地址最小）在最上面，每个窗口的标题栏都不被上面的窗口盖住；
+// 超过 8 个时上面 8 个的标题栏露出来，第 9 个不会回到原点把前面的全盖住。
+func TestImportCascadesWindows(t *testing.T) {
+	for _, n := range []int{4, 10} {
+		var sb strings.Builder
+		sb.WriteString("属性标识,属性名称\n")
+		for i := range n {
+			fmt.Fprintf(&sb, "4x%04d:REAL,点%d\n", 1+i*200, i)
+		}
+		imp, err := parsePointsFile("a.csv", []byte(sb.String()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ws := openWS(t, test.NewTempApp(t), false)
+		locked(func() {
+			ws.win.Resize(fyne.NewSize(1280, 900))
+			for len(ws.windows) > 0 {
+				ws.removeWindow(ws.windows[0])
+			}
+			msg := ws.applyImport(imp)
+			objs := ws.mdi.box.Objects
+			if len(objs) != n || !strings.Contains(msg, fmt.Sprintf("%d 个读取窗口层叠排列", n)) {
+				t.Fatalf("%d 个分散点应建 %d 个窗口：%d 个，导入说明：%s", n, n, len(objs), msg)
+			}
+			if ws.current() != ws.windows[0] || ws.mdi.top() != ws.windows[0].inner {
+				t.Errorf("%d 个窗口：第一个窗口应是当前窗口、在最上面", n)
+			}
+			top := objs[max(0, n-8):]
+			for i, lo := range top {
+				for _, hi := range top[i+1:] {
+					l, h := ws.windowOf(lo), ws.windowOf(hi)
+					if h.pos.Y < l.pos.Y+cascadeStep()-0.5 {
+						t.Errorf("%d 个窗口：窗口 %d %v 盖住了窗口 %d %v 的标题栏", n, h.no, h.pos, l.no, l.pos)
+					}
+				}
+			}
+		})
+	}
+}
+
+// 平台属性表里 REAL 的地址只隔 1：重叠的行跳过，导入说明先讲清原因，再逐行说明被哪个点占用。
+func TestImportOverlapHint(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString("属性标识,属性名称\n")
+	for a := 4; a <= 49; a++ {
+		fmt.Fprintf(&sb, "4x%04d:REAL,%d\n", a, a-1)
+	}
+	imp, err := parsePointsFile("a.csv", []byte(sb.String()))
+	if err != nil || len(imp.points) != 23 || imp.overlaps != 23 {
+		t.Fatalf("得到 %d 个点、%d 行重叠：%v", len(imp.points), imp.overlaps, err)
+	}
+	ws := openWS(t, test.NewTempApp(t), false)
+	locked(func() {
+		msg := ws.applyImport(imp)
+		if !strings.Contains(msg, "跳过 23 行：\n其中 23 行和前面的点地址重叠") || !strings.Contains(msg, "地址 40005 被“3”占用：它是 FLOAT32，占 40004–40005") {
+			t.Errorf("导入说明：%s", msg)
 		}
 	})
 }
