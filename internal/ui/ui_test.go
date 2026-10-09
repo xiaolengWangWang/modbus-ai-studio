@@ -31,11 +31,13 @@ func closeWS(ws *Workspace) {
 	})
 }
 
-// openWS 在锁内打开主窗口，测试结束时关闭，停止它的后台刷新。
+// openWS 在锁内打开主窗口，测试结束时关闭，停止它的后台刷新。勾选内置模拟器（界面默认不勾选），
+// 点“连接”就连本机模拟器；要连别的地址的测试自己取消勾选。
 func openWS(t *testing.T, a fyne.App, demo bool) *Workspace {
 	var ws *Workspace
 	locked(func() {
 		ws = open(a, "test", int(winSeq.Add(1)))
+		ws.useSim.SetChecked(true)
 		if demo {
 			ws.loadDemo()
 		}
@@ -129,6 +131,7 @@ func TestUIWithBuiltinSimulator(t *testing.T) {
 	}
 	// 主界面截图（README 用）：照常用的摆法，窗口 1 在左，窗口 2、3 在右边层叠，窗口 3 在最上面露出错误分析
 	locked(func() {
+		ws.mdi.setMaxed(false) // 示例默认最大化显示窗口 1，截图改成并排摆放
 		area := ws.mdi.size
 		right := area.Width - w1.size.Width - 6
 		w1.pos = fyne.Position{}

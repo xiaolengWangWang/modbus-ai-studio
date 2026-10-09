@@ -168,6 +168,11 @@ func (w *readWindow) updateTitle() {
 	w.ws.refreshWindowMenu()
 }
 
+// tabLabel 是最大化时切换标签上的文字：窗口编号和地址范围。
+func (w *readWindow) tabLabel() string {
+	return fmt.Sprintf("窗口 %d · %s", w.no, refSpan(w.def.area(), w.def.Start, w.def.Qty))
+}
+
 func (w *readWindow) selectionRange() (start, count int) {
 	if w.sel < 0 {
 		return 0, 0

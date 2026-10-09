@@ -16,6 +16,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/internal/modbus"
 )
@@ -490,9 +491,9 @@ func TestImportAddsWindowsForUncoveredPoints(t *testing.T) {
 	})
 }
 
-// 点表分散，导入时建了多个窗口：层叠排列，第一个（地址最小）在最上面，每个窗口的标题栏都不被上面的窗口盖住；
-// 超过 8 个时上面 8 个的标题栏露出来，第 9 个不会回到原点把前面的全盖住。
-func TestImportCascadesWindows(t *testing.T) {
+// 点表分散，导入时建了多个窗口：最大化显示第一个（地址最小），读取区上方的标签列出全部窗口，点一下切换，仍保持最大化。
+// 改用“窗口 → 层叠”时：不超过 8 个从原点开始各错开一层；超过 8 个时上面 8 个的标题栏露出来，第 9 个不会回到原点把前面的全盖住。
+func TestImportMaximizesWindows(t *testing.T) {
 	for _, n := range []int{4, 10} {
 		var sb strings.Builder
 		sb.WriteString("属性标识,属性名称\n")
@@ -511,11 +512,33 @@ func TestImportCascadesWindows(t *testing.T) {
 			}
 			msg := ws.applyImport(imp)
 			objs := ws.mdi.box.Objects
-			if len(objs) != n || !strings.Contains(msg, fmt.Sprintf("%d 个读取窗口层叠排列", n)) {
+			if len(objs) != n || !strings.Contains(msg, fmt.Sprintf("共 %d 个读取窗口，最大化显示第一个", n)) {
 				t.Fatalf("%d 个分散点应建 %d 个窗口：%d 个，导入说明：%s", n, n, len(objs), msg)
 			}
 			if ws.current() != ws.windows[0] || ws.mdi.top() != ws.windows[0].inner {
 				t.Errorf("%d 个窗口：第一个窗口应是当前窗口、在最上面", n)
+			}
+			tabs := ws.mdi.tabs.Objects
+			if !ws.mdi.maxed || !ws.mdi.tabBar.Visible() || len(tabs) != n || ws.windows[0].inner.Size() != ws.mdi.size {
+				t.Fatalf("%d 个窗口：应最大化并列出 %d 个标签，实际 maxed=%v 标签 %d 个", n, n, ws.mdi.maxed, len(tabs))
+			}
+			if b := tabs[0].(*widget.Button); b.Importance != widget.HighImportance || !strings.HasPrefix(b.Text, "窗口 ") {
+				t.Errorf("当前窗口的标签应突出显示：%q %v", b.Text, b.Importance)
+			}
+			test.Tap(ws.mdi.tabs.Objects[1].(*widget.Button))
+			if ws.current() != ws.windows[1] || ws.mdi.top() != ws.windows[1].inner || !ws.mdi.maxed {
+				t.Errorf("%d 个窗口：点第二个标签应切到窗口 2 并保持最大化", n)
+			}
+			if ws.mdi.tabs.Objects[1].(*widget.Button).Importance != widget.HighImportance {
+				t.Error("切换后标签的突出显示没跟着变")
+			}
+			ws.mdi.cascade()
+			objs = ws.mdi.box.Objects
+			if ws.mdi.tabBar.Visible() {
+				t.Error("层叠后不再显示标签")
+			}
+			if first := ws.windowOf(objs[0]); n <= 8 && first.pos != (fyne.Position{}) {
+				t.Errorf("%d 个窗口层叠时最下面的应在原点：%v", n, first.pos)
 			}
 			top := objs[max(0, n-8):]
 			for i, lo := range top {

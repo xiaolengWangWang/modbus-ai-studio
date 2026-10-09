@@ -17,7 +17,7 @@ import (
 )
 
 // version 在打包时用 -ldflags "-X main.version=…" 覆盖。
-var version = "0.11.15"
+var version = "1.0.0"
 
 func main() {
 	start := time.Now()
@@ -25,7 +25,7 @@ func main() {
 	update.Cleanup() // 删掉上次更新换下来的旧文件
 	log.Printf("startup setup: %s", time.Since(start))
 	go platform.PrewarmFonts()
-	a := app.NewWithID("studio.modbusai.desktop")
+	a := app.NewWithID(appID)
 	log.Printf("startup app: %s", time.Since(start))
 	platform.ConfigureApp(a)
 	log.Printf("startup theme: %s", time.Since(start))

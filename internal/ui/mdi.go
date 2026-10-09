@@ -1,37 +1,85 @@
 package ui
 
 import (
+	"fmt"
 	"image/color"
 	"math"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
 )
 
 // 读取窗口的多文档区域，照 Modbus Poll 的 MDI：每个读取窗口是一个子窗口，拖标题栏移动、拖右下角改大小、
 // 点最大化按钮铺满（之后切换窗口也保持最大化，再点还原）；新窗口层叠摆放，不并列平铺。
 // 点子窗口的标题栏或内容，把它提到最上面并设为当前窗口。“窗口”菜单里可以层叠、平铺、最大化或从列表里切换。
+// 一次建多个窗口（导入点表、示例、工作区）时最大化显示第一个，区域上方的标签列出全部窗口，点一下切换。
 // Fyne 自带的 MultipleWindows 每次刷新都会改写标题栏的点击回调、不处理最大化，所以自己排。
 
 type mdi struct {
-	ws    *Workspace
-	box   *fyne.Container          // 子窗口，按叠放顺序，最后一个在最上面
-	scope *container.ThemeOverride // 子窗口边框的配色
-	bg    *canvas.Rectangle
-	root  fyne.CanvasObject
-	maxed bool      // 最大化：最上面的子窗口铺满区域
-	size  fyne.Size // 区域大小，上次排列时记下
+	ws     *Workspace
+	box    *fyne.Container          // 子窗口，按叠放顺序，最后一个在最上面
+	scope  *container.ThemeOverride // 子窗口边框的配色
+	bg     *canvas.Rectangle
+	root   *fyne.Container
+	tabs   *fyne.Container // 最大化时各读取窗口的标签，点一下切换
+	tabBar *container.Scroll
+	tabSig string    // 标签内容没变时不重建
+	maxed  bool      // 最大化：最上面的子窗口铺满区域
+	size   fyne.Size // 区域大小，上次排列时记下
 }
 
 func newMDI(ws *Workspace) *mdi {
 	m := &mdi{ws: ws, bg: canvas.NewRectangle(color.Transparent)}
 	m.box = container.New(mdiLayout{m})
 	m.scope = container.NewThemeOverride(m.box, mdiTheme{appTheme()})
+	m.tabs = container.NewHBox()
+	m.tabBar = container.NewHScroll(m.tabs)
+	m.tabBar.Hide()
 	// 子窗口不会超出区域（排列时收进来），滚动容器只用来裁掉阴影等越界的绘制
-	m.root = container.NewStack(m.bg, container.NewScroll(m.scope))
+	m.root = container.NewBorder(m.tabBar, nil, nil, nil, container.NewStack(m.bg, container.NewScroll(m.scope)))
 	return m
+}
+
+// refreshTabs 最大化且有多个读取窗口时，在区域上方按编号列出各窗口（编号和地址范围），点一下切换：
+// 当前窗口突出显示，读取失败的标红。读取区只显示一个窗口，寄存器能显示得最多。
+func (m *mdi) refreshTabs() {
+	ws := m.ws
+	show := m.maxed && len(ws.windows) > 1
+	cur := ws.current()
+	var sig strings.Builder
+	if show {
+		for _, w := range ws.windows {
+			fmt.Fprintf(&sig, "%s|%v|%v\n", w.tabLabel(), w == cur, w.stateLbl.Importance == widget.DangerImportance)
+		}
+	}
+	if sig.String() == m.tabSig && show == m.tabBar.Visible() {
+		return
+	}
+	m.tabSig = sig.String()
+	m.tabs.Objects = nil
+	if show {
+		for _, w := range ws.windows {
+			b := widget.NewButton(w.tabLabel(), func() { ws.setCurrent(w) })
+			switch {
+			case w == cur:
+				b.Importance = widget.HighImportance
+			case w.stateLbl.Importance == widget.DangerImportance:
+				b.Importance = widget.DangerImportance
+			default:
+				b.Importance = widget.LowImportance
+			}
+			m.tabs.Objects = append(m.tabs.Objects, b)
+		}
+		m.tabBar.Show()
+	} else {
+		m.tabBar.Hide()
+	}
+	m.tabs.Refresh()
+	m.root.Refresh()
 }
 
 // mdiTheme 让当前子窗口的边框（标题栏）带主题色、其他窗口是灰色。Fyne 默认两者几乎一样，浅色主题下还和背景同色。
@@ -152,7 +200,7 @@ func (m *mdi) cascade() {
 	n := len(m.box.Objects)
 	for i, o := range m.box.Objects {
 		w := m.ws.windowOf(o)
-		k := float32(max(0, i-(n-8)))
+		k := float32(max(0, i-max(0, n-8))) // 不超过 8 个时从原点开始，每个错开一层
 		w.pos = fyne.NewPos(k*cascadeStep(), k*cascadeStep())
 		m.sizeForCascade(w)
 	}

@@ -17,7 +17,7 @@ import (
 	"modbus-ai-studio/internal/modbus"
 )
 
-// loadDemo 按换热站示例点表打开三个读取窗口；勾选了内置模拟器且未连接时顺便连接，马上能看到数据。
+// loadDemo 按换热站示例点表打开三个读取窗口；未连接时勾选内置模拟器并连接，马上能看到数据。
 // 窗口 3（40601–40604）的模拟器应答慢于默认超时，用来演示错误自动分析。
 func (ws *Workspace) loadDemo() {
 	ws.setPoints(demoPoints())
@@ -28,8 +28,9 @@ func (ws *Workspace) loadDemo() {
 	} {
 		ws.addWindow(d)
 	}
-	ws.mdi.cascade()
-	if ws.session == nil && ws.useSim.Checked && !ws.serialMode() {
+	ws.mdi.setMaxed(true)
+	if ws.session == nil && !ws.connecting && !ws.serialMode() {
+		ws.useSim.SetChecked(true)
 		ws.connect()
 	}
 }
@@ -244,8 +245,11 @@ func (ws *Workspace) windowMenuItems() []*fyne.MenuItem {
 	return items
 }
 
-// refreshWindowMenu 在读取窗口增减、切换、改定义后更新“窗口”菜单；内容没变时不重建菜单栏。
+// refreshWindowMenu 在读取窗口增减、切换、改定义后更新“窗口”菜单和最大化时的标签；内容没变时不重建。
 func (ws *Workspace) refreshWindowMenu() {
+	if ws.mdi != nil {
+		ws.mdi.refreshTabs()
+	}
 	if ws.winMenu == nil {
 		return
 	}

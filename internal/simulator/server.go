@@ -59,6 +59,7 @@ type Faults struct {
 	// 断开连接类故障：真实设备不回异常、直接断开 TCP 的几种情况
 	DisconnectOnAccept bool          // 接受连接后立即断开（连接数已满、IP 白名单）
 	DisconnectOn       []AddrRange   // 收到读写这些地址的请求后不应答、直接断开（设备不接受这条请求）
+	ResetOn            []AddrRange   // 收到读写这些地址的请求后复位连接（RST），像服务出错、防火墙清掉连接
 	IdleTimeout        time.Duration // 连接空闲超过这么久就断开
 }
 
@@ -183,6 +184,14 @@ func (s *Server) handle(conn net.Conn) {
 		for _, dr := range f.DisconnectOn {
 			if perr == nil && dr.Overlaps(req.Address, req.Count()) {
 				return // 不应答，直接断开
+			}
+		}
+		for _, dr := range f.ResetOn {
+			if perr == nil && dr.Overlaps(req.Address, req.Count()) {
+				if tc, ok := conn.(*net.TCPConn); ok {
+					_ = tc.SetLinger(0) // 关闭时发 RST，不走正常的 FIN
+				}
+				return
 			}
 		}
 		if extra, ok := s.processExtra(pdu); ok {

@@ -20,6 +20,7 @@ import (
 
 	"modbus-ai-studio/internal/detect"
 	"modbus-ai-studio/internal/modbus"
+	"modbus-ai-studio/internal/recorder"
 	"modbus-ai-studio/internal/simulator"
 	"modbus-ai-studio/internal/transport"
 )
@@ -199,6 +200,7 @@ func (ws *Workspace) connect() {
 		return
 	}
 	ws.timeout = cfg.timeout
+	ws.saveConnPrefs()
 	ws.connecting = true
 	ws.connErr = ""
 	ws.setInputsEnabled(false)
@@ -233,6 +235,11 @@ func (ws *Workspace) connect() {
 					s.recID = id
 					ws.recID.Store(id)
 				}
+			}
+			if l := s.link.Load(); l != nil && l.addrs != "" {
+				// 连接报文：记下本机端口，断开时能和设备侧、防火墙的日志或抓包对上
+				ws.addLog(logEntry{Event: recorder.Event{Time: time.Now(), Kind: recorder.EventConnect,
+					Detail: modeName[s.mode] + " · " + l.addrs}, mode: s.mode}, s.recID)
 			}
 			ws.connBtn.SetText("断开")
 			ws.connBtn.SetIcon(theme.LogoutIcon())
@@ -320,7 +327,7 @@ func (ws *Workspace) open(cfg connConfig) (*session, error) {
 	if err != nil {
 		return fail(err)
 	}
-	s.link.Store(newLink())
+	s.link.Store(linkFor(t))
 	s.client = modbus.NewClient(t, ws.clientOptions(s, cfg.timeout))
 	return s, nil
 }
@@ -401,6 +408,49 @@ func (ws *Workspace) setTimeout(t time.Duration) {
 		ws.session.client.SetTimeout(t)
 	}
 	ws.refreshStatus()
+}
+
+// 连接参数记在偏好设置里：连接时和关闭主窗口时保存，下次启动沿用。内置模拟器不记，启动时总是不勾选。
+const (
+	prefConnMode    = "conn.mode"
+	prefConnTarget  = "conn.target"
+	prefConnPort    = "conn.port"
+	prefConnBaud    = "conn.baud"
+	prefConnFormat  = "conn.format"
+	prefConnTimeout = "conn.timeoutMs"
+)
+
+func (ws *Workspace) saveConnPrefs() {
+	p := ws.app.Preferences()
+	p.SetString(prefConnMode, string(protoModes[ws.proto.Selected]))
+	p.SetString(prefConnTarget, strings.TrimSpace(ws.target.Text))
+	p.SetString(prefConnPort, ws.port.Selected)
+	p.SetString(prefConnBaud, strings.TrimSpace(ws.baud.Text))
+	p.SetString(prefConnFormat, ws.frameFmt.Selected)
+	p.SetInt(prefConnTimeout, int(ws.timeout.Milliseconds()))
+}
+
+func (ws *Workspace) restoreConnPrefs() {
+	p := ws.app.Preferences()
+	if name := protoName(modbus.Mode(p.String(prefConnMode))); name != "" {
+		ws.proto.SetSelected(name)
+	}
+	if s := p.String(prefConnTarget); s != "" {
+		ws.target.SetText(s)
+	}
+	if s := p.String(prefConnPort); s != "" {
+		ws.port.SetSelected(s)
+	}
+	if s := p.String(prefConnBaud); s != "" {
+		ws.baud.SetText(s)
+	}
+	if s := p.String(prefConnFormat); slices.Contains(ws.frameFmt.Options, s) {
+		ws.frameFmt.SetSelected(s)
+	}
+	if t, err := parseTimeout(strconv.Itoa(p.Int(prefConnTimeout))); err == nil {
+		ws.timeout = t
+		ws.timeoutE.SetText(strconv.FormatInt(t.Milliseconds(), 10))
+	}
 }
 
 // detectProtocol 自动识别 Modbus TCP / RTU over TCP / ASCII over TCP。识别要新建连接，已连接时先断开，识别完按结果重新连接。

@@ -302,8 +302,8 @@ func TestRegisterProbeDialogDefaultsRangeAndCopy(t *testing.T) {
 			t.Fatalf("Scan form must use the current window definition: %v", entries)
 		}
 		selects := findSelects(top)
-		if len(selects) != 1 || selects[0].Selected != modbus.FuncReadInputRegisters.String() {
-			t.Fatalf("Scan form must use the current function")
+		if len(selects) != 2 || selects[0].Selected != modbus.FuncReadInputRegisters.String() || selects[1].Selected != probeModeNames[probeAuto] {
+			t.Fatalf("Scan form must use the current function and default to automatic locating")
 		}
 		start := findButtons(top, "开始检测")[0]
 		entries[1].SetText("65535")
@@ -451,5 +451,115 @@ func TestRegisterProbeDoesNotApplyAfterConnectionOrWindowChanges(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// 逐个寄存器：每个地址单独读一次，非法地址和其他异常码都不打断，读完全部地址。
+func TestProbeEachRegister(t *testing.T) {
+	sent := 0
+	c := registerProbeClient(t, modbus.ModeTCP, simulator.Faults{Exceptions: []simulator.ExceptionRange{
+		{AddrRange: simulator.AddrRange{Start: 1, Count: 1}, Code: modbus.ExceptionSlaveDeviceFailure},
+	}}, modbus.ObserverFunc(func(p modbus.Packet) {
+		if p.Dir == modbus.DirTX {
+			sent++
+		}
+	}), 4)
+	d := readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters, Qty: 6}
+	res, err := probeUnits(context.Background(), c, d, probeSingle, nil, func(int) {})
+	if err != nil || fmt.Sprint(res) != "[1 -2 1 1 -1 -1]" || sent != 6 {
+		t.Fatalf("逐个寄存器应各读一次、异常码不中断：%v，发了 %d 条，%v", res, sent, err)
+	}
+}
+
+// 按点表分段：地址首尾相接的点合成一段一次读完，中间有空档就另起一段；读不通的段逐点再读，指出是哪个点。
+func TestProbeByPointSegments(t *testing.T) {
+	pts := newPointTable([]point{
+		{Area: modbus.AreaHoldingRegisters, Offset: 0, Name: "供水温度", Type: modbus.TypeFloat32},
+		{Area: modbus.AreaHoldingRegisters, Offset: 2, Name: "状态", Type: modbus.TypeUint16},
+		{Area: modbus.AreaHoldingRegisters, Offset: 5, Name: "回水温度", Type: modbus.TypeFloat32},
+		{Area: modbus.AreaHoldingRegisters, Offset: 7, Name: "频率", Type: modbus.TypeUint16},
+		{Area: modbus.AreaInputRegisters, Offset: 0, Name: "别的数据区", Type: modbus.TypeUint16},
+	})
+	d, segs, ok := pointProbeDef(pts, readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters})
+	if !ok || d.Start != 0 || d.Qty != 8 || len(segs) != 2 || segs[0].n != 3 || segs[1].start != 5 || segs[1].n != 3 {
+		t.Fatalf("分段：%+v %+v", d, segs)
+	}
+	if _, _, ok := pointProbeDef(pts, readDef{Slave: 1, Function: modbus.FuncReadCoils}); ok {
+		t.Error("点表里没有线圈，不能按点表检测线圈")
+	}
+	sent := 0
+	c := registerProbeClient(t, modbus.ModeTCP, simulator.Faults{}, modbus.ObserverFunc(func(p modbus.Packet) {
+		if p.Dir == modbus.DirTX {
+			sent++
+		}
+	}), 6) // 设备只有 0–5：第二段（5–7）读不通，“回水温度”跨到 6、“频率”在 7，都无效
+	res, err := probeUnits(context.Background(), c, d, probePoints, segs, func(int) {})
+	if err != nil || fmt.Sprint(res) != "[1 1 1 0 0 -1 -1 -1]" || sent != 4 || segs[0].state != 1 || segs[1].state != -1 {
+		t.Fatalf("按段检测：%v，发了 %d 条，段 %d %d，%v", res, sent, segs[0].state, segs[1].state, err)
+	}
+	text, summary, bad := pointProbeText(d, res, segs)
+	if bad != 2 || !strings.Contains(text, "40006 回水温度（FLOAT32）：非法地址") || !strings.Contains(text, "40008 频率（UINT16）：非法地址") ||
+		!strings.Contains(text, "40001–40003（2 个点）：整段可读") || !strings.Contains(summary, "4 个点：可读 2") {
+		t.Errorf("结果：%s\n%s", summary, text)
+	}
+}
+
+// 检测对话框：选“按点表分段”时范围按点表算，起始地址和数量不用填；没有点表时提示先导入。
+func TestRegisterProbeDialogModes(t *testing.T) {
+	ws := openWS(t, test.NewTempApp(t), true)
+	waitFor(t, 5*time.Second, "connection", func() bool { return ws.session != nil })
+	locked(func() {
+		ws.registerProbeDialog()
+		form := ws.win.Canvas().Overlays().Top()
+		var mode *widget.Select
+		var preview *widget.Label
+		var entries []*widget.Entry
+		walk(form, func(o fyne.CanvasObject) {
+			switch x := o.(type) {
+			case *widget.Select:
+				if len(x.Options) == len(probeModeNames) && x.Options[0] == probeModeNames[0] {
+					mode = x
+				}
+			case *widget.Label:
+				if strings.Contains(x.Text, "Offset 从 0 起始") {
+					preview = x
+				}
+			case *widget.Entry:
+				entries = append(entries, x)
+			}
+		})
+		if mode == nil || preview == nil || len(entries) != 3 {
+			t.Fatalf("检测对话框缺少检测方式或说明：%v %v %d", mode, preview, len(entries))
+		}
+		mode.SetSelected(probeModeNames[probePoints])
+		if !entries[1].Disabled() || !entries[2].Disabled() || !strings.Contains(preview.Text, "按点表分段") || !strings.Contains(preview.Text, "个点") {
+			t.Errorf("按点表分段：地址和数量应禁用，说明 %q", preview.Text)
+		}
+		ws.points = pointTable{}
+		mode.SetSelected(probeModeNames[probeSingle])
+		mode.SetSelected(probeModeNames[probePoints])
+		if !strings.Contains(preview.Text, "先导入点表") {
+			t.Errorf("没有点表时应提示先导入：%q", preview.Text)
+		}
+		mode.SetSelected(probeModeNames[probeSingle])
+		if entries[1].Disabled() || !strings.Contains(preview.Text, "逐个寄存器") {
+			t.Errorf("逐个寄存器：地址应可编辑，说明 %q", preview.Text)
+		}
+		clearOverlays(ws)
+	})
+}
+
+// walk 按控件树访问界面里的每个对象（包括隐藏的）。
+func walk(o fyne.CanvasObject, fn func(fyne.CanvasObject)) {
+	fn(o)
+	switch x := o.(type) {
+	case *fyne.Container:
+		for _, c := range x.Objects {
+			walk(c, fn)
+		}
+	case fyne.Widget:
+		for _, c := range test.WidgetRenderer(x).Objects() {
+			walk(c, fn)
+		}
 	}
 }

@@ -29,7 +29,11 @@ var logKindName = map[string]string{
 	recorder.EventReadOK:      "恢复正常",
 	recorder.EventDisconnect:  "连接断开",
 	recorder.EventReconnect:   "重连成功",
+	recorder.EventConnect:     "连接建立",
 }
+
+// recentPackets 是读取失败、连接断开的日志里附带的最近收发条数（同一条连接）。
+const recentPackets = 12
 
 // logEntry 是一条日志。rows 是选中时解析面板显示的内容；从报文库读回的记录没有 rows，按 Analysis 文字显示。
 type logEntry struct {
@@ -71,10 +75,25 @@ func newLogEntry(kind string, window int, detail string, cause []string, tx, res
 	return e
 }
 
+// withRecent 在日志后面附上出错前这条连接上最近的收发，像抓包一样看清失败或断开前后发生了什么，
+// 连接错误那一行写明是 FIN、RST 还是重传超时。
+func (e logEntry) withRecent(ps []modbus.Packet) logEntry {
+	if len(ps) == 0 {
+		return e
+	}
+	e.rows = append(e.rows, decodeRow{}, decodeRow{Meaning: fmt.Sprintf("出错前这条连接上最近 %d 条收发：", len(ps))})
+	for _, p := range ps {
+		line, _ := trafficLine(p, true)
+		e.rows = append(e.rows, decodeRow{Meaning: line})
+	}
+	e.Analysis = rowsText(e.rows)
+	return e
+}
+
 func (e logEntry) line() (string, widget.Importance) {
 	imp := widget.DangerImportance
 	switch e.Kind {
-	case recorder.EventReadOK, recorder.EventReconnect:
+	case recorder.EventReadOK, recorder.EventReconnect, recorder.EventConnect:
 		imp = widget.SuccessImportance
 	case recorder.EventDisconnect:
 		imp = widget.WarningImportance
@@ -221,6 +240,23 @@ func (r *packetRing) exchange(match func(modbus.Packet) bool) (tx, res modbus.Pa
 	return tx, res, ok
 }
 
+// recent 返回连接 conn 上最近的 n 条收发，从旧到新；conn 为空（没有对应连接）时返回空。
+func (r *packetRing) recent(conn string, n int) []modbus.Packet {
+	if conn == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []modbus.Packet
+	for i := r.n - 1; i >= 0 && i >= r.n-len(r.buf) && len(out) < n; i-- {
+		if p := r.buf[i%len(r.buf)]; p.ConnectionID == conn {
+			out = append(out, p)
+		}
+	}
+	slices.Reverse(out)
+	return out
+}
+
 func sameRequest(req modbus.Request) func(modbus.Packet) bool {
 	return func(p modbus.Packet) bool {
 		return p.Slave == req.Slave && p.Function == req.Function && p.Address == req.Address && int(p.Count) == req.Count()
@@ -265,7 +301,8 @@ func (ws *Workspace) logReadFail(w *readWindow, d readDef, err error, tx, res mo
 	}
 	dg := ws.diagnose(w, err)
 	detail := windowText(w.no, d) + " · " + dg.Text
-	ws.addLog(newLogEntry(recorder.EventReadFail, w.no, detail, diagnosisLines(dg), tx, res, ws.points), s.recID)
+	e := newLogEntry(recorder.EventReadFail, w.no, detail, diagnosisLines(dg), tx, res, ws.points)
+	ws.addLog(e.withRecent(ws.ring.recent(res.ConnectionID, recentPackets)), s.recID)
 }
 
 // logRecovered 记一个读取窗口恢复正常。

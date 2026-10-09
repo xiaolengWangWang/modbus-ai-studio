@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -20,7 +23,7 @@ import (
 // 测试里把退避和阈值调小，几秒内跑完。在任何 goroutine 启动前设置，不会有数据竞争。
 func init() {
 	reconnectDelays = []time.Duration{200 * time.Millisecond, 300 * time.Millisecond}
-	idleMin = 300 * time.Millisecond
+	idleMin = 800 * time.Millisecond // 扫描周期 100 ms 的测试在机器繁忙时也会隔几百毫秒才发下一条，不能算空闲
 	acceptProbe = 100 * time.Millisecond
 }
 
@@ -95,8 +98,93 @@ func TestReconnectAfterDrop(t *testing.T) {
 	})
 	id := ws.session.recID
 	ev, err := r.Events(id)
-	if err != nil || len(ev) != 2 || ev[0].Kind != recorder.EventDisconnect || ev[1].Kind != recorder.EventReconnect {
-		t.Errorf("报文库里的断开和重连：%+v %v", ev, err)
+	if err != nil || len(ev) != 3 || ev[0].Kind != recorder.EventConnect || ev[1].Kind != recorder.EventDisconnect || ev[2].Kind != recorder.EventReconnect {
+		t.Fatalf("报文库里的连接、断开和重连：%+v %v", ev, err)
+	}
+	if !strings.Contains(ev[0].Detail, "本机 127.0.0.1:") || !strings.Contains(ev[2].Detail, "本机 127.0.0.1:") {
+		t.Errorf("连接建立和重连应记下两端地址：%q %q", ev[0].Detail, ev[2].Detail)
+	}
+}
+
+// 从读写错误判断断开方式：EOF 是 FIN，复位是 RST，重传超时、网络不可达是网络问题。Windows 的 WSA 错误码单独判断。
+func TestCloseKindOf(t *testing.T) {
+	op := func(err error) error {
+		return &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", err)}
+	}
+	cases := []struct {
+		err  error
+		want closeKind
+	}{
+		{nil, closeUnknown},
+		{errors.New("其他错误"), closeUnknown},
+		{io.EOF, closeFIN},
+		{fmt.Errorf("读响应：%w", io.ErrUnexpectedEOF), closeFIN},
+		{op(syscall.ECONNRESET), closeRST},
+		{op(syscall.ECONNABORTED), closeAborted},
+		{op(syscall.ETIMEDOUT), closeAborted},
+		{op(syscall.ENETUNREACH), closeUnreachable},
+	}
+	if runtime.GOOS == "windows" {
+		cases = append(cases, []struct {
+			err  error
+			want closeKind
+		}{
+			{op(syscall.Errno(10054)), closeRST},
+			{op(syscall.Errno(10053)), closeAborted},
+			{op(syscall.Errno(10060)), closeAborted},
+			{op(syscall.Errno(10051)), closeUnreachable},
+		}...)
+	}
+	for _, c := range cases {
+		if got := closeKindOf(c.err); got != c.want {
+			t.Errorf("%v：得到 %d，期望 %d", c.err, got, c.want)
+		}
+	}
+}
+
+// 断开方式：设备正常关闭是 FIN，被复位是 RST。分析写明是哪一种；通信报文的连接错误行、日志里附带的
+// 出错前收发都标出来，日志写明这条连接的两端地址。
+func TestDisconnectFINOrRST(t *testing.T) {
+	for _, c := range []struct {
+		faults simulator.Faults
+		kind   closeKind
+		want   string
+	}{
+		{simulator.Faults{DisconnectOn: []simulator.AddrRange{{Start: 0, Count: 10}}}, closeFIN, "收到 FIN"},
+		{simulator.Faults{ResetOn: []simulator.AddrRange{{Start: 0, Count: 10}}}, closeRST, "收到 RST"},
+	} {
+		srv, addr := startSim(t, simulator.Faults{})
+		ws, wins := linkWS(t, addr, 100*time.Millisecond, 0)
+		waitFor(t, 5*time.Second, "收到数据", func() bool { return hasData(wins[0]) })
+		srv.SetFaults(c.faults)
+		waitFor(t, 3*time.Second, "发现断开", func() bool { return lost(ws) })
+		srv.SetFaults(simulator.Faults{})
+		locked(func() {
+			e := ws.session.losses[0]
+			if e.close != c.kind || !strings.Contains(e.describe(), c.want) || !strings.Contains(wins[0].hintLbl.Text, c.want) {
+				t.Errorf("%s：断开方式 %d，分析 %q，提示 %q", c.want, e.close, e.describe(), wins[0].hintLbl.Text)
+			}
+			ws.traffic.flush()
+			found := false
+			for _, p := range ws.traffic.all {
+				if line, _ := trafficLine(p, false); p.Status == modbus.StatusConnectionError && strings.Contains(line, c.want) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s：通信报文的连接错误行应写明断开方式", c.want)
+			}
+			var loss *logEntry
+			for i := range ws.log.entries {
+				if ws.log.entries[i].Kind == recorder.EventDisconnect {
+					loss = &ws.log.entries[i]
+				}
+			}
+			if loss == nil || !strings.Contains(loss.Analysis, "出错前这条连接上最近") || !strings.Contains(loss.Analysis, c.want) ||
+				!strings.Contains(loss.Analysis, "连接：本机 127.0.0.1:") {
+				t.Errorf("%s：断开日志应附带两端地址和出错前的收发：%+v", c.want, loss)
+			}
+		})
 	}
 }
 
@@ -181,7 +269,7 @@ func TestIdleDisconnect(t *testing.T) {
 func TestSerialLoss(t *testing.T) {
 	l := newLink()
 	l.observe(modbus.Packet{Dir: modbus.DirTX, Status: modbus.StatusSent, Slave: 1, Function: 3, Time: time.Now()})
-	e := classifyLoss(modbus.ModeRTU, l, "read: device not configured")
+	e := classifyLoss(modbus.ModeRTU, l, errors.New("read: device not configured"))
 	if e.kind != lossSerial || !strings.Contains(e.describe(), "串口") {
 		t.Fatalf("串口断开：%d %s", e.kind, e.describe())
 	}

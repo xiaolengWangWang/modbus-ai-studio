@@ -7,6 +7,7 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"modbus-ai-studio/internal/modbus"
 )
@@ -286,6 +287,62 @@ func TestReadWindowsPreferMoreSpaceForRegisters(t *testing.T) {
 		ws.mdi.setMaxed(true)
 		if w.tableBox.Size().Height < 100 {
 			t.Errorf("enlarged reading area leaves too few table rows: %.0f", w.tableBox.Size().Height)
+		}
+	})
+}
+
+// 寄存器表格优先：高度只够控制条和全部行时，提示和状态行收进标题区滚动查看，不挤占表格；
+// 错误说明在表格还能留出表头和 3 行时照样显示。
+func TestReadWindowTableBeforeHints(t *testing.T) {
+	ws := openWS(t, test.NewTempApp(t), false)
+	locked(func() {
+		d := defaultDef()
+		d.Qty, d.Rows = 10, 10
+		w := ws.addWindow(d)
+		w.setDiagnosis(diagnosis{Hint: "字节序可能是 CDAB。", Action: "改为 CDAB"})
+		w.statusLbl.SetText("Tx = 2: Err = 0: ID = 1: F = 03: SR = 1000ms")
+		w.statusLbl.Show()
+		width := float32(900)
+		controls := toolbarRowHeight(w.head.Objects[0], width) + theme.Padding()
+		table := float32(w.rows+1)*rowHeight() + theme.ScrollBarSize()
+		w.body.Resize(fyne.NewSize(width, controls+table))
+		if got := w.tableBox.Size().Height; got < table-1 {
+			t.Errorf("hints squeeze the register table to %.0f, want %.0f", got, table)
+		}
+		w.setDiagnosis(diagnosis{Text: "读取超时", Action: "调大超时"})
+		w.body.Resize(fyne.NewSize(width, controls+table))
+		if w.headScroll.Size().Height <= controls || w.tableBox.Size().Height < 4*rowHeight()-1 {
+			t.Errorf("error notice hidden or table too short: head %.0f, table %.0f", w.headScroll.Size().Height, w.tableBox.Size().Height)
+		}
+	})
+}
+
+// “视图 → 通信报文与解析面板”隐藏下方面板后，读取区占满主窗口；设置下次打开主窗口时沿用。
+func TestHideDetailsPanel(t *testing.T) {
+	a := test.NewTempApp(t)
+	ws := openWS(t, a, false)
+	var before float32
+	locked(func() {
+		ws.win.Resize(fyne.NewSize(1040, 680))
+		before = ws.tiles.Size().Height
+		ws.detailsItem.Action()
+		if ws.detailsSplit.Visible() || ws.detailsItem.Checked {
+			t.Fatal("panel still shown after toggling")
+		}
+		got := ws.tiles.Size().Height
+		if got < before+100 {
+			t.Errorf("reading area %.0f → %.0f, should take the panel's space", before, got)
+		}
+		t.Logf("reading area %.0f → %.0f, %.1f more rows", before, got, (got-before)/rowHeight())
+	})
+	two := openWS(t, a, false)
+	locked(func() {
+		if two.detailsSplit.Visible() {
+			t.Error("new main window should keep the panel hidden")
+		}
+		two.setDetailsShown(true)
+		if !two.detailsSplit.Visible() || !two.detailsItem.Checked {
+			t.Error("panel not shown again")
 		}
 	})
 }

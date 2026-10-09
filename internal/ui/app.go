@@ -101,6 +101,7 @@ type Workspace struct {
 	readOnly     bool         // 只读模式，禁止一切写入（readonly.go）
 	roItem       *fyne.MenuItem
 	autoUpdItem  *fyne.MenuItem // “帮助 → 自动检查更新”，勾选状态随设置变化
+	detailsItem  *fyne.MenuItem // “视图 → 通信报文与解析面板”
 	path         string         // 工作区文件，未保存时为空
 	timeout      time.Duration
 	windows      []*readWindow
@@ -240,6 +241,7 @@ func (ws *Workspace) stop() {
 		ws.ai.cancelRequest()
 	}
 	ws.saveWindowSize()
+	ws.saveConnPrefs()
 	close(ws.done)
 	for _, w := range ws.windows {
 		w.halt()
@@ -263,7 +265,6 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 		}
 		ws.updateDetectBtn()
 	})
-	ws.useSim.SetChecked(true)
 
 	// 串口列表在切到 RTU 串口时和未连接期间每 2 s 自动刷新，插拔 USB 转 485 不用手动刷新
 	ws.port = widget.NewSelect(nil, nil)
@@ -313,6 +314,7 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 	ws.connBtn.Importance = widget.HighImportance
 	ws.connState = widget.NewLabelWithStyle("未连接", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	ws.connState.Truncation = fyne.TextTruncateEllipsis
+	ws.restoreConnPrefs()
 	ws.updateDetectBtn()
 	ws.pauseAllBtn = widget.NewButtonWithIcon("全部暂停", theme.MediaPauseIcon(), func() {
 		ws.pauseAll(!ws.allReadsPaused())
@@ -370,6 +372,9 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 	}
 	bottom := container.NewHSplit(ws.tabs, ws.inspect.root)
 	bottom.Offset = 0.58
+	if !ws.app.Preferences().BoolWithFallback(prefShowDetails, true) {
+		bottom.Hide()
+	}
 	main := container.NewVSplit(ws.tiles, bottom)
 	main.Offset = 0.72
 	ws.mainSplit, ws.detailsSplit = main, bottom
@@ -525,6 +530,7 @@ func (ws *Workspace) refreshStatus() {
 	for _, w := range ws.windows {
 		w.refreshState()
 	}
+	ws.mdi.refreshTabs() // 读取失败的窗口在标签上标红
 	state, importance := ws.connectionState()
 	if ws.connState != nil {
 		ws.connState.Importance = importance

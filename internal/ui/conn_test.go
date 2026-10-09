@@ -52,6 +52,37 @@ func TestConnectionBarFits1024(t *testing.T) {
 	}
 }
 
+// 内置模拟器默认不勾选；上次连接用的协议、目标、串口参数和超时下次打开主窗口时沿用，模拟器不沿用。
+func TestConnectionSettingsRemembered(t *testing.T) {
+	a := test.NewTempApp(t)
+	var first *Workspace
+	locked(func() { first = open(a, "test", int(winSeq.Add(1))) })
+	t.Cleanup(func() { closeWS(first) })
+	locked(func() {
+		if first.useSim.Checked || first.target.Disabled() {
+			t.Error("内置模拟器应默认不勾选，目标地址可编辑")
+		}
+		first.proto.SetSelected(protoTCP)
+		first.target.SetText("192.168.1.20:502")
+		first.baud.SetText("19200")
+		first.setTimeout(1500 * time.Millisecond)
+		first.useSim.SetChecked(true)
+	})
+	closeWS(first)
+	var second *Workspace
+	locked(func() { second = open(a, "test", int(winSeq.Add(1))) })
+	t.Cleanup(func() { closeWS(second) })
+	locked(func() {
+		if second.proto.Selected != protoTCP || second.target.Text != "192.168.1.20:502" || second.baud.Text != "19200" ||
+			second.timeout != 1500*time.Millisecond || second.timeoutE.Text != "1500" {
+			t.Errorf("连接参数没沿用：%s %q %q %v %q", second.proto.Selected, second.target.Text, second.baud.Text, second.timeout, second.timeoutE.Text)
+		}
+		if second.useSim.Checked {
+			t.Error("内置模拟器不应沿用")
+		}
+	})
+}
+
 // ASCII over TCP 全流程：内置模拟器按 ASCII 应答，读取窗口照常显示工程值，报文按字符显示并逐字段解析。
 func TestASCIIEndToEnd(t *testing.T) {
 	a := test.NewTempApp(t)

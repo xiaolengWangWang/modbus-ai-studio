@@ -4,9 +4,12 @@ import (
 	"math"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/driver/desktop"
 
 	"modbus-ai-studio/platform"
 )
+
+const prefShowDetails = "view.showDetails"
 
 func preferredWindowSize(app fyne.App) fyne.Size {
 	p := app.Preferences()
@@ -66,12 +69,34 @@ func (ws *Workspace) viewMenu() *fyne.Menu {
 			}
 		}
 	}
-	return fyne.NewMenu("视图", closeToTray, fyne.NewMenuItemSeparator(),
+	ws.detailsItem = fyne.NewMenuItem("通信报文与解析面板", func() { ws.setDetailsShown(!ws.detailsSplit.Visible()) })
+	ws.detailsItem.Checked = ws.detailsSplit.Visible()
+	ws.detailsItem.Shortcut = &desktop.CustomShortcut{KeyName: fyne.KeyJ, Modifier: fyne.KeyModifierShortcutDefault}
+	return fyne.NewMenu("视图", ws.detailsItem, fyne.NewMenuItemSeparator(), closeToTray, fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("恢复默认窗口大小与布局", func() {
 			workW, workH := platform.WorkArea()
 			ws.win.Resize(platform.FitSize(fyne.NewSize(1040, 680), workW, workH, ws.win.Canvas().Scale()))
+			ws.setDetailsShown(true)
 			ws.mainSplit.SetOffset(0.72)
 			ws.detailsSplit.SetOffset(0.58)
 			ws.win.CenterOnScreen()
 		}))
+}
+
+// setDetailsShown 显示或隐藏下方的通信报文与解析面板。读取区是主体，隐藏后占满主窗口，能多显示几行寄存器；
+// 收发照常记录，下次启动沿用这个设置。
+func (ws *Workspace) setDetailsShown(on bool) {
+	if on {
+		ws.detailsSplit.Show()
+	} else {
+		ws.detailsSplit.Hide()
+	}
+	ws.mainSplit.Refresh()
+	ws.app.Preferences().SetBool(prefShowDetails, on)
+	if ws.detailsItem != nil {
+		ws.detailsItem.Checked = on
+		if m := ws.win.MainMenu(); m != nil {
+			m.Refresh()
+		}
+	}
 }

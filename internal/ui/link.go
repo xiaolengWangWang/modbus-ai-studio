@@ -40,6 +40,7 @@ const (
 type linkState struct {
 	mu     sync.Mutex
 	up     time.Time
+	addrs  string // TCP 两端地址（connAddrs），建立后不变
 	lastTX time.Time
 	gap    time.Duration   // 最后一条请求发出前空闲了多久
 	last   modbus.Packet   // 最后一条请求
@@ -48,6 +49,13 @@ type linkState struct {
 }
 
 func newLink() *linkState { return &linkState{up: time.Now(), ok: map[reqKey]bool{}} }
+
+// linkFor 是新建立的连接 t 的活动记录。
+func linkFor(t modbus.Transport) *linkState {
+	l := newLink()
+	l.addrs = connAddrs(t)
+	return l
+}
 
 // observe 更新连接活动，返回 true 表示这是这条连接上第一次出现连接错误。
 func (l *linkState) observe(p modbus.Packet) bool {
@@ -74,18 +82,25 @@ func (l *linkState) observe(p modbus.Packet) bool {
 type lossEvent struct {
 	at     time.Time
 	kind   lossKind
+	close  closeKind     // TCP 是怎么断的：FIN、RST、重传超时……
 	req    modbus.Packet // 断开前最后一条请求；连上就断时为空
 	gap    time.Duration
 	uptime time.Duration
 	err    string
+	conn   string // 断开的连接（Packet.ConnectionID），日志里附上这条连接最近的收发
+	addrs  string // TCP 两端地址
 }
 
 func (e lossEvent) key() reqKey { return reqKey{e.req.Slave, e.req.Function, e.req.Address} }
 
-func classifyLoss(mode modbus.Mode, l *linkState, errText string) lossEvent {
+func classifyLoss(mode modbus.Mode, l *linkState, err error) lossEvent {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	e := lossEvent{at: time.Now(), req: l.last, gap: l.gap, uptime: time.Since(l.up), err: errText}
+	errText := "连接错误"
+	if err != nil {
+		errText = err.Error()
+	}
+	e := lossEvent{at: time.Now(), req: l.last, gap: l.gap, uptime: time.Since(l.up), err: errText, close: closeKindOf(err), addrs: l.addrs}
 	switch ok := l.ok[e.key()]; {
 	case mode.Serial():
 		e.kind = lossSerial
@@ -116,12 +131,24 @@ func roundDur(d time.Duration) string {
 func (e lossEvent) describe() string {
 	switch e.kind {
 	case lossOnConnect:
-		return "连接建立后 " + roundDur(e.uptime) + " 就被设备关闭，还没发请求"
+		s := "连接建立后 " + roundDur(e.uptime) + " 就被设备关闭，还没发请求"
+		if l := e.close.label(); l != "" {
+			s += "：" + l
+		}
+		return s
 	case lossSerial:
 		return "串口读写出错：" + e.err
 	}
-	s := fmt.Sprintf("发送 %s 后连接断开（%s）", reqDesc(e.req), e.err)
+	s := fmt.Sprintf("发送 %s 后连接断开（%s）", reqDesc(e.req), e.how())
 	return s + fmt.Sprintf("，发送前空闲 %s，连接已用 %s", roundDur(e.gap), roundDur(e.uptime))
+}
+
+// how 是断开方式加原始错误，例如“设备关闭了连接（收到 FIN）· EOF”；判断不出时只有原始错误。
+func (e lossEvent) how() string {
+	if l := e.close.label(); l != "" {
+		return l + " · " + e.err
+	}
+	return e.err
 }
 
 func dialErrText(err error) string {
@@ -149,27 +176,24 @@ func isNetTimeout(err error) bool {
 }
 
 // probeClosed 连上后先读一会儿：设备连接数已满、有 IP 白名单时，往往接受连接后马上关闭。
-func probeClosed(t modbus.Transport, wait time.Duration) (time.Duration, bool) {
+// 被关闭时返回用了多久和读到的错误（EOF 是 FIN，复位是 RST）。
+func probeClosed(t modbus.Transport, wait time.Duration) (time.Duration, error) {
 	start := time.Now()
 	_ = t.SetReadDeadline(start.Add(wait))
 	defer t.SetReadDeadline(time.Time{})
 	var b [1]byte
 	_, err := t.Read(b[:])
 	if err == nil || errors.Is(err, os.ErrDeadlineExceeded) || isNetTimeout(err) {
-		return 0, false
+		return 0, nil
 	}
-	return time.Since(start), true
+	return time.Since(start), err
 }
 
 // onPacket 是每条连接自己的收发回调：除了公共处理，还跟踪连接活动，第一次出现连接错误时交给界面线程处理断开。
 func (ws *Workspace) onPacket(s *session, p modbus.Packet) {
 	ws.OnPacket(p)
 	if l := s.link.Load(); l != nil && l.observe(p) {
-		errText := "连接错误"
-		if p.Err != nil {
-			errText = p.Err.Error()
-		}
-		uiDo(func() { ws.connLost(s, l, errText) })
+		uiDo(func() { ws.connLost(s, l, p) })
 	}
 }
 
@@ -177,12 +201,13 @@ func (ws *Workspace) clientOptions(s *session, timeout time.Duration) modbus.Opt
 	return modbus.Options{Mode: s.mode, Timeout: timeout, Observer: modbus.ObserverFunc(func(p modbus.Packet) { ws.onPacket(s, p) })}
 }
 
-// connLost 处理一次断开：停止轮询（不再刷连接错误），分析原因，TCP 类自动重连。
-func (ws *Workspace) connLost(s *session, l *linkState, errText string) {
+// connLost 处理一次断开：停止轮询（不再刷连接错误），分析原因，TCP 类自动重连。p 是第一条连接错误。
+func (ws *Workspace) connLost(s *session, l *linkState, p modbus.Packet) {
 	if ws.session != s || s.link.Load() != l || s.lost != nil {
 		return // 旧连接迟到的回调
 	}
-	e := classifyLoss(s.mode, l, errText)
+	e := classifyLoss(s.mode, l, p.Err)
+	e.conn = p.ConnectionID
 	ws.addLoss(s, e)
 	for _, w := range ws.windows {
 		w.halt()
@@ -209,7 +234,12 @@ func (ws *Workspace) addLoss(s *session, e lossEvent) {
 	if e.kind != lossOnConnect {
 		tx, res, _ = ws.ring.exchange(func(modbus.Packet) bool { return true }) // 断开前最后一条请求
 	}
-	ws.addLog(newLogEntry(recorder.EventDisconnect, 0, e.describe(), diagnosisLines(ws.lossDiagnosis()), tx, res, ws.points), s.recID)
+	cause := diagnosisLines(ws.lossDiagnosis())
+	if e.addrs != "" {
+		cause = append(cause, fmt.Sprintf("连接：%s，用了 %s。", e.addrs, roundDur(e.uptime)))
+	}
+	entry := newLogEntry(recorder.EventDisconnect, 0, e.describe(), cause, tx, res, ws.points)
+	ws.addLog(entry.withRecent(ws.ring.recent(e.conn, recentPackets)), s.recID)
 }
 
 func (ws *Workspace) refreshAll() {
@@ -253,11 +283,12 @@ func (ws *Workspace) reconnectLoop(s *session, attempt int) {
 			})
 			continue
 		}
-		if after, closed := probeClosed(t, acceptProbe); closed {
+		if after, err := probeClosed(t, acceptProbe); err != nil {
+			e := lossEvent{at: time.Now(), kind: lossOnConnect, uptime: after, close: closeKindOf(err), err: err.Error(), addrs: connAddrs(t)}
 			t.Close()
 			uiDo(func() {
 				if ws.session == s {
-					ws.addLoss(s, lossEvent{at: time.Now(), kind: lossOnConnect, uptime: after})
+					ws.addLoss(s, e)
 					ws.refreshAll()
 				}
 			})
@@ -275,13 +306,17 @@ func (ws *Workspace) relink(s *session, t modbus.Transport, attempt int) {
 		return
 	}
 	down := time.Since(s.lost.at)
-	s.link.Store(newLink())
+	l := linkFor(t)
+	s.link.Store(l)
 	s.client = modbus.NewClient(t, ws.clientOptions(s, ws.timeout))
 	s.lost, s.dialErr, s.retryAt = nil, "", time.Time{}
 	s.reconnects++
 	s.backoff = attempt + 1
-	ws.addLog(logEntry{Event: recorder.Event{Time: time.Now(), Kind: recorder.EventReconnect,
-		Detail: fmt.Sprintf("第 %d 次重连成功，断开了 %s", s.reconnects, roundDur(down))}}, s.recID)
+	detail := fmt.Sprintf("第 %d 次重连成功，断开了 %s", s.reconnects, roundDur(down))
+	if l.addrs != "" {
+		detail += " · " + l.addrs
+	}
+	ws.addLog(logEntry{Event: recorder.Event{Time: time.Now(), Kind: recorder.EventReconnect, Detail: detail}}, s.recID)
 	for _, w := range ws.windows {
 		w.start()
 	}
@@ -337,11 +372,25 @@ func (ws *Workspace) lossDiagnosis() diagnosis {
 			}
 		}
 	case lossRandom:
-		dg.Hint = fmt.Sprintf("连接用了 %s 后断开，断开前的请求平时正常：更像是网络不稳（网线、交换机、无线网桥）或设备重启。", roundDur(e.uptime))
+		switch e.close {
+		case closeFIN:
+			dg.Hint = fmt.Sprintf("连接用了 %s 后被设备主动关闭（收到 FIN），断开前的请求平时正常：设备可能限制了连接时长、会定时重启，"+
+				"或者别的主站连上来，把这条连接挤掉了（设备连接数已满）。", roundDur(e.uptime))
+		case closeRST:
+			dg.Hint = fmt.Sprintf("连接用了 %s 后被复位（收到 RST），断开前的请求平时正常：设备的 Modbus 服务重启或出错，"+
+				"或者中间的防火墙、网关清掉了这条连接。", roundDur(e.uptime))
+		case closeAborted, closeUnreachable:
+			dg.Hint = fmt.Sprintf("连接用了 %s 后断开，%s。%s", roundDur(e.uptime), e.close.label(), e.close.explain())
+		default:
+			dg.Hint = fmt.Sprintf("连接用了 %s 后断开，断开前的请求平时正常：更像是网络不稳（网线、交换机、无线网桥）或设备重启。", roundDur(e.uptime))
+		}
 		if n := len(s.losses); n >= 3 {
 			span := s.losses[n-1].at.Sub(s.losses[0].at)
 			dg.Hint += fmt.Sprintf("本次连接已断开 %d 次，平均 %s 一次。", n, roundDur(span/time.Duration(n-1)))
 		}
+	}
+	if e.kind != lossRandom && e.close != closeUnknown {
+		dg.Hint += "\n断开方式：" + e.close.label() + "。" + e.close.explain()
 	}
 	if s.dialErr != "" {
 		dg.Hint += "\n上次重连：" + s.dialErr

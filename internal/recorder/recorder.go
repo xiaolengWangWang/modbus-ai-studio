@@ -383,6 +383,7 @@ const (
 	EventReadOK      = "READ_OK"      // 读取窗口恢复正常
 	EventDisconnect  = "DISCONNECT"   // 连接中途断开
 	EventReconnect   = "RECONNECT"    // 重连成功
+	EventConnect     = "CONNECT"      // 连接建立，TCP 记两端地址
 )
 
 // Event 是一条日志：连接失败、读取失败与恢复、断开、重连，带原因分析和出错时抓到的原始报文。

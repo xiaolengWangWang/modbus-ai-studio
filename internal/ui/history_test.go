@@ -283,16 +283,20 @@ func TestFaultLog(t *testing.T) {
 	})
 	var es []logEntry
 	locked(func() { es = slices.Clone(ws.log.entries) })
-	if len(es) != 2 || es[0].Kind != recorder.EventReadFail {
-		t.Fatalf("应只有一条读取失败和一条恢复：%+v", es)
+	if len(es) != 3 || es[0].Kind != recorder.EventConnect || es[1].Kind != recorder.EventReadFail {
+		t.Fatalf("应只有连接建立、一条读取失败和一条恢复：%+v", es)
 	}
-	fail := es[0]
+	if !strings.Contains(es[0].Detail, "本机 127.0.0.1:") {
+		t.Errorf("连接建立应记下两端地址：%q", es[0].Detail)
+	}
+	fail := es[1]
 	for _, s := range []string{"窗口 1 · Slave 1 · 03 · 40347–40350 · 异常 02"} {
 		if !strings.Contains(fail.Detail, s) {
 			t.Errorf("结论 %q 缺少 %q", fail.Detail, s)
 		}
 	}
-	for _, s := range []string{"分析：异常 02", "逐个探测可读地址", "发送的请求：", "收到的响应：", "异常码"} {
+	// 附带出错前这条连接上最近的收发，像抓包一样看得到前后经过
+	for _, s := range []string{"分析：异常 02", "逐个探测可读地址", "发送的请求：", "收到的响应：", "异常码", "出错前这条连接上最近"} {
 		if !strings.Contains(fail.Analysis, s) {
 			t.Errorf("分析缺少 %q：\n%s", s, fail.Analysis)
 		}
@@ -300,12 +304,12 @@ func TestFaultLog(t *testing.T) {
 	if len(fail.TX) != 8 || len(fail.RX) != 5 || fail.RX[1] != 0x83 {
 		t.Errorf("抓到的报文 TX % X RX % X", fail.TX, fail.RX)
 	}
-	if !strings.Contains(es[1].Detail, "恢复正常，出错") {
-		t.Errorf("恢复 %q", es[1].Detail)
+	if !strings.Contains(es[2].Detail, "恢复正常，出错") {
+		t.Errorf("恢复 %q", es[2].Detail)
 	}
 	locked(func() {
 		ws.tabs.Select(ws.logTab)
-		ws.log.list.Select(0)
+		ws.log.list.Select(1)
 	})
 	snapshotPNG(t, ws.win, "modbus-ai-log.png")
 	locked(func() { ws.disconnect() })
@@ -340,7 +344,8 @@ func TestFaultLog(t *testing.T) {
 		t.Errorf("连接失败的会话 %q", sessionLabel(ss[0], false))
 	}
 	ev, err := r.Events(ss[1].ID)
-	if err != nil || len(ev) != 2 || ev[0].Kind != recorder.EventReadFail || !bytes.Equal(ev[0].RX, fail.RX) || ev[0].Analysis != fail.Analysis {
+	if err != nil || len(ev) != 3 || ev[0].Kind != recorder.EventConnect || ev[1].Kind != recorder.EventReadFail ||
+		!bytes.Equal(ev[1].RX, fail.RX) || ev[1].Analysis != fail.Analysis {
 		t.Fatalf("报文库里的日志 %+v %v", ev, err)
 	}
 }

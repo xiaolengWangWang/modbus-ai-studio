@@ -85,7 +85,7 @@ func (ws *Workspace) applyWorkspace(data []byte) error {
 		ws.addWindow(d)
 	}
 	if len(ws.windows) > 1 {
-		ws.mdi.cascade() // 和导入点表一样层叠一次，各窗口的标题栏都露出来
+		ws.mdi.setMaxed(true) // 和导入点表一样：最大化显示第一个窗口，上方标签切换
 	}
 	return nil
 }
@@ -241,10 +241,10 @@ func (ws *Workspace) applyImport(imp pointImport) string {
 	}
 	if len(spans) > 0 {
 		lines = append(lines, "按点表新建了读取窗口："+strings.Join(spans, "、")+"。")
-		// 一次读取最多 125 个寄存器，点表分散时要建多个窗口；层叠后各窗口的标题栏都露出来，不会被第一个窗口整个盖住
+		// 一次读取最多 125 个寄存器，点表分散时要建多个窗口；最大化显示一个，寄存器显示得最多，上方标签列出全部窗口
 		if len(ws.windows) > 1 {
-			ws.mdi.cascade()
-			lines = append(lines, fmt.Sprintf("%d 个读取窗口层叠排列，点标题栏切换；要同时看可以用“窗口 → 平铺”。", len(ws.windows)))
+			ws.mdi.setMaxed(true)
+			lines = append(lines, fmt.Sprintf("共 %d 个读取窗口，最大化显示第一个，点读取区上方的标签切换；要同时看几个窗口，用“窗口 → 平铺”或“层叠”。", len(ws.windows)))
 		}
 	}
 	if imp.noOrder && slices.ContainsFunc(imp.points, func(p point) bool { return p.Type != typeString && p.regs() > 1 }) {

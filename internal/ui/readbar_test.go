@@ -21,6 +21,7 @@ func TestTapTitleActivatesWindow(t *testing.T) {
 	locked(func() {
 		ws.win.Resize(fyne.NewSize(1280, 820))
 		ws.loadDemo()
+		ws.mdi.cascade() // 示例默认最大化；层叠后各窗口的标题栏露出来
 		w2 := ws.windows[1]
 		if ws.mdi.top() == w2.inner {
 			t.Fatal("打开示例后窗口 2 应在下面")

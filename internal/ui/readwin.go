@@ -188,45 +188,38 @@ func (w *readWindow) setDef(d readDef) {
 	w.reset()
 }
 
-// readLayout 排列读取窗口：标题区在上、表格在下。高度够时标题区完整显示；不够时标题区按整行收起
-// （从下往上：状态行、说明，内部可滚动查看），表格至少留出表头和一行，不会画到窗口外面。
+// readLayout 排列读取窗口：标题区在上、表格在下。寄存器数据是主体：控制条总是显示，表格先拿到能
+// 显示全部行的高度；错误说明在表格还能留出表头和 3 行时显示，提示和状态行只用剩下的空间。
+// 放不下的部分在标题区里滚动查看，表格至少留出表头和一行，不会画到窗口外面。
 type readLayout struct{ w *readWindow }
 
 // rowHeight 是表格一行的高度（含分隔线）。
 func rowHeight() float32 { return gridRowHeight() + theme.SeparatorThicknessSize() }
 
-// Prefer complete control and diagnosis groups; the viewport is then capped
-// by the space available above the table, with remaining content scrollable.
-func (l readLayout) headHeight(room float32, width float32) float32 {
+// headHeight 按顺序（控制条、错误说明、提示、状态行）收进标题区，直到放不下为止；后面的在标题区里滚动查看。
+func (l readLayout) headHeight(size fyne.Size) float32 {
+	table := float32(l.w.rows+1)*rowHeight() + theme.ScrollBarSize() // 表头和全部行
 	var h float32
-	n := 0
-	for _, o := range l.w.head.Objects {
+	for i, o := range l.w.head.Objects {
 		if !o.Visible() {
 			continue
 		}
-		next := h + toolbarRowHeight(o, width)
-		if n > 0 {
-			next += theme.Padding()
+		next := h + toolbarRowHeight(o, size.Width) + theme.Padding()
+		room := size.Height - table
+		if o == l.w.diagBox && l.w.errLbl.Text != "" {
+			room = max(room, size.Height-4*rowHeight())
 		}
-		if next > room && n >= 2 {
+		if i > 0 && next > room {
 			break
 		}
-		h, n = next, n+1
+		h = next
 	}
 	return h
 }
 
 func (l readLayout) Layout(_ []fyne.CanvasObject, size fyne.Size) {
-	head := toolbarHeight(l.w.head.Objects, size.Width)
-	l.w.headExtent.SetMinSize(fyne.NewSize(0, head))
-	reserve := 2 * rowHeight() // 表头加一行
-	if l.w.diagBox.Visible() {
-		reserve = rowHeight() // 出错时数据是旧的，先保证错误和一键处理看得见
-	}
-	if room := size.Height - reserve; head > room {
-		head = l.headHeight(room, size.Width)
-	}
-	head = min(head, max(0, size.Height-reserve))
+	l.w.headExtent.SetMinSize(fyne.NewSize(0, toolbarHeight(l.w.head.Objects, size.Width)))
+	head := min(l.headHeight(size), max(0, size.Height-2*rowHeight()))
 	l.w.headScroll.Move(fyne.NewPos(0, 0))
 	l.w.headScroll.Resize(fyne.NewSize(size.Width, head))
 	l.w.tableBox.Move(fyne.NewPos(0, head))

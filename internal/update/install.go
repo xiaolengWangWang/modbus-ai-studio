@@ -93,7 +93,7 @@ func installZip(pkg, dir string) (string, error) {
 			os.Remove(m.old) // 上次更新留下、还没删掉的
 			if err := os.Rename(target, m.old); err != nil {
 				rollback()
-				return "", fmt.Errorf("不能替换 %s（%w），请关掉正在运行的 modbus-sim、modbus-cli 后再试，或手动下载", rel, err)
+				return "", fmt.Errorf("不能替换 %s（%w），请关掉占用它的程序后再试，或手动下载", rel, err)
 			}
 		}
 		done = append(done, m)

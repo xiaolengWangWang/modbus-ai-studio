@@ -151,6 +151,9 @@ func trafficLine(p modbus.Packet, ts bool) (string, widget.Importance) {
 		if p.Status == modbus.StatusCRCError && p.Mode.IsASCII() {
 			s = "LRC 错误，已丢弃"
 		}
+		if l := closeKindOf(p.Err).label(); p.Status == modbus.StatusConnectionError && l != "" {
+			s += "：" + l // 连接是怎么断的：FIN、RST、重传超时
+		}
 		text += "   ← " + s
 		imp = widget.DangerImportance
 		if p.Status == modbus.StatusLate || p.Status == modbus.StatusUnexpected {

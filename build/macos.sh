@@ -1,11 +1,11 @@
 #!/bin/sh
 # 构建 macOS 桌面应用：Intel 与 Apple Silicon 各一个 .app 和 DMG，ad-hoc 签名。
-# 用法：VERSION=0.11.15 build/macos.sh
+# 用法：VERSION=1.0.0 build/macos.sh
 # 图标取自 assets/icon/AppIcon.png，Info.plist 模板在 platform/macos/。
 set -eu
 cd "$(dirname "$0")/.."
 
-VERSION=${VERSION:-0.11.15}
+VERSION=${VERSION:-1.0.0}
 APP="Modbus AI Studio"
 DIST=dist
 export CGO_ENABLED=1 MACOSX_DEPLOYMENT_TARGET=12.0
@@ -33,14 +33,15 @@ for arch in amd64 arm64; do
 	mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 	echo "编译 $name ($arch)…"
 	GOARCH=$arch CC="clang -arch $([ $arch = amd64 ] && echo x86_64 || echo arm64)" \
-		go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$app/Contents/MacOS/modbus-ai" ./cmd/modbus-ai
+		go build -trimpath -tags no_emoji -ldflags "-s -w -X main.version=$VERSION" -o "$app/Contents/MacOS/modbus-ai" ./cmd/modbus-ai
 	cp "$DIST/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
 	sed "s/{{VERSION}}/$VERSION/g" platform/macos/Info.plist >"$app/Contents/Info.plist"
 	codesign --force --deep --sign - "$app"
 	ln -s /Applications "$stage/Applications"
 	dmg="$DIST/ModbusAIStudio-$VERSION-macOS-$name.dmg"
 	rm -f "$dmg"
-	hdiutil create -volname "$APP $VERSION" -srcfolder "$stage" -ov -format UDZO "$dmg" >/dev/null
+	# ULMO（LZMA）比默认的 UDZO（zlib）小约三成，macOS 10.15 起能打开，部署目标是 12.0
+	hdiutil create -volname "$APP $VERSION" -srcfolder "$stage" -ov -format ULMO "$dmg" >/dev/null
 	echo "  $app"
 	echo "  $dmg"
 done
