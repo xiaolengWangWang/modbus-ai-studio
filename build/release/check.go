@@ -99,9 +99,23 @@ func checkUpdaterView(rel update.Release, assets []asset, mirrors bool) error {
 	return nil
 }
 
-// load 读 prepare 的结果，确认 dist/ 里的安装包还是核对时的那几个。
+var releaseVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// lowerHex 判断摘要是否是 prepare 写出的定长、小写十六进制。
+func lowerHex(s string, length int) bool {
+	if len(s) != length || s != strings.ToLower(s) {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
+// load 在任何远程操作前核对 prepare 的完整记录、安装包和可编辑的发布说明。
 func (r *release) load() (manifest, string, error) {
 	var m manifest
+	if !releaseVersion.MatchString(r.version) {
+		return m, "", fmt.Errorf("版本号 %q 不是 x.y.z", r.version)
+	}
 	b, err := os.ReadFile(r.file("-assets.json"))
 	if err != nil {
 		return m, "", fmt.Errorf("先运行 go run ./build/release prepare：%w", err)
@@ -109,12 +123,31 @@ func (r *release) load() (manifest, string, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return m, "", err
 	}
-	if m.Version != r.version || len(m.Commit) != 40 || len(m.Assets) != 3 {
+	if m.Version != r.version || !lowerHex(m.Commit, 40) || len(m.Assets) != 3 {
 		return m, "", fmt.Errorf("%s 不是 %s 的完整记录，重新运行 prepare", r.file("-assets.json"), r.version)
+	}
+	names := installers(r.version)
+	seen := make(map[string]bool, len(names))
+	for _, a := range m.Assets {
+		// 只认预期的完整文件名，拒绝重复记录和任何目录、绝对路径或其他版本。
+		if !slices.Contains(names, a.Name) || seen[a.Name] {
+			return m, "", fmt.Errorf("安装包记录里的文件名 %q 不属于本版本或重复，重新运行 prepare", a.Name)
+		}
+		if a.Size <= 0 || !lowerHex(a.SHA256, 64) {
+			return m, "", fmt.Errorf("%s 的大小或 SHA-256 记录无效，重新运行 prepare", a.Name)
+		}
+		seen[a.Name] = true
 	}
 	notes, err := readText(r.file(".md"))
 	if err != nil {
 		return m, "", err
+	}
+	title, _, _ := strings.Cut(strings.ReplaceAll(string(notes), "\r\n", "\n"), "\n")
+	if want := "# Modbus AI Studio " + r.version; title != want {
+		return m, "", fmt.Errorf("%s 第一行应该是“%s”", r.file(".md"), want)
+	}
+	if err := checkUpdaterView(localView(string(notes), m.Assets), m.Assets, false); err != nil {
+		return m, "", fmt.Errorf("%s 的安装包校验段无效：%w", r.file(".md"), err)
 	}
 	for _, a := range m.Assets {
 		if !fileMatches(filepath.Join(r.dist, a.Name), a.Size, a.SHA256) {

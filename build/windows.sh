@@ -47,7 +47,7 @@ unset GOOS GOARCH
 
 # 说明文件用 UTF-8 BOM + CRLF，记事本打开不乱码
 printf '\357\273\277' >"$STAGE/README.txt"
-sed -e "s/{{VERSION}}/$VERSION/g" -e 's/$/\r/' platform/windows/README.md >>"$STAGE/README.txt"
+sed -e "s/{{VERSION}}/$VERSION/g" -e 's/$/\r/' platform/windows/README.txt >>"$STAGE/README.txt"
 # Check the exact packaged bytes before uploading: encrypted/invalid templates
 # must never produce an unreadable installer README.
 python3 - "$STAGE/README.txt" "$VERSION" <<'PY'

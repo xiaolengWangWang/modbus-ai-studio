@@ -41,7 +41,7 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 |  | `tests/` | 基于模拟器的集成测试 |
 | 平台代码 | `platform/` | 各操作系统专用的 Go 代码：`windows.go`（按进程号追加启动日志、获取屏幕可用区域、显卡不支持 OpenGL 时弹窗），`other.go`（macOS、Linux）；`window.go` 按可用区域和 DPI 缩放限制窗口尺寸 |
 |  | `platform/macos/` | `Info.plist` 模板 |
-|  | `platform/windows/` | Windows 绿色版说明模板 `README.md`，打包时生成 UTF-8 的 `README.txt` |
+|  | `platform/windows/` | Windows 绿色版说明模板 `README.txt`，打包时替换版本号、加 UTF-8 BOM 和 CRLF |
 | 文档 | `README.md`、`docs/` | 首页；`guide.md` 使用说明、`points.md` 点表格式、`faq.md` 常见问题、`development.md` 开发与发布 |
 | 打包编译 | `build/` | `macos.sh`（.app 和 DMG）、`windows.sh`（交叉编译绿色版 zip）、`release/`（本机发版工具，见 [打包与发版](#打包与发版)）、`icon/`（图标生成器） |
 |  | `.github/workflows/` | `test.yml` 在 Windows、macOS、Linux 上跑 vet 和全部测试；`package.yml` 打三个安装包（GitHub 规定的位置） |
@@ -90,26 +90,26 @@ go test -race -count=3 ./...        # 并发与稳定性
 - `MODBUS_AI_SNAPSHOT=<目录> go test -run 'TestUIWithBuiltinSimulator|Test64BitPoints' ./internal/ui` 会把测试中的界面存成 PNG，用来检查布局；该命令生成 `modbus-ai-ui.png` 和 `modbus-ai-packet.png`；当前 `assets/screenshots/` 的主窗口、报文和 AI 图使用下面的原生调试构建生成。
 - 要看真实 OpenGL 渲染，用调试构建：`go build -tags capture -o /tmp/cap ./cmd/modbus-ai && CAPTURE_DIR=/tmp /tmp/cap`。它按 `internal/ui/capture.go` 的剧本操作界面（打开示例、读取定义、写入、字节序、历史报文、报文筛选、960 / 1024 宽布局，以及 AI 报告、发送内容、设置、故障 / 日志来源、导出对话框、紧凑 AI 布局、报文无匹配提示、窄读取窗口、诊断滚动和 AI 重试失败保留报告、证据详情与完整 JSON、窄设置页、检测结果和暂停读数字节序调整 / 生效），每步存一张截图后退出，共 32 张；终端没有屏幕录制权限也能用。运行时应隔离用户数据目录；AI 使用本地合成响应，截图不是实际 DeepSeek 诊断结果。
 - 真实接口回归仅在显式启用时运行：设置 `MODBUS_AI_LIVE_TEST=1` 后执行 `go test -tags deepseek_live ./internal/ui -run '^TestDeepSeekLiveDiagnosticWorkflow$' -v -count=1 -timeout 4m`。它读取环境变量或已有加密密钥，不修改设置，仅向官方接口发送三个合成场景，产生实际 API 用量。可设置 `MODBUS_AI_LIVE_REPORT_DIR` 保存合成诊断报告；常规测试不编译此文件。
-- 持续集成（`.github/workflows/test.yml`）在 Windows、macOS、Linux 上跑 `go vet` 和全部测试，Windows 以外加 `-race`。
+- 持续集成（`.github/workflows/test.yml`）在 Windows、macOS、Linux 上跑 `go vet` 和全部测试，Windows 以外加 `-race`；只在推分支和 Pull Request 时运行，发版推 tag 不重跑。
 
 ## 打包与发版
 
-`build/macos.sh` 在 Intel Mac 上同时打 Intel 和 Apple Silicon 两个 .app 和 DMG（ad-hoc 签名，最低 macOS 12）；`build/windows.sh` 在 macOS 上用 mingw-w64 交叉编译 Windows x64 绿色版 zip（静态链接，只依赖系统 DLL）。
+`build/macos.sh` 在 macOS 上打 Intel 和 Apple Silicon 两个 .app 和 DMG（ad-hoc 签名，最低 macOS 12）；`build/windows.sh` 在 Linux / macOS 上用 mingw-w64 交叉编译 Windows x64 绿色版 zip（静态链接，只依赖系统 DLL）。Actions 分别使用 Ubuntu 和 macOS runner。
 
 Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\ModbusAIStudio\app.log`，每行带进程号，多个实例不会相互覆盖日志；图标资源可用 `go-winres extract` 检查 `GLFW_ICON` 和高 DPI 清单。主窗口默认 1040 × 680 逻辑尺寸，并按屏幕可用区域和 DPI 缩放适配；关闭按钮默认隐藏到托盘，采集继续，托盘菜单退出时关闭本实例全部连接并写完数据库缓冲。界面测试覆盖后台轮询、独立窗口关闭和退出清理，Windows 本机已验证两个进程同时运行及隐藏后保留进程。150% 缩放、16 像素图标和启动速度仍需在不同设备上验证；遇到问题时请附 `app.log`。
 
 版本号只写在 `cmd/modbus-ai/main.go` 的 `version` 一处，打包脚本、`package` 工作流和发版工具都从这里取。发版用 Go 写的 `build/release`，不用按版本复制脚本：
 
-1. 改 `version`，在 `platform/windows/README.md`（打进 zip 的说明）的更新记录里加这一版，提交并推送。
+1. 改 `version`，在 `platform/windows/README.txt`（打进 zip 的说明）的更新记录里加这一版，提交并推送。
 2. 写发布说明 `dist/release-x.y.z-summary.md`，第一行 `# Modbus AI Studio x.y.z`；不写 SHA-256 段落。
 3. `go run ./build/release prepare`：
-   - 确认 GitHub 上的 main 就是本地 HEAD、版本号比已发布的新，`platform/windows/README.md` 里有这一版的更新记录（`### x.y.z …` 标题）；
+   - 确认 GitHub 上的 main 就是本地 HEAD、版本号比已发布的新，`platform/windows/README.txt` 里有这一版的更新记录（`### x.y.z …` 标题）；
    - 等 `test` 工作流在三个平台上通过；这个提交还没打过包就触发 `package` 工作流，它在 GitHub Actions 上调用 `build/windows.sh` 和 `build/macos.sh`，本机不需要 macOS 编译环境；macOS runner 排不上、任务被取消时自动重跑；
    - 下载两个产物，按 GitHub 记录的摘要核对，再逐个检查安装包：DMG 结尾有 koly 块；Windows zip 只有 `ModbusAIStudio.exe` 和 `README.txt`、路径用 `/`，README 是没被加密的 UTF-8 BOM + CRLF 文本、带这一版的更新记录，exe 的文件版本、`GLFW_ICON` 图标和 per monitor v2 高 DPI 清单都在；
    - 生成 `dist/release-x.y.z.md`（说明末尾加 `## SHA-256` 段落，每行 `校验值  文件名`，自动更新按它校验下载的安装包）、各安装包的 `.sha256` 和记录 `release-x.y.z-assets.json`；Windows 版另解压到 `dist/ModbusAIStudio-x.y.z-Windows-x64/`，可以直接试用。
 4. 看一遍 `dist/release-x.y.z.md`，运行 `go run ./build/release publish`：
    - 在打包的提交上打 tag，推到 GitHub；建草稿，逐个上传三个安装包（网络慢时一次传完会超时），按 GitHub 算出的摘要核对后发布为最新版；
-   - 把这个提交和 tag 推到 Gitee 镜像，建发行版，上传三个安装包；
+   - 把这个提交和 tag 推到 Gitee 镜像，建发行版，上传三个安装包；Gitee 没有草稿，传完之前检查更新会改用 GitHub 上的同一版本；
    - 核对结果（也可单独运行 `verify`）：两边的说明都与本地一致；不带令牌从 Gitee 下载三个安装包，SHA-256 与 CI 产物一致；用程序自己的检查更新代码确认优先查到 Gitee 上的新版本，三个平台的安装包和校验值都对，GitHub 可作备用下载源；
    - 删掉 `dist/` 里旧版本的文件。
 
@@ -118,6 +118,14 @@ Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\Modbus
 凭据：GitHub 用 git 凭据管理器里推送用的令牌（或环境变量 `GH_TOKEN`）；Gitee 用 `~/.gitee_token` 里的私人令牌（勾选 projects，或环境变量 `GITEE_TOKEN`），推送走 https，由工具回答 git 的用户名和密码提问，令牌不出现在命令行里。
 
 每一步先查已有状态再动手，网络出错自动重试；仍失败时重跑同一条命令，已完成的步骤会跳过。过程记在 `dist/release-x.y.z.log`。
+
+发布前会先验证两侧凭据、本地安装包名称与 SHA-256、发布说明中的校验值，再执行推 tag 和远程发布。可以编辑发布正文，校验段必须与核对过的安装包一致。
+
+## SQLite3 存储
+
+应用直接读写标准 SQLite3 文件，不编译或附带 `sqlite3.exe`。会话、报文、日志的字段、压缩标记、索引及兼容规则见 [SQLite3 数据文件与表结构](sqlite-storage.md)。大字段采用无损 zlib 压缩，查询条件保留原样；历史列表先选择最近的会话，再只统计这些会话。数据库迁移和压缩的公共逻辑集中在 `internal/recorder/`，建表定义只保留在 `schema` 一处。
+
+CI 在原有 cgo 测试之外单独验证纯 Go SQLite 驱动：`CGO_ENABLED=0 go test ./internal/recorder`。本机缺少 C 编译器时可用 `go test -tags ci ./...` 运行 Fyne 软件渲染回归；桌面安装包的原生构建仍由三个平台的 CI 检查。
 
 ## 协议引擎的约定
 

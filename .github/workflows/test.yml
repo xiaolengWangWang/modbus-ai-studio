@@ -1,7 +1,9 @@
 name: test
 
 on:
+  # 只测分支：发版推 tag 时，tag 指向的提交已经在 main 上测过。
   push:
+    branches: ['**']
   pull_request:
 
 jobs:
@@ -21,6 +23,11 @@ jobs:
         # 软件渲染也需要中文字体，避免缺字时反复查找字体拖慢 race 测试。
         run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev fonts-noto-cjk
       - run: go vet ./...
+      - name: 测试纯 Go SQLite 驱动（直接读写数据库文件）
+        if: runner.os == 'Linux'
+        env:
+          CGO_ENABLED: '0'
+        run: go test -count=1 ./internal/recorder
       - name: 测试（界面测试用 Fyne 的软件渲染驱动，不需要显卡）
         if: runner.os != 'Windows'
         run: go test -race -count=1 -timeout 15m ./...

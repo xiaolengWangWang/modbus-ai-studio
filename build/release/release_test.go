@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -78,6 +79,179 @@ func TestSummary(t *testing.T) {
 		if _, err := r.summary(); err == nil {
 			t.Errorf("%q 应报错", bad)
 		}
+	}
+}
+
+func preparedRelease(t *testing.T) (*release, manifest, string) {
+	t.Helper()
+	r := testRelease(t, "1.2.3")
+	r.root = r.dist
+	r.dist = filepath.Join(r.root, "dist")
+	if err := os.Mkdir(r.dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := manifest{Version: "1.2.3", Commit: strings.Repeat("a", 40)}
+	for _, name := range []string{
+		"ModbusAIStudio-1.2.3-Windows-x64.zip",
+		"ModbusAIStudio-1.2.3-macOS-Intel.dmg",
+		"ModbusAIStudio-1.2.3-macOS-AppleSilicon.dmg",
+	} {
+		body := []byte("installer " + name)
+		if err := os.WriteFile(filepath.Join(r.dist, name), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		m.Assets = append(m.Assets, asset{name, int64(len(body)), sha256Hex(body)})
+	}
+	return r, m, withChecksums("# Modbus AI Studio 1.2.3\n\n- 初稿", m.Assets)
+}
+
+func writePreparedRecord(t *testing.T, r *release, m manifest, notes string) {
+	t.Helper()
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(r.file("-assets.json"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(r.file(".md"), []byte(notes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadAllowsEditedReleaseBody(t *testing.T) {
+	r, m, notes := preparedRelease(t)
+	notes = strings.Replace(notes, "- 初稿", "- 补充本次修复的说明\n\n可以调整发布正文。", 1)
+	// 记录里的安装包顺序无需与发布说明相同，但三个平台都必须在。
+	m.Assets[0], m.Assets[2] = m.Assets[2], m.Assets[0]
+	writePreparedRecord(t, r, m, notes)
+	got, body, err := r.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != m.Version || got.Commit != m.Commit || !slices.Equal(got.Assets, m.Assets) || body != notes {
+		t.Fatalf("load 没有保留核对记录与编辑后的正文：%+v %q", got, body)
+	}
+}
+
+func TestLoadRejectsInvalidManifest(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*manifest)
+	}{
+		{"different version", func(m *manifest) { m.Version = "1.2.4" }},
+		{"nonhex commit", func(m *manifest) { m.Commit = strings.Repeat("g", 40) }},
+		{"uppercase commit", func(m *manifest) { m.Commit = strings.Repeat("A", 40) }},
+		{"short commit", func(m *manifest) { m.Commit = strings.Repeat("a", 39) }},
+		{"missing installer", func(m *manifest) { m.Assets = m.Assets[:2] }},
+		{"extra installer", func(m *manifest) { m.Assets = append(m.Assets, m.Assets[0]) }},
+		{"duplicate installer", func(m *manifest) { m.Assets[1] = m.Assets[0] }},
+		{"nonhex checksum", func(m *manifest) { m.Assets[0].SHA256 = strings.Repeat("g", 64) }},
+		{"uppercase checksum", func(m *manifest) { m.Assets[0].SHA256 = strings.ToUpper(m.Assets[0].SHA256) }},
+		{"short checksum", func(m *manifest) { m.Assets[0].SHA256 = m.Assets[0].SHA256[:63] }},
+		{"zero size", func(m *manifest) { m.Assets[0].Size = 0 }},
+		{"negative size", func(m *manifest) { m.Assets[0].Size = -1 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, m, notes := preparedRelease(t)
+			tc.mutate(&m)
+			writePreparedRecord(t, r, m, notes)
+			if _, _, err := r.load(); err == nil {
+				t.Fatal("无效的安装包记录应在发布前报错")
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidReleaseVersion(t *testing.T) {
+	for _, version := range []string{"dev", "1.2", "v1.2.3", "1.2.3-beta"} {
+		t.Run(version, func(t *testing.T) {
+			r, m, notes := preparedRelease(t)
+			r.version, m.Version = version, version
+			writePreparedRecord(t, r, m, notes)
+			if _, _, err := r.load(); err == nil {
+				t.Fatal("不是 x.y.z 的版本号应报错")
+			}
+		})
+	}
+}
+
+func TestLoadRejectsUnexpectedInstallerPaths(t *testing.T) {
+	for _, name := range []string{
+		"unrelated.zip",
+		"ModbusAIStudio-1.2.4-Windows-x64.zip",
+		"../outside.zip",
+		`..\outside.zip`,
+		"absolute",
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, m, _ := preparedRelease(t)
+			pkg := filepath.Join(r.dist, name)
+			if name == "absolute" {
+				name = filepath.Join(r.root, "outside.zip")
+				pkg = name
+			}
+			body := []byte("unexpected installer")
+			if err := os.WriteFile(pkg, body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			m.Assets[0] = asset{name, int64(len(body)), sha256Hex(body)}
+			writePreparedRecord(t, r, m, withChecksums("# Modbus AI Studio 1.2.3", m.Assets))
+			if _, _, err := r.load(); err == nil {
+				t.Fatal("不属于本版本的安装包或越界路径应报错")
+			}
+		})
+	}
+}
+
+func TestLoadRejectsEmptyOrChangedInstaller(t *testing.T) {
+	for _, body := range []string{"", "changed installer"} {
+		t.Run(body, func(t *testing.T) {
+			r, m, notes := preparedRelease(t)
+			if err := os.WriteFile(filepath.Join(r.dist, m.Assets[0].Name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if body == "" {
+				m.Assets[0].Size = 0
+				m.Assets[0].SHA256 = sha256Hex(nil)
+				notes = withChecksums("# Modbus AI Studio 1.2.3", m.Assets)
+			}
+			writePreparedRecord(t, r, m, notes)
+			if _, _, err := r.load(); err == nil {
+				t.Fatal("空安装包或已修改的安装包应报错")
+			}
+		})
+	}
+}
+
+func TestLoadRejectsBrokenReleaseNotes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(string, manifest) string
+	}{
+		{"different title", func(notes string, _ manifest) string {
+			return strings.Replace(notes, "# Modbus AI Studio 1.2.3", "# Modbus AI Studio 1.2.4", 1)
+		}},
+		{"missing title", func(notes string, _ manifest) string {
+			return strings.TrimPrefix(notes, "# Modbus AI Studio 1.2.3\n")
+		}},
+		{"missing checksum", func(notes string, m manifest) string {
+			return strings.Replace(notes, m.Assets[0].SHA256+"  "+m.Assets[0].Name+"\n", "", 1)
+		}},
+		{"changed checksum", func(notes string, m manifest) string {
+			return strings.Replace(notes, m.Assets[0].SHA256, strings.Repeat("0", 64), 1)
+		}},
+		{"changed checksum filename", func(notes string, m manifest) string {
+			return strings.Replace(notes, m.Assets[0].Name, "previous-Windows-x64.zip", 1)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, m, notes := preparedRelease(t)
+			writePreparedRecord(t, r, m, tc.mutate(notes, m))
+			if _, _, err := r.load(); err == nil {
+				t.Fatal("标题或校验段被破坏的发布说明应报错")
+			}
+		})
 	}
 }
 

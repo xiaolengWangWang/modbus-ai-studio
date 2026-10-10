@@ -16,7 +16,7 @@ import (
 
 func TestPacketConnectionIdentityAndLegacyDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
-	db, err := sql.Open("sqlite3", path)
+	db, err := sql.Open(driverName, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestPacketConnectionIdentityAndLegacyDatabase(t *testing.T) {
 
 func TestReadLegacyArchiveWithoutMigratingIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy-readonly.db")
-	db, err := sql.Open("sqlite3", path)
+	db, err := sql.Open(driverName, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestReadLegacyArchiveWithoutMigratingIt(t *testing.T) {
 	if err != nil || len(packets) != 1 || packets[0].ConnectionID != "" || packets[0].Address != 10 {
 		t.Fatalf("legacy archive lost data: %v %+v", err, packets)
 	}
-	db, err = sql.Open("sqlite3", path)
+	db, err = sql.Open(driverName, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestDatabaseFileReadableByIndependentSQLiteConnection(t *testing.T) {
 	if err != nil || len(header) < 16 || string(header[:16]) != "SQLite format 3\x00" {
 		t.Fatalf("应生成标准 SQLite 文件：%v", err)
 	}
-	db, err := sql.Open("sqlite3", "file:"+filepath.ToSlash(path)+"?mode=ro")
+	db, err := sql.Open(driverName, "file:"+filepath.ToSlash(path)+"?mode=ro")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestRecordAndRead(t *testing.T) {
 
 // 缓冲满时 Record 立即返回并计数，绝不阻塞通信。
 func TestRecordNeverBlocks(t *testing.T) {
-	r, err := open(filepath.Join(t.TempDir(), "p.db"), 1)
+	r, err := open(filepath.Join(t.TempDir(), "p.db"), false, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestOpenError(t *testing.T) {
 // 旧版本的库没有日志的分析和原始报文列，打开时自动补上，原有记录保留。
 func TestMigrateOldEvents(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "packets.db")
-	db, err := sql.Open("sqlite3", path)
+	db, err := sql.Open(driverName, path)
 	if err != nil {
 		t.Fatal(err)
 	}

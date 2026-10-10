@@ -98,7 +98,8 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// Latest 同时查询全部下载源，取版本最新的发布（一样新时取排在前面的下载源）；同一个安装包在别的下载源上
+// Latest 同时查询全部下载源，取版本最新的发布（一样新时取排在前面的下载源，但它缺本平台的安装包或校验值时
+// 改用齐全的那个：Gitee 没有草稿，发版时先建发行版再逐个上传安装包）；同一个安装包在别的下载源上
 // 也有时记进 Mirrors，下载出错时换着用。全部查不到才报错。每个下载源出错时重试几次。
 func Latest(ctx context.Context) (Release, error) {
 	type result struct {
@@ -124,7 +125,8 @@ func Latest(ctx context.Context) (Release, error) {
 			errs = append(errs, fmt.Errorf("%s：%w", Sources[i].Name, res.err))
 			continue
 		}
-		if best < 0 || Newer(res.r.Version(), results[best].r.Version()) {
+		if best < 0 || Newer(res.r.Version(), results[best].r.Version()) ||
+			res.r.Version() == results[best].r.Version() && !installable(results[best].r) && installable(res.r) {
 			best = i
 		}
 	}
@@ -145,6 +147,13 @@ func Latest(ctx context.Context) (Release, error) {
 		}
 	}
 	return rel, nil
+}
+
+// installable 判断发布里有没有本平台的安装包和它的校验值。
+func installable(r Release) bool {
+	a, ok := r.Asset(runtime.GOOS, runtime.GOARCH)
+	_, sum := r.Checksum(a.Name)
+	return ok && a.URL != "" && sum
 }
 
 func latestFrom(ctx context.Context, src Source) (Release, error) {

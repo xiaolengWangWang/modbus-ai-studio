@@ -440,6 +440,43 @@ func TestLatestFromSources(t *testing.T) {
 	}
 }
 
+// 发版时 Gitee 先建发行版再上传安装包：这期间 Gitee 上的同一版本缺本平台安装包，改用齐全的 GitHub。
+func TestLatestSkipsIncompleteSource(t *testing.T) {
+	fastRetry(t)
+	suffix := assetSuffix(runtime.GOOS, runtime.GOARCH)
+	if suffix == "" {
+		t.Skip("这个平台没有安装包")
+	}
+	name := "ModbusAIStudio-1.0.3" + suffix
+	sum := strings.Repeat("a", 64)
+	serve := func(rel Release) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(rel)
+		}))
+	}
+	complete := Release{Tag: "v1.0.3", Body: sum + "  " + name, Assets: []Asset{{Name: name, URL: "http://github/p"}}}
+	github := serve(complete)
+	defer github.Close()
+	for what, rel := range map[string]Release{
+		"还没上传安装包": {Tag: "v1.0.3", Body: sum + "  " + name},
+		"说明里没有校验值": {Tag: "v1.0.3", Assets: []Asset{{Name: name, URL: "http://gitee/p"}}},
+	} {
+		gitee := serve(rel)
+		useSources(t, Source{"Gitee", gitee.URL, ""}, Source{"GitHub", github.URL, ""})
+		if r, err := Latest(context.Background()); err != nil || r.Source != "GitHub" || !installable(r) {
+			t.Errorf("Gitee %s时应改用 GitHub：%+v %v", what, r, err)
+		}
+		gitee.Close()
+	}
+
+	gitee := serve(Release{Tag: "v1.0.3", Body: sum + "  " + name, Assets: []Asset{{Name: name, URL: "http://gitee/p"}}})
+	defer gitee.Close()
+	useSources(t, Source{"Gitee", gitee.URL, ""}, Source{"GitHub", github.URL, ""})
+	if r, err := Latest(context.Background()); err != nil || r.Source != "Gitee" || len(r.Assets[0].Mirrors) != 1 {
+		t.Errorf("两边都齐全时仍取 Gitee，GitHub 作镜像：%+v %v", r, err)
+	}
+}
+
 // 主地址下载失败时换镜像接着下（Range 续传），最后校验。
 func TestDownloadUsesMirror(t *testing.T) {
 	fastRetry(t)

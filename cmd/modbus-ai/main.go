@@ -17,7 +17,7 @@ import (
 )
 
 // version 在打包时用 -ldflags "-X main.version=…" 覆盖。
-var version = "1.0.3"
+var version = "1.1.0"
 
 func main() {
 	start := time.Now()
@@ -40,7 +40,11 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "报文记录不可用：", err)
 	} else {
-		defer rec.Close() // 退出前写完缓冲里的记录
+		defer func() {
+			if err := rec.Close(); err != nil {
+				log.Printf("报文记录保存失败：%v", err)
+			}
+		}() // 退出前写完缓冲里的记录并报告保存失败
 	}
 	desktop := ui.NewDesktop(a, version)
 	defer desktop.Shutdown() // 先关掉全部连接，再由上面的 defer 写完数据库缓冲

@@ -99,6 +99,9 @@ func open() (*release, error) {
 	return &release{root, dist, v, "v" + v, log.New(io.MultiWriter(os.Stdout, f), "", log.Ldate|log.Ltime)}, nil
 }
 
+// readmeTemplate 是打进 Windows zip 的明文说明模板；prepare 会检查提交中的内容没有被加密软件改成密文。
+const readmeTemplate = "platform/windows/README.txt"
+
 var versionLine = regexp.MustCompile(`(?m)^var version = "(\d+\.\d+\.\d+)"`)
 
 func versionOf(src []byte) string {
@@ -127,12 +130,15 @@ func (r *release) prepare(ctx context.Context) error {
 		return fmt.Errorf("本地已有 %s，指向 %.8s，不是 HEAD %.8s", r.tag, c, head)
 	}
 	// 打进 zip 的说明要有这一版的更新记录；先查提交里的模板，免得等完 CI 才发现。
-	readme, err := r.git(ctx, nil, "show", head+":platform/windows/README.md")
+	readme, err := r.git(ctx, nil, "show", head+":"+readmeTemplate)
 	if err != nil {
 		return err
 	}
-	if !hasChangelog([]byte(readme), r.version) {
-		return fmt.Errorf("platform/windows/README.md 的更新记录里还没有 %s（“### %s …”标题），补上并推送后再运行", r.version, r.version)
+	switch {
+	case encrypted([]byte(readme)):
+		return fmt.Errorf("提交里的 %s 是加密软件生成的密文，换成明文重新提交并推送", readmeTemplate)
+	case !hasChangelog([]byte(readme), r.version):
+		return fmt.Errorf("%s 的更新记录里还没有 %s（“### %s …”标题），补上并推送后再运行", readmeTemplate, r.version, r.version)
 	}
 	gh, err := newGitHub()
 	if err != nil {
@@ -208,18 +214,18 @@ func (r *release) publish(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := r.pushTag(ctx, m.Commit); err != nil {
-		return err
-	}
 	gh, err := newGitHub()
 	if err != nil {
 		return err
 	}
-	if err := retry(ctx, r.log, "发布到 GitHub", func() error { return r.publishGitHub(ctx, gh, m, notes) }); err != nil {
-		return err
-	}
 	gt, err := newGitee()
 	if err != nil {
+		return err
+	}
+	if err := r.pushTag(ctx, m.Commit); err != nil {
+		return err
+	}
+	if err := retry(ctx, r.log, "发布到 GitHub", func() error { return r.publishGitHub(ctx, gh, m, notes) }); err != nil {
 		return err
 	}
 	if err := retry(ctx, r.log, "推送到 Gitee", func() error { return r.pushGitee(ctx, m.Commit) }); err != nil {

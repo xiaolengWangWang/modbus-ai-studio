@@ -45,6 +45,7 @@ Linux 暂时没有安装包，可以 [从源码编译](docs/development.md#从�
 - [点表格式](docs/points.md)：点表的列、数据类型、字节序、平台导出的设备属性表
 - [常见问题](docs/faq.md)：连不上、超时、断开、异常码、值不对、写入失败、报文记录在哪里、安装问题
 - [开发与发布](docs/development.md)：从源码编译、目录结构、测试、打包发版
+- [SQLite3 数据文件](docs/sqlite-storage.md)：表结构、无损压缩、查询索引、旧文件兼容与快照导出
 - [AI 功能设计](docs/ai-design.md)：已实现的 DeepSeek 诊断助手范围，以及配置建议、设备接入辅助等后续规划
 
 ## 目录
