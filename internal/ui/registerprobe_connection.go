@@ -95,6 +95,12 @@ func (c *networkProbeClient) Do(ctx context.Context, req modbus.Request) (*modbu
 			c.close()
 			return nil, ctx.Err()
 		}
+		if c.Mode() == modbus.ModeTCP && errors.Is(err, modbus.ErrTimeout) {
+			// 设备可能仍在处理超时请求。关闭检测连接，下次请求重新建连，
+			// 避免慢点的旧请求积压让后面的正常点也被误判为未响应。
+			c.close()
+			return response, err
+		}
 		if !errors.Is(err, modbus.ErrConnection) {
 			return response, err
 		}

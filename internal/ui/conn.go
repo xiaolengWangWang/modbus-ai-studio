@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image/color"
 	"net"
 	"slices"
 	"strconv"
@@ -357,6 +358,21 @@ func (ws *Workspace) setInputsEnabled(on bool) {
 	}
 }
 
+// Locked connection parameters still describe the active connection. Keep
+// their text readable instead of using the theme's faint disabled foreground.
+type connectionParameterTheme struct{ fyne.Theme }
+
+func (th connectionParameterTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	if name == theme.ColorNameDisabled {
+		name = theme.ColorNameForeground
+	}
+	return th.Theme.Color(name, variant)
+}
+
+func connectionParameter(control fyne.CanvasObject) *container.ThemeOverride {
+	return container.NewThemeOverride(control, connectionParameterTheme{appTheme()})
+}
+
 // setPorts 更新串口列表，列表没变时不动，避免下拉框闪烁；选中的串口被拔掉时清空选择。
 func (ws *Workspace) setPorts(list []string) {
 	if strings.Join(list, "\n") != strings.Join(ws.port.Options, "\n") {
@@ -523,7 +539,7 @@ func (ws *Workspace) detectProtocol() {
 // errSummary 是错误的短说明，用在识别结果、探测结果等列表里。
 func errSummary(err error) string {
 	if ex, ok := modbus.AsException(err); ok {
-		return fmt.Sprintf("异常 %02X %s", byte(ex.Code), ex.Code.Name())
+		return "异常 " + ex.Code.Description()
 	}
 	switch {
 	case errors.Is(err, modbus.ErrTimeout):

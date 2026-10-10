@@ -178,7 +178,7 @@ func describePDU(w *fieldWriter, p modbus.Packet, pdu []byte) {
 		w.add("功能码", pdu[:1], "%02X = %s 的异常响应", fc, base)
 		if len(pdu) >= 2 {
 			code := modbus.ExceptionCode(pdu[1])
-			w.add("异常码", pdu[1:2], "%02X %s", pdu[1], code.Name())
+			w.add("异常码", pdu[1:2], "%s", code.Description())
 			w.rows = append(w.rows, decodeRow{Name: "建议", Meaning: code.Tip()})
 		}
 		return

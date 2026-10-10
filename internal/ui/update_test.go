@@ -153,6 +153,8 @@ func TestCheckUpdate(t *testing.T) {
 
 // 下载并安装：下载到缓存目录、校验、安装，装好后问是否重启并删掉缓存；校验不过时说明原因、不安装。
 func TestInstallUpdateFlow(t *testing.T) {
+	oldInstalled := installedUpdate.Swap(nil)
+	t.Cleanup(func() { installedUpdate.Store(oldInstalled) })
 	data := []byte(strings.Repeat("新版本安装包", 1000))
 	sum := sha256.Sum256(data)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(data) }))

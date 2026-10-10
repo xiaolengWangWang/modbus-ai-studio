@@ -34,7 +34,9 @@ func registerProbeClient(t *testing.T, mode modbus.Mode, faults simulator.Faults
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := modbus.NewClient(conn, modbus.Options{Mode: mode, Timeout: 50 * time.Millisecond, Guard: 100 * time.Millisecond, Observer: observer})
+	// Correctness cases allow race instrumentation overhead; timeout cases set
+	// their shorter response budget explicitly below.
+	c := modbus.NewClient(conn, modbus.Options{Mode: mode, Timeout: 250 * time.Millisecond, Guard: 100 * time.Millisecond, Observer: observer})
 	t.Cleanup(func() { c.Close() })
 	return c
 }
@@ -108,8 +110,8 @@ func TestRegisterProbeDoesNotTreatOtherExceptionsAsMissing(t *testing.T) {
 			d := defaultDef()
 			d.Qty = 3
 			res, err := probe(context.Background(), c, d, func(int) {})
-			if err == nil || fmt.Sprint(res) != "[1 -2 0]" {
-				t.Fatalf("Non-address exception must remain inconclusive and stop: %v, %v", res, err)
+			if err != nil || fmt.Sprint(res) != "[1 -2 1]" {
+				t.Fatalf("Non-address exception must remain inconclusive while later addresses are tested: %v, %v", res, err)
 			}
 		})
 	}
@@ -117,6 +119,7 @@ func TestRegisterProbeDoesNotTreatOtherExceptionsAsMissing(t *testing.T) {
 
 func TestRegisterProbeTimeoutIsInconclusive(t *testing.T) {
 	c := registerProbeClient(t, modbus.ModeTCP, simulator.Faults{Slow: []simulator.SlowRange{{AddrRange: simulator.AddrRange{Start: 1, Count: 1}, Delay: 100 * time.Millisecond}}}, nil)
+	c.SetTimeout(50 * time.Millisecond)
 	d := defaultDef()
 	d.Qty = 3
 	var rechecked []int
@@ -138,6 +141,7 @@ func TestRegisterProbeStopsAfterTimeoutWithoutTransactionIDs(t *testing.T) {
 					sent++
 				}
 			}))
+			c.SetTimeout(50 * time.Millisecond)
 			res, err := probe(context.Background(), c, readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters, Start: 2, Qty: 4}, func(int) {})
 			if err == nil || fmt.Sprint(res) != "[-2 -2 -2 -2]" || sent != 1 {
 				t.Fatalf("Late batch exception must not be assigned to healthy addresses: states %v, requests %d, err %v", res, sent, err)
@@ -170,6 +174,9 @@ func TestRegisterProbeLocatesSparseForwardingHoles(t *testing.T) {
 					requests++
 				}
 			}), 128)
+			if failure == "timeout" {
+				c.SetTimeout(50 * time.Millisecond)
+			}
 			d := defaultDef()
 			d.Qty = 100
 			res, err := probe(context.Background(), c, d, func(int) {})

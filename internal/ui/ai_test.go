@@ -11,13 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"fyne.io/fyne/v2/test"
 	"modbus-ai-studio/internal/ai"
 	"modbus-ai-studio/internal/modbus"
 )
 
 func TestAISnapshotPrivacyAndFrozenCopy(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), true)
+	ws := openAIWS(t, true)
 	locked(func() {
 		w := ws.current()
 		w.def.Name = "private-point-name"
@@ -59,7 +58,7 @@ func TestAISnapshotPrivacyAndFrozenCopy(t *testing.T) {
 	})
 }
 func TestAISnapshotPreservesSelectionAndLocalEvidenceIDs(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		now := time.Now()
 		for i := 0; i < 100; i++ {
@@ -96,7 +95,7 @@ func TestAISnapshotPreservesSelectionAndLocalEvidenceIDs(t *testing.T) {
 }
 
 func TestAISnapshotKeepsOnlyMatchingReadRangeAndKnownLatency(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		w := ws.addWindow(defaultDef())
 		now := time.Now()
@@ -136,7 +135,7 @@ func TestAISnapshotKeepsOnlyMatchingReadRangeAndKnownLatency(t *testing.T) {
 }
 
 func TestAIToolRetryFailureAndCancellationKeepCompletedReport(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	var requests atomic.Int32
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -187,7 +186,7 @@ func TestAIToolRetryFailureAndCancellationKeepCompletedReport(t *testing.T) {
 	})
 }
 func TestAIToolCancellationDiscardsOldResponse(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	ended := make(chan struct{})
@@ -232,7 +231,7 @@ func TestAIToolCancellationDiscardsOldResponse(t *testing.T) {
 	})
 }
 func TestAIToolCloseCancelsPendingRequest(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		ws.openAI(nil)
 		tool := ws.ai
@@ -248,7 +247,7 @@ func TestAIToolCloseCancelsPendingRequest(t *testing.T) {
 }
 
 func TestAIToolDisplaysReportAndMinimalConnectionTest(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	var requests []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ Messages []struct{ Content string } }
@@ -293,7 +292,7 @@ func TestAIToolDisplaysReportAndMinimalConnectionTest(t *testing.T) {
 }
 
 func TestAIToolSettingsPersistOnlyEncryptedKey(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		ws.openAI(nil)
 		tool := ws.ai
@@ -321,7 +320,7 @@ func TestAIToolSettingsPersistOnlyEncryptedKey(t *testing.T) {
 }
 
 func TestAIToolNewSelectionInvalidatesPreviousReport(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		first := modbus.Packet{Time: time.Now(), Slave: 1, Function: modbus.FuncReadHoldingRegisters, Address: 10, Count: 1}
 		second := first

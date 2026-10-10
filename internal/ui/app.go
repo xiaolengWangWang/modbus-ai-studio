@@ -104,6 +104,7 @@ type Workspace struct {
 	readOnly     bool         // 只读模式，禁止一切写入（readonly.go）
 	roItem       *fyne.MenuItem
 	autoUpdItem  *fyne.MenuItem // “帮助 → 自动检查更新”，勾选状态随设置变化
+	updates      updateState
 	detailsItem  *fyne.MenuItem // “视图 → 通信报文与解析面板”
 	path         string         // 工作区文件，未保存时为空
 	timeout      time.Duration
@@ -215,6 +216,7 @@ func (ws *Workspace) tick() {
 				ws.traffic.flush()
 				if status {
 					ws.refreshStatus()
+					ws.pollUpdates(time.Now())
 				}
 			})
 		}
@@ -240,6 +242,9 @@ func (ws *Workspace) stop() {
 		return
 	}
 	ws.closed = true
+	if dismiss := ws.updates.dismiss; dismiss != nil {
+		dismiss()
+	}
 	if ws.probeCancel != nil {
 		ws.probeCancel()
 	}
@@ -275,6 +280,7 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 		}
 		ws.updateDetectBtn()
 	})
+	simChoice := connectionParameter(ws.useSim)
 
 	// 串口列表在切到 RTU 串口时和未连接期间每 2 s 自动刷新，插拔 USB 转 485 不用手动刷新
 	ws.port = widget.NewSelect(nil, nil)
@@ -285,8 +291,8 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 	ws.frameFmt.SetSelected("8N1")
 	ws.detectBn = widget.NewButtonWithIcon("识别", theme.SearchIcon(), ws.detectProtocol)
 
-	ws.tcpBox = container.NewHBox(widget.NewLabel("目标"), fixed(210, ws.target))
-	ws.serBox = container.NewHBox(widget.NewLabel("串口"), fixed(140, ws.port), widget.NewLabel("波特率"), fixed(100, ws.baud), fixed(72, ws.frameFmt))
+	ws.tcpBox = container.NewHBox(widget.NewLabel("目标"), fixed(210, connectionParameter(ws.target)))
+	ws.serBox = container.NewHBox(widget.NewLabel("串口"), fixed(140, connectionParameter(ws.port)), widget.NewLabel("波特率"), fixed(100, connectionParameter(ws.baud)), fixed(72, connectionParameter(ws.frameFmt)))
 	ws.serBox.Hide()
 	ws.proto = widget.NewSelect(protoNames, func(s string) {
 		if ws.serialMode() {
@@ -300,6 +306,7 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 			}
 			ws.tcpBox.Hide()
 			ws.useSim.Hide()
+			simChoice.Hide()
 			ws.detectBn.Hide()
 			ws.serBox.Show()
 			list, _ := transport.ListSerialPorts()
@@ -308,6 +315,7 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 			ws.serBox.Hide()
 			ws.tcpBox.Show()
 			ws.useSim.Show()
+			simChoice.Show()
 			ws.detectBn.Show()
 		}
 		ws.updateDetectBtn()
@@ -337,8 +345,8 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 	ws.refreshReadActions()
 
 	// Complete label/input groups wrap when the window is narrow.
-	parameters := container.New(flowLayout{}, container.NewHBox(widget.NewLabel("协议"), fixed(140, ws.proto)), ws.tcpBox, ws.serBox,
-		ws.useSim, ws.detectBn, container.NewHBox(widget.NewLabel("超时(ms)"), fixed(72, ws.timeoutE)), ws.connBtn, fixed(96, ws.connState))
+	parameters := container.New(flowLayout{}, container.NewHBox(widget.NewLabel("协议"), fixed(140, connectionParameter(ws.proto))), ws.tcpBox, ws.serBox,
+		simChoice, ws.detectBn, container.NewHBox(widget.NewLabel("超时(ms)"), fixed(72, connectionParameter(ws.timeoutE))), ws.connBtn, fixed(96, ws.connState))
 	actions := container.New(flowLayout{},
 		widget.NewButtonWithIcon("新建读取窗口", theme.ContentAddIcon(), func() {
 			if !ws.dialogOpen() {

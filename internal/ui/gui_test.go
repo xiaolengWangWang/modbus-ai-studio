@@ -107,7 +107,7 @@ func TestTrafficExplainsEmptyFilteredAndPausedStates(t *testing.T) {
 }
 
 func TestAIHeaderActionsFitNarrowWindow(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		ws.openAI(nil)
 		tool := ws.ai

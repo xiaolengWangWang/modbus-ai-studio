@@ -87,6 +87,9 @@ func (d *Desktop) forget(ws *Workspace) {
 		d.Quit()
 		return
 	}
+	if ws.updates.automatic {
+		d.workspaces[0].AutoCheckUpdate()
+	}
 	d.refreshTray()
 }
 

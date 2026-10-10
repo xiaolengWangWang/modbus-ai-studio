@@ -215,7 +215,7 @@ func probe(ctx context.Context, c probeClient, d readDef, progress func(int), re
 			mark(start, n, -1)
 		case errors.Is(err, modbus.ErrTimeout) || isEx && ex.Code == modbus.ExceptionGatewayTargetFailed:
 			mark(start, n, -3)
-		case errors.Is(err, errProbeUnstable):
+		case isEx || errors.Is(err, errProbeUnstable):
 			mark(start, n, -2)
 		default:
 			mark(start, n, -2)

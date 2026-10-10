@@ -18,7 +18,7 @@ import (
 	"modbus-ai-studio/internal/update"
 )
 
-// 软件更新：“帮助 → 检查更新”，以及启动几秒后自动检查（每天最多一次，可在“帮助”菜单里关掉）。
+// 软件更新：“帮助 → 检查更新”，以及启动后和运行期间的自动检查。
 // 下载、校验、替换程序在 internal/update。
 
 const (
@@ -36,25 +36,62 @@ var (
 // updating 表示正在检查或下载更新。多个主窗口共用，同一时间只做一次。
 var updating atomic.Bool
 
+type updateState struct {
+	automatic bool
+	nextCheck time.Time
+	pending   *update.Release
+	dismiss   func()
+}
+
+type installedRelease struct {
+	version, target string
+}
+
+// 所有主窗口都运行同一个旧进程；安装完成后共享待重启状态，避免重复替换。
+var installedUpdate atomic.Pointer[installedRelease]
+
 func autoUpdate(app fyne.App) bool { return app.Preferences().BoolWithFallback(prefAutoUpdate, true) }
 
-// AutoCheckUpdate 启动后自动检查一次更新：每天最多一次，用户关掉了就不查，查不到也不打扰。
-// 由 main 在打开第一个主窗口后调用；测试不调用，不访问网络。
+// AutoCheckUpdate 每次启动都重新检查，不因当天已查过而错过刚发布的版本。
+// 由界面刷新循环执行定时检查；窗口关闭后不会留下后台定时任务。
 func (ws *Workspace) AutoCheckUpdate() {
-	last := time.Unix(int64(ws.app.Preferences().Int(prefLastCheck)), 0)
-	if !autoUpdate(ws.app) || time.Since(last) < 20*time.Hour {
+	if ws.closed || !autoUpdate(ws.app) || installedUpdate.Load() != nil {
 		return
 	}
-	go func() {
-		time.Sleep(3 * time.Second) // 先让界面起来
-		uiDo(func() { ws.checkUpdate(false) })
-	}()
+	ws.updates.automatic = true
+	ws.updates.nextCheck = time.Now().Add(3 * time.Second)
+}
+
+func (ws *Workspace) pollUpdates(now time.Time) {
+	if ws.closed || !autoUpdate(ws.app) || installedUpdate.Load() != nil {
+		return
+	}
+	if rel := ws.updates.pending; rel != nil {
+		if ws.app.Preferences().String(prefSkip) == rel.Version() {
+			ws.updates.pending = nil
+			return
+		}
+		if ws.win.Canvas().Overlays().Top() == nil && updating.CompareAndSwap(false, true) {
+			ws.showUpdate(*rel, false)
+		}
+		return
+	}
+	if ws.updates.automatic && !now.Before(ws.updates.nextCheck) && !updating.Load() {
+		ws.updates.nextCheck = now.Add(30 * time.Minute)
+		ws.checkUpdate(false)
+	}
 }
 
 // checkUpdate 查询最新版本。manual 为 true 时（菜单里点的）显示查询进度、已是最新、查询失败；
 // 自动检查只在有新版本时弹窗。
 func (ws *Workspace) checkUpdate(manual bool) {
 	if ws.closed {
+		return
+	}
+	if installed := installedUpdate.Load(); installed != nil {
+		if manual {
+			ws.askRestart(installed.version, installed.target)
+		}
 		return
 	}
 	if !updating.CompareAndSwap(false, true) {
@@ -78,12 +115,18 @@ func (ws *Workspace) checkUpdate(manual bool) {
 			}
 			if err == nil {
 				ws.app.Preferences().SetInt(prefLastCheck, int(time.Now().Unix()))
+				if ws.updates.automatic {
+					ws.updates.nextCheck = time.Now().Add(30 * time.Minute)
+				}
 			}
 			switch {
 			case ws.closed:
 				updating.Store(false)
 			case err != nil:
 				updating.Store(false)
+				if !manual && ws.updates.automatic {
+					ws.updates.nextCheck = time.Now().Add(5 * time.Minute)
+				}
 				if manual {
 					ws.showUpdateError("检查更新失败", err)
 				}
@@ -94,8 +137,11 @@ func (ws *Workspace) checkUpdate(manual bool) {
 				}
 			case !manual && ws.app.Preferences().String(prefSkip) == rel.Version():
 				updating.Store(false)
+			case !manual && !autoUpdate(ws.app):
+				updating.Store(false)
 			case !manual && ws.win.Canvas().Overlays().Top() != nil:
-				updating.Store(false) // 正开着别的对话框，不叠上去，下次启动再提示
+				ws.updates.pending = &rel
+				updating.Store(false)
 			default:
 				ws.showUpdate(rel, manual)
 			}
@@ -105,6 +151,7 @@ func (ws *Workspace) checkUpdate(manual bool) {
 
 // showUpdate 说明新版本的内容，让用户选择下载安装、手动下载或以后再说。
 func (ws *Workspace) showUpdate(rel update.Release, manual bool) {
+	ws.updates.pending = nil
 	asset, hasAsset := rel.Asset(runtime.GOOS, runtime.GOARCH)
 	sum, hasSum := rel.Checksum(asset.Name)
 	canInstall := hasAsset && hasSum && update.CanInstall()
@@ -137,9 +184,15 @@ func (ws *Workspace) showUpdate(rel update.Release, manual bool) {
 	d := dialog.NewCustomWithoutButtons("软件更新", container.NewBorder(head, nil, nil, nil, scroll), ws.win)
 
 	installing := false
-	d.SetOnClosed(func() {
+	ws.updates.dismiss = func() {
+		ws.updates.dismiss = nil
 		if !installing {
 			updating.Store(false)
+		}
+	}
+	d.SetOnClosed(func() {
+		if dismiss := ws.updates.dismiss; dismiss != nil {
+			dismiss()
 		}
 	})
 	var buttons []fyne.CanvasObject
@@ -227,6 +280,10 @@ func (ws *Workspace) installUpdate(rel update.Release, asset update.Asset, sum s
 			d.Hide()
 			setUpdateNote("")
 			updating.Store(false)
+			if err == nil {
+				installedUpdate.Store(&installedRelease{version: rel.Version(), target: target})
+				ws.updates.pending = nil
+			}
 			switch {
 			case ws.closed:
 			case errors.Is(err, context.Canceled):
@@ -282,6 +339,12 @@ func (ws *Workspace) toggleAutoUpdate() {
 	on := !autoUpdate(ws.app)
 	ws.app.Preferences().SetBool(prefAutoUpdate, on)
 	ws.autoUpdItem.Checked = on
+	if on {
+		ws.AutoCheckUpdate()
+	} else {
+		ws.updates.automatic = false
+		ws.updates.pending = nil
+	}
 	if m := ws.win.MainMenu(); m != nil {
 		m.Refresh()
 	}

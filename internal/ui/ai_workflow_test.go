@@ -11,14 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 	"modbus-ai-studio/internal/modbus"
 	"modbus-ai-studio/internal/recorder"
 )
 
 func TestAIFaultEntryBindsClickedWindowAndRegister(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		ws.loadDemo()
 		first, other := ws.windows[0], ws.windows[1]
@@ -66,7 +65,7 @@ func TestAIFaultEntryBindsClickedWindowAndRegister(t *testing.T) {
 }
 
 func TestAILogEntryKeepsHistoricalEvidencePrivateAndFrozen(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		old := time.Now().Add(-time.Hour)
 		tx := []byte{0, 1, 0, 0, 0, 6, 1, 3, 0, 10, 0, 2}
@@ -108,7 +107,7 @@ func TestAILogEntryKeepsHistoricalEvidencePrivateAndFrozen(t *testing.T) {
 }
 
 func TestAISelectingLogStopsLiveRegisterInspectorRefresh(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), true)
+	ws := openAIWS(t, true)
 	locked(func() {
 		w := ws.current()
 		w.sel = 0
@@ -128,7 +127,7 @@ func TestAISelectingLogStopsLiveRegisterInspectorRefresh(t *testing.T) {
 
 func TestAIKeyReadErrorAndCancellationRemainVisible(t *testing.T) {
 	t.Setenv("DEEPSEEK_API_KEY", "")
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		ws.openAI(nil)
 		tool := ws.ai
@@ -197,7 +196,7 @@ func TestAIReportRenderingNeverCreatesRemoteContent(t *testing.T) {
 }
 
 func TestAIHistoricalLogRejectsMismatchedOrCorruptFrames(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		for _, tc := range []struct {
 			name   string
@@ -220,7 +219,7 @@ func TestAIHistoricalLogRejectsMismatchedOrCorruptFrames(t *testing.T) {
 }
 
 func TestAIHistoricalLogOmitsUnrecordedPacketFacts(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		e := logEntry{Event: recorder.Event{Time: time.Now(), TX: []byte{0, 1, 0, 0, 0, 6, 1, 3, 0, 10, 0, 2}, RX: []byte{0, 1, 0, 0, 0, 3, 1, 0x83, 2}}, mode: modbus.ModeTCP}
 		for _, ev := range ws.aiSnapshotFor(aiTarget{event: &e}, false, false).Evidence {
@@ -239,7 +238,7 @@ func TestAIHistoricalLogOmitsUnrecordedPacketFacts(t *testing.T) {
 }
 
 func TestAILiveLogPreservesSubMillisecondLatency(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		e := logEntry{Event: recorder.Event{Time: time.Now(), TX: []byte{0, 1, 0, 0, 0, 6, 1, 3, 0, 10, 0, 2}, RX: []byte{0, 1, 0, 0, 0, 3, 1, 0x83, 2}}, mode: modbus.ModeTCP}
 		e.res = &modbus.Packet{Time: e.Time, Dir: modbus.DirRX, RTT: 350 * time.Microsecond, Status: modbus.StatusException}
@@ -264,7 +263,7 @@ func TestAILiveLogPreservesSubMillisecondLatency(t *testing.T) {
 }
 
 func TestAILiveCorruptResponseKeepsObservedErrorWithoutInventingFields(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		e := logEntry{Event: recorder.Event{Time: time.Now(), TX: []byte{0, 1, 0, 0, 0, 6, 1, 3, 0, 10, 0, 2}, RX: []byte{1, 3, 0, 0}}, mode: modbus.ModeTCP}
 		e.res = &modbus.Packet{Time: e.Time, Dir: modbus.DirRX, Mode: e.mode, Slave: 1, Function: 3, Address: 10, Count: 2, Status: modbus.StatusCRCError, Err: modbus.ErrCRC, RequestID: 9, Raw: e.RX}
@@ -290,7 +289,7 @@ func TestAILiveCorruptResponseKeepsObservedErrorWithoutInventingFields(t *testin
 }
 
 func TestAIRefreshUsesOriginatingInspector(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		in := newInspector(ws)
 		in.showLog(logEntry{Event: recorder.Event{Time: time.Now(), Window: 7}})
@@ -305,7 +304,7 @@ func TestAIRefreshUsesOriginatingInspector(t *testing.T) {
 }
 
 func TestAIHistorySourceCannotBorrowLiveDataAfterClearOrClose(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		in := newInspector(ws)
 		in.selectionOnly = true
@@ -335,7 +334,7 @@ func TestAIHistorySourceCannotBorrowLiveDataAfterClearOrClose(t *testing.T) {
 }
 
 func TestAINewEntryCancelsBusyAnalysisAndBindsNewTarget(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		ws.loadDemo()
 		ws.openAITarget(aiTarget{read: ws.windows[0]})
@@ -352,7 +351,7 @@ func TestAINewEntryCancelsBusyAnalysisAndBindsNewTarget(t *testing.T) {
 }
 
 func TestAISelectedRegisterOutsideNewDefinitionRequiresRefresh(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		ws.loadDemo()
 		w := ws.windows[0]

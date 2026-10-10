@@ -40,7 +40,7 @@ func TestAIPacketExchangeDoesNotCrossConnectionsOrGuessLateFrames(t *testing.T) 
 }
 
 func TestAIRefreshPacketCollectsNewResponseWithoutChangingSelection(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		tx := modbus.Packet{Time: time.Now(), ConnectionID: "a", RequestID: 1, Mode: modbus.ModeTCP, Dir: modbus.DirTX, Status: modbus.StatusSent}
 		ws.ring.push(tx)

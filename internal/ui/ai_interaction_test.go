@@ -15,7 +15,7 @@ import (
 )
 
 func TestAIRefreshCurrentEvidenceKeepsBoundSource(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		first, other := ws.addWindow(defaultDef()), ws.addWindow(defaultDef())
 		ws.openAITarget(aiTarget{read: first})
@@ -41,7 +41,7 @@ func TestAIRefreshCurrentEvidenceKeepsBoundSource(t *testing.T) {
 }
 
 func TestAICitationOpensOnlyFrozenLocalEvidence(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		p := modbus.Packet{Time: time.Now(), Mode: modbus.ModeTCP, Address: 42, Count: 2, Status: modbus.StatusTimeout}
 		ws.openAI(&p)
@@ -69,7 +69,7 @@ func TestAICitationOpensOnlyFrozenLocalEvidence(t *testing.T) {
 }
 
 func TestProbeResultAIEntryFreezesDetectionStates(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		d := defaultDef()
 		d.Start, d.Qty = 10, 4
@@ -111,7 +111,7 @@ func TestProbeResultAIEntryFreezesDetectionStates(t *testing.T) {
 }
 
 func TestAISettingsActionsWrapAtCompactWidth(t *testing.T) {
-	ws := openWS(t, test.NewTempApp(t), false)
+	ws := openAIWS(t, false)
 	locked(func() {
 		ws.openAI(nil)
 		tool := ws.ai
