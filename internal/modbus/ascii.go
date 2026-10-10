@@ -24,11 +24,18 @@ func LRC(b []byte) byte {
 
 // EncodeASCII 把“地址 + PDU”编成 Modbus ASCII 帧：冒号、大写十六进制字符、LRC、CR LF。
 func EncodeASCII(data []byte) []byte {
-	out := make([]byte, 0, 1+2*len(data)+4)
-	out = append(out, ':')
-	out = append(out, bytes.ToUpper(hex.AppendEncode(nil, data))...)
-	out = append(out, bytes.ToUpper(hex.AppendEncode(nil, []byte{LRC(data)}))...)
-	return append(out, '\r', '\n')
+	const digits = "0123456789ABCDEF"
+	out := make([]byte, 1+2*len(data)+4)
+	out[0] = ':'
+	for i, v := range data {
+		out[1+2*i] = digits[v>>4]
+		out[2+2*i] = digits[v&0x0F]
+	}
+	lrc := LRC(data)
+	out[len(out)-4] = digits[lrc>>4]
+	out[len(out)-3] = digits[lrc&0x0F]
+	out[len(out)-2], out[len(out)-1] = '\r', '\n'
+	return out
 }
 
 // ParseASCII 解析一帧 ASCII 报文，返回“地址 + PDU”和收到的 LRC。格式不对返回 ErrFraming；
@@ -37,8 +44,9 @@ func ParseASCII(raw []byte) (data []byte, lrc byte, err error) {
 	if len(raw) < 9 || raw[0] != ':' || !bytes.HasSuffix(raw, []byte("\r\n")) {
 		return nil, 0, ErrFraming
 	}
-	b, err := hex.DecodeString(string(raw[1 : len(raw)-2]))
-	if err != nil {
+	encoded := raw[1 : len(raw)-2]
+	b := make([]byte, hex.DecodedLen(len(encoded)))
+	if _, err := hex.Decode(b, encoded); err != nil {
 		return nil, 0, ErrFraming
 	}
 	data, lrc = b[:len(b)-1], b[len(b)-1]

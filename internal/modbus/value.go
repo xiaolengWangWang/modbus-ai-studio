@@ -85,7 +85,13 @@ var orderFamilies = [][3]ByteOrder{
 // For 把字节序换成类型 t 宽度下的同一种写法，例如 INT64 用 CDAB（低字在前）得到 GHEFCDAB。
 // 设备手册常只写 32 位的字节序，64 位按同样的规则排列。不认识的字节序原样返回，由编码解码报错。
 func (o ByteOrder) For(t DataType) ByteOrder {
-	w := map[int]int{1: 0, 2: 1, 4: 2}[t.Registers()]
+	w := 0
+	switch t.Registers() {
+	case 2:
+		w = 1
+	case 4:
+		w = 2
+	}
 	for _, f := range orderFamilies {
 		for _, x := range f {
 			if x == o {
@@ -119,15 +125,6 @@ func checkOrder(t DataType, o ByteOrder) error {
 	return nil
 }
 
-func permute(b []byte, o ByteOrder) []byte {
-	p := perm[o]
-	out := make([]byte, len(p))
-	for i, j := range p {
-		out[i] = b[j]
-	}
-	return out
-}
-
 // RegistersToBytes 把寄存器按线上顺序展开成字节。
 func RegistersToBytes(regs []uint16) []byte {
 	out := make([]byte, 0, len(regs)*2)
@@ -156,19 +153,27 @@ func Bits(t DataType, o ByteOrder, regs []uint16) (uint64, error) {
 		return 0, fmt.Errorf("modbus: %s 需要 %d 个寄存器，得到 %d 个", t, t.Registers(), len(regs))
 	}
 	var u uint64
-	for _, b := range permute(RegistersToBytes(regs), o) {
-		u = u<<8 | uint64(b)
+	for _, j := range perm[o] {
+		word := regs[j/2]
+		if j%2 == 0 {
+			word >>= 8
+		}
+		u = u<<8 | uint64(byte(word))
 	}
 	return u, nil
 }
 
 func fromBits(t DataType, o ByteOrder, u uint64) []uint16 {
-	be := make([]byte, t.Registers()*2)
-	for i := len(be) - 1; i >= 0; i-- {
+	var be, wire [8]byte
+	n := t.Registers() * 2
+	for i := n - 1; i >= 0; i-- {
 		be[i] = byte(u)
 		u >>= 8
 	}
-	return BytesToRegisters(permute(be, o))
+	for i, j := range perm[o] {
+		wire[i] = be[j]
+	}
+	return BytesToRegisters(wire[:n])
 }
 
 // typeRange 返回 float64 能表示的取值范围。64 位整型的上限取 2^63 / 2^64 之下最近的 float64，
@@ -383,9 +388,10 @@ type Interpretation struct {
 func Interpret32(regs []uint16) []Interpretation {
 	out := make([]Interpretation, 0, len(Orders32))
 	for _, o := range Orders32 {
-		f, _ := DecodeRaw(TypeFloat32, o, regs)
-		u, _ := DecodeRaw(TypeUint32, o, regs)
-		out = append(out, Interpretation{Order: o, Float32: f, Int32: int32(uint32(u)), Uint32: uint32(u), Plausible: PlausibleFloat32(f)})
+		bits, _ := Bits(TypeUint32, o, regs)
+		u := uint32(bits)
+		f := float64(math.Float32frombits(u))
+		out = append(out, Interpretation{Order: o, Float32: f, Int32: int32(u), Uint32: u, Plausible: PlausibleFloat32(f)})
 	}
 	return out
 }
@@ -399,14 +405,20 @@ func SuggestByteOrder(current ByteOrder, regs []uint16) (ByteOrder, bool) {
 	if v, err := DecodeRaw(TypeFloat32, current, regs); err != nil || PlausibleFloat32(v) {
 		return "", false
 	}
-	var found []ByteOrder
-	for _, in := range Interpret32(regs) {
-		if in.Order != current && in.Plausible {
-			found = append(found, in.Order)
+	var found ByteOrder
+	count := 0
+	for _, o := range Orders32 {
+		if o == current {
+			continue
+		}
+		v, _ := DecodeRaw(TypeFloat32, o, regs)
+		if PlausibleFloat32(v) {
+			found = o
+			count++
+			if count > 1 {
+				return "", false
+			}
 		}
 	}
-	if len(found) != 1 {
-		return "", false
-	}
-	return found[0], true
+	return found, count == 1
 }

@@ -60,7 +60,10 @@ func EncodeADU(mode Mode, slave byte, txID uint16, pdu []byte) []byte {
 		adu[6] = slave
 		return append(adu, pdu...)
 	}
-	return AppendCRC(append([]byte{slave}, pdu...))
+	adu := make([]byte, 1+len(pdu), 3+len(pdu))
+	adu[0] = slave
+	copy(adu[1:], pdu)
+	return AppendCRC(adu)
 }
 
 // RTUResponseLength 根据已收到的开头字节计算 RTU 响应的整帧长度（设计文档 5.4）。
