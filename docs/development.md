@@ -43,8 +43,8 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 |  | `platform/macos/` | `Info.plist` 模板 |
 |  | `platform/windows/` | Windows 绿色版说明模板 `README.md`，打包时生成 UTF-8 的 `README.txt` |
 | 文档 | `README.md`、`docs/` | 首页；`guide.md` 使用说明、`points.md` 点表格式、`faq.md` 常见问题、`development.md` 开发与发布 |
-| 打包编译 | `build/` | `macos.sh`（.app 和 DMG）、`windows.sh`（交叉编译绿色版 zip）、`gitee.sh`（同步到 Gitee 镜像）、`icon/`（图标生成器） |
-|  | `.github/workflows/` | 持续集成：Windows、macOS、Linux 上跑 vet 和全部测试（GitHub 规定的位置） |
+| 打包编译 | `build/` | `macos.sh`（.app 和 DMG）、`windows.sh`（交叉编译绿色版 zip）、`release/`（本机发版工具，见 [打包与发版](#打包与发版)）、`icon/`（图标生成器） |
+|  | `.github/workflows/` | `test.yml` 在 Windows、macOS、Linux 上跑 vet 和全部测试；`package.yml` 打三个安装包（GitHub 规定的位置） |
 
 Linux 版目前没有专用代码和安装包：同一份代码可以在 Linux 上编译运行（见 [从源码编译](#从源码编译)），持续集成里每次都测。编译输出在 `dist/`、`bin/`，不进仓库。
 
@@ -54,14 +54,14 @@ AI 界面由 `ai.go` 管理设置、来源、异步请求与取消；`ai_context
 
 `toolbar.go` 的分组换行与面板布局根据当前宽度预留工具栏高度，供主窗口、读取窗口、报文区和 AI 助手使用。读取窗口嵌套诊断区按实际宽度计算高度，顶部滚动区域显式保留完整内容范围，表格独立布局。`gui_test.go` 验证窄面板按钮、查找输入框、计数、AI 顶部操作以及空记录 / 无匹配 / 暂停提示；回归同时覆盖窄读取窗口、完整错误宽度、矮窗口滚动、实际连接过程和检测期间的状态恢复；原生截图另覆盖紧凑 AI 窗口、报文无匹配与读取诊断滚动。
 
-本地发版后仅保留最新版本的安装包、校验值和验证记录；旧安装包、重复解压目录、临时截图和旧版本发版脚本清理。必要工具保留在 `bin/`，源码、资源和测试按上表存放。
+`dist/` 只留最新版本的安装包、校验值和发布记录：发版最后自动删掉旧版本的文件，也可单独运行 `go run ./build/release clean`。发版不用 `bin/` 里的脚本，`bin/` 只放编译输出和 `go-winres` 这类工具；源码、资源和测试按上表存放。
 
 ## 常用命令
 
 ```sh
 go run ./cmd/modbus-ai              # 运行桌面应用（启动时为空；“读取 → 打开换热站示例”加载示例并连接内置模拟器）
-VERSION=1.0.2 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
-VERSION=1.0.2 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
+build/macos.sh                      # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG（版本号取自 cmd/modbus-ai/main.go）
+build/windows.sh                    # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
 
 go build -o bin/ ./cmd/...
 
@@ -98,12 +98,26 @@ go test -race -count=3 ./...        # 并发与稳定性
 
 Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\ModbusAIStudio\app.log`，每行带进程号，多个实例不会相互覆盖日志；图标资源可用 `go-winres extract` 检查 `GLFW_ICON` 和高 DPI 清单。主窗口默认 1040 × 680 逻辑尺寸，并按屏幕可用区域和 DPI 缩放适配；关闭按钮默认隐藏到托盘，采集继续，托盘菜单退出时关闭本实例全部连接并写完数据库缓冲。界面测试覆盖后台轮询、独立窗口关闭和退出清理，Windows 本机已验证两个进程同时运行及隐藏后保留进程。150% 缩放、16 像素图标和启动速度仍需在不同设备上验证；遇到问题时请附 `app.log`。
 
-1. 改代码时同步递增版本号：`cmd/modbus-ai/main.go` 的 `version`、`build/*.sh` 的默认 `VERSION`、本文里的命令示例。
-2. `VERSION=x.y.z build/macos.sh`、`VERSION=x.y.z build/windows.sh` 打出两个 DMG 和 Windows zip。安装包文件名不要改：程序里的“检查更新”按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包。
-   没有本机 macOS 编译环境时，推送后运行 GitHub Actions 的 `package` 工作流，输入版本号；它调用同一组打包脚本生成三个安装包。下载 `installers-Linux` 和 `installers-macOS` 产物，核验后再上传发行版。
-3. 提交并推送，等持续集成在三个平台上都通过。
-4. `git tag -a vx.y.z` 并推送；`gh release create --draft` 建草稿，`gh release upload` 逐个上传三个文件（网络慢时一次传完会超时），核对大小后 `gh release edit --draft=false --latest` 发布。发布说明末尾必须有 `## SHA-256` 段落，每行 `校验值  文件名`：自动更新按它校验下载的安装包，没有校验值的版本只能手动下载。
-5. 同步到 Gitee 镜像：`VERSION=x.y.z NOTES=发布说明.md build/gitee.sh`，用 SSH 推 main 和 tag；有 `~/.gitee_token`（Gitee 私人令牌，勾选 projects）时自动建发行版并上传三个安装包，没有令牌时按提示在网页上手动传。程序检查更新时同时查 Gitee 和 GitHub。
+版本号只写在 `cmd/modbus-ai/main.go` 的 `version` 一处，打包脚本、`package` 工作流和发版工具都从这里取。发版用 Go 写的 `build/release`，不用按版本复制脚本：
+
+1. 改 `version`，在 `platform/windows/README.md`（打进 zip 的说明）的更新记录里加这一版，提交并推送。
+2. 写发布说明 `dist/release-x.y.z-summary.md`，第一行 `# Modbus AI Studio x.y.z`；不写 SHA-256 段落。
+3. `go run ./build/release prepare`：
+   - 确认 GitHub 上的 main 就是本地 HEAD、版本号比已发布的新，`platform/windows/README.md` 里有这一版的更新记录（`### x.y.z …` 标题）；
+   - 等 `test` 工作流在三个平台上通过；这个提交还没打过包就触发 `package` 工作流，它在 GitHub Actions 上调用 `build/windows.sh` 和 `build/macos.sh`，本机不需要 macOS 编译环境；macOS runner 排不上、任务被取消时自动重跑；
+   - 下载两个产物，按 GitHub 记录的摘要核对，再逐个检查安装包：DMG 结尾有 koly 块；Windows zip 只有 `ModbusAIStudio.exe` 和 `README.txt`、路径用 `/`，README 是没被加密的 UTF-8 BOM + CRLF 文本、带这一版的更新记录，exe 的文件版本、`GLFW_ICON` 图标和 per monitor v2 高 DPI 清单都在；
+   - 生成 `dist/release-x.y.z.md`（说明末尾加 `## SHA-256` 段落，每行 `校验值  文件名`，自动更新按它校验下载的安装包）、各安装包的 `.sha256` 和记录 `release-x.y.z-assets.json`；Windows 版另解压到 `dist/ModbusAIStudio-x.y.z-Windows-x64/`，可以直接试用。
+4. 看一遍 `dist/release-x.y.z.md`，运行 `go run ./build/release publish`：
+   - 在打包的提交上打 tag，推到 GitHub；建草稿，逐个上传三个安装包（网络慢时一次传完会超时），按 GitHub 算出的摘要核对后发布为最新版；
+   - 把这个提交和 tag 推到 Gitee 镜像，建发行版，上传三个安装包；
+   - 核对结果（也可单独运行 `verify`）：两边的说明都与本地一致；不带令牌从 Gitee 下载三个安装包，SHA-256 与 CI 产物一致；用程序自己的检查更新代码确认优先查到 Gitee 上的新版本，三个平台的安装包和校验值都对，GitHub 可作备用下载源；
+   - 删掉 `dist/` 里旧版本的文件。
+
+安装包文件名不要改：程序检查更新时同时查 Gitee 和 GitHub，按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包。
+
+凭据：GitHub 用 git 凭据管理器里推送用的令牌（或环境变量 `GH_TOKEN`）；Gitee 用 `~/.gitee_token` 里的私人令牌（勾选 projects，或环境变量 `GITEE_TOKEN`），推送走 https，由工具回答 git 的用户名和密码提问，令牌不出现在命令行里。
+
+每一步先查已有状态再动手，网络出错自动重试；仍失败时重跑同一条命令，已完成的步骤会跳过。过程记在 `dist/release-x.y.z.log`。
 
 ## 协议引擎的约定
 

@@ -1,11 +1,12 @@
 #!/bin/sh
 # 构建 macOS 桌面应用：Intel 与 Apple Silicon 各一个 .app 和 DMG，ad-hoc 签名。
-# 用法：VERSION=1.0.3 build/macos.sh
+# 用法：build/macos.sh（版本号取自 cmd/modbus-ai/main.go，也可用 VERSION=x.y.z 指定）
 # 图标取自 assets/icon/AppIcon.png，Info.plist 模板在 platform/macos/。
 set -eu
 cd "$(dirname "$0")/.."
 
-VERSION=${VERSION:-1.0.3}
+VERSION=${VERSION:-$(sed -n 's/^var version = "\([0-9.]*\)".*/\1/p' cmd/modbus-ai/main.go)}
+[ -n "$VERSION" ] || { echo "cmd/modbus-ai/main.go 里没找到版本号"; exit 1; }
 APP="Modbus AI Studio"
 DIST=dist
 export CGO_ENABLED=1 MACOSX_DEPLOYMENT_TARGET=12.0
