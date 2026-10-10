@@ -20,6 +20,9 @@ type xlsxSheet struct {
 	rows [][]string
 }
 
+const maxXLSXBytes = 128 << 20 // 解压后的总 XML 大小，避免小文件解压占满内存。
+const maxXLSXCells = 4_000_000
+
 // readXLSX 按工作簿里的顺序返回全部工作表。
 func readXLSX(data []byte) ([]xlsxSheet, error) {
 	z, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -30,21 +33,34 @@ func readXLSX(data []byte) ([]xlsxSheet, error) {
 	for _, f := range z.File {
 		files[f.Name] = f
 	}
+	remaining := int64(maxXLSXBytes)
 	read := func(name string) ([]byte, error) {
 		f, ok := files[name]
 		if !ok {
 			return nil, fmt.Errorf("xlsx 缺少 %s", name)
+		}
+		if f.UncompressedSize64 > uint64(remaining) {
+			return nil, errors.New("xlsx 解压后超过 128 MB，请删除无关工作表和空白格式区域，或拆分后导入")
 		}
 		rc, err := f.Open()
 		if err != nil {
 			return nil, err
 		}
 		defer rc.Close()
-		return io.ReadAll(rc)
+		data, err := io.ReadAll(io.LimitReader(rc, remaining+1))
+		if int64(len(data)) > remaining {
+			return nil, errors.New("xlsx 解压后超过 128 MB，请拆分后导入")
+		}
+		remaining -= int64(len(data))
+		return data, err
 	}
 
 	var shared []string
-	if b, err := read("xl/sharedStrings.xml"); err == nil {
+	if _, ok := files["xl/sharedStrings.xml"]; ok {
+		b, err := read("xl/sharedStrings.xml")
+		if err != nil {
+			return nil, err
+		}
 		var sst struct {
 			Items []xlsxText `xml:"si"`
 		}
@@ -70,7 +86,11 @@ func readXLSX(data []byte) ([]xlsxSheet, error) {
 		return nil, err
 	}
 	targets := map[string]string{}
-	if b, err := read("xl/_rels/workbook.xml.rels"); err == nil {
+	if _, ok := files["xl/_rels/workbook.xml.rels"]; ok {
+		b, err := read("xl/_rels/workbook.xml.rels")
+		if err != nil {
+			return nil, err
+		}
 		var rels struct {
 			Rels []struct {
 				ID     string `xml:"Id,attr"`
@@ -128,30 +148,54 @@ func (x xlsxText) text() string {
 }
 
 func parseSheet(b []byte, shared []string) ([][]string, error) {
-	var ws struct {
-		Rows []struct {
+	// 按行解码，不在内存里保留所有单元格的 XML 对象。
+	decoder := xml.NewDecoder(bytes.NewReader(b))
+	inData := false
+	cells := 0
+	var rows [][]string
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if end, ok := token.(xml.EndElement); ok && end.Name.Local == "sheetData" {
+			inData = false
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		if start.Name.Local == "sheetData" {
+			inData = true
+		}
+		if !inData || start.Name.Local != "row" {
+			continue
+		}
+		var r struct {
 			Cells []struct {
 				Ref    string   `xml:"r,attr"`
 				Type   string   `xml:"t,attr"`
 				Value  string   `xml:"v"`
 				Inline xlsxText `xml:"is"`
 			} `xml:"c"`
-		} `xml:"sheetData>row"`
-	}
-	if err := xml.Unmarshal(b, &ws); err != nil {
-		return nil, err
-	}
-	var rows [][]string
-	for _, r := range ws.Rows {
+		}
+		if err := decoder.DecodeElement(&r, &start); err != nil {
+			return nil, err
+		}
 		var row []string
+		nextCol := 0
 		for _, c := range r.Cells {
-			col := len(row)
+			col := nextCol
 			if c.Ref != "" {
 				col = colIndex(c.Ref) // 空单元格不写进文件，按引用补齐
 			}
-			for len(row) <= col {
-				row = append(row, "")
+			if col < 0 || col >= 16384 {
+				return nil, fmt.Errorf("单元格引用 %q 无效", c.Ref)
 			}
+			nextCol = col + 1
 			v := c.Value
 			switch c.Type {
 			case "s":
@@ -168,9 +212,22 @@ func parseSheet(b []byte, shared []string) ([][]string, error) {
 					v = strconv.FormatFloat(f, 'f', -1, 64)
 				}
 			}
+			// Excel 会为末列或整张表的空白区域写格式，不能因此填充巨大的空数组。
+			if strings.TrimSpace(v) == "" {
+				continue
+			}
+			if col >= len(row) {
+				if cells+col+1 > maxXLSXCells {
+					return nil, errors.New("工作表有效单元格区域过大，请删除无关列或拆分后导入")
+				}
+				row = append(row, make([]string, col+1-len(row))...)
+			}
 			row[col] = v
 		}
-		rows = append(rows, row)
+		if len(row) > 0 {
+			cells += len(row)
+			rows = append(rows, row)
+		}
 	}
 	return rows, nil
 }
@@ -183,6 +240,9 @@ func colIndex(ref string) int {
 			break
 		}
 		n = n*26 + int(ch-'A'+1)
+		if n > 16384 {
+			return -1
+		}
 	}
 	return n - 1
 }

@@ -109,15 +109,17 @@ type session struct {
 	recID  int64 // 报文数据库里的会话 ID，0 表示没有记录
 
 	// 连接保持（link.go）。link 由收发回调读，其余只在界面线程读写
-	target     string // TCP 类的重连地址
-	link       atomic.Pointer[linkState]
-	lost       *lossEvent // 断开还没恢复时不为 nil
-	losses     []lossEvent
-	reconnects int
-	tries      int // 本轮重连已尝试次数，仅显示
-	backoff    int // 下次重连从第几档退避开始
-	retryAt    time.Time
-	dialErr    string
+	target          string // TCP 类的重连地址
+	link            atomic.Pointer[linkState]
+	lost            *lossEvent // 断开还没恢复时不为 nil
+	losses          []lossEvent
+	reconnects      int
+	tries           int // 本轮重连已尝试次数，仅显示
+	backoff         int // 下次重连从第几档退避开始
+	retryAt         time.Time
+	dialErr         string
+	reconnectCancel context.CancelFunc // 检测独占 TCP 时取消常规重连，不关闭模拟器或会话
+	reconnectDone   <-chan struct{}    // 等临时重连 socket 释放后才建立检测连接
 }
 
 func (s *session) close() {
@@ -191,7 +193,7 @@ func (ws *Workspace) reconnect() {
 }
 
 func (ws *Workspace) connect() {
-	if ws.connecting || ws.session != nil {
+	if ws.connecting || ws.session != nil || ws.probeRunning {
 		return // 菜单快捷键在连接过程中也能触发，不能开出第二条连接
 	}
 	cfg, err := ws.connConfig()
@@ -258,6 +260,9 @@ func (ws *Workspace) connect() {
 }
 
 func (ws *Workspace) disconnect() {
+	if ws.probeCancel != nil {
+		ws.probeCancel()
+	}
 	s := ws.session
 	if s == nil {
 		return

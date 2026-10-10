@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -185,24 +187,80 @@ func (ws *Workspace) setPoints(pts pointTable) {
 
 // importPoints 导入点表：本程序的 CSV / xlsx 点表，或物联网平台导出的设备属性表（xlsx / CSV）。
 func (ws *Workspace) importPoints() {
+	if ws.importTask != nil {
+		return
+	}
 	d := dialog.NewFileOpen(func(rc fyne.URIReadCloser, err error) {
 		if err != nil || rc == nil {
 			return
 		}
-		defer rc.Close()
-		data, err := io.ReadAll(rc)
-		var imp pointImport
-		if err == nil {
-			imp, err = parsePointsFile(rc.URI().Name(), data)
-		}
-		if err != nil {
-			dialog.ShowError(fmt.Errorf("导入点表失败：%w", err), ws.win)
-			return
-		}
-		ws.showImportResult(ws.applyImport(imp))
+		ws.startPointImport(rc)
 	}, ws.win)
 	d.SetFilter(storage.NewExtensionFileFilter([]string{".csv", ".xlsx"}))
 	d.Show()
+}
+
+const maxPointFileBytes = 64 << 20
+const maxImportWindows = 16
+
+type pointImportTask struct{ cancel context.CancelFunc }
+
+// startPointImport 读文件和解析都在后台执行，取消后丢弃结果，保留原点表。
+func (ws *Workspace) startPointImport(rc fyne.URIReadCloser) {
+	if ws.closed || ws.importTask != nil {
+		go rc.Close()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	task := &pointImportTask{cancel: cancel}
+	ws.importTask = task
+	name := rc.URI().Name()
+	label := widget.NewLabel("正在读取点表：" + name)
+	label.Wrapping = fyne.TextWrapWord
+	dlg := dialog.NewCustom("导入点表", "取消", container.NewVBox(label, widget.NewProgressBarInfinite()), ws.win)
+	dlg.SetOnClosed(func() {
+		cancel()
+		if ws.importTask == task {
+			ws.importTask = nil
+		}
+	})
+	dlg.Show()
+	closeReader := sync.OnceFunc(func() { _ = rc.Close() })
+	go func() {
+		stopClose := context.AfterFunc(ctx, closeReader)
+		defer stopClose()
+		defer closeReader()
+		data, err := io.ReadAll(io.LimitReader(rc, maxPointFileBytes+1))
+		var imp pointImport
+		if err == nil && len(data) > maxPointFileBytes {
+			err = fmt.Errorf("点表文件超过 64 MB，请拆分后导入")
+		}
+		if err == nil && ctx.Err() == nil {
+			uiDo(func() {
+				if ws.importTask == task && !ws.closed && ctx.Err() == nil {
+					label.SetText("正在解析点表：" + name + "（可取消）")
+				}
+			})
+			imp, err = parsePointsFile(name, data)
+		}
+		uiDo(func() {
+			defer cancel()
+			if ws.closed || ws.importTask != task {
+				return
+			}
+			ws.importTask = nil
+			cancelled := ctx.Err() != nil
+			dlg.Hide()
+			if cancelled {
+				return
+			}
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("导入点表失败：%w", err), ws.win)
+				return
+			}
+			ws.showImportResult(ws.applyImport(imp))
+		})
+	}()
 }
 
 // applyImport 换上导入的点表，已有读取窗口改成按点表显示；没有被完整覆盖的点自动补建窗口。
@@ -232,12 +290,17 @@ func (ws *Workspace) applyImport(imp pointImport) string {
 		}
 	}
 	var spans []string
-	for _, d := range defsForPoints(missing) {
+	defs := defsForPoints(missing)
+	count := min(len(defs), max(0, maxImportWindows-len(ws.windows)))
+	for _, d := range defs[:count] {
 		if len(ws.windows) > 0 {
 			d.Slave = ws.windows[0].def.Slave // 补建的窗口沿用已有窗口的站号，点表一般对应同一台设备
 		}
 		ws.addWindow(d)
 		spans = append(spans, refSpan(d.area(), d.Start, d.Qty))
+	}
+	if remaining := len(defs) - count; remaining > 0 {
+		lines = append(lines, fmt.Sprintf("还有 %d 个读取范围未自动建窗，完整点表已保留。为保持界面响应，自动建窗最多补到 %d 个；其余范围可在读取窗口的“定义”中调整，或用“检测寄存器 → 按点表分段”检测全部点。", remaining, maxImportWindows))
 	}
 	if len(spans) > 0 {
 		lines = append(lines, "按点表新建了读取窗口："+strings.Join(spans, "、")+"。")

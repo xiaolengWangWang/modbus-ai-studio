@@ -63,7 +63,7 @@ func pointProbeDef(pts pointTable, d readDef) (readDef, []probeSegment, bool) {
 // probeRead 读一段并归类：可读 1，异常 02（非法地址）-1，超时或网关 0B -3，其他异常码 -2。
 // 连接错误、校验错误和 RTU / ASCII 超时返回错误，检测停止：RTU / ASCII 没有事务编号，超时后接着发，
 // 会把迟到的响应算到别的地址上。
-func probeRead(ctx context.Context, c *modbus.Client, d readDef, start, n int) (int8, error) {
+func probeRead(ctx context.Context, c probeClient, d readDef, start, n int) (int8, error) {
 	_, err := c.Do(ctx, modbus.Request{Slave: d.Slave, Function: d.Function, Address: d.Start + uint16(start), Quantity: uint16(n)})
 	ex, isEx := modbus.AsException(err)
 	span := refSpan(d.area(), d.Start+uint16(start), n)
@@ -72,6 +72,8 @@ func probeRead(ctx context.Context, c *modbus.Client, d readDef, start, n int) (
 		return 1, nil
 	case ctx.Err() != nil:
 		return 0, ctx.Err()
+	case errors.Is(err, errProbeUnstable):
+		return -2, nil
 	case errors.Is(err, modbus.ErrTimeout) && c.Mode() != modbus.ModeTCP:
 		return -2, fmt.Errorf("%s 请求超时；RTU/ASCII 无事务编号，已停止以免将迟到响应归到其他地址。请增大超时并重新连接后检测", span)
 	case isEx && ex.Code == modbus.ExceptionIllegalDataAddress:
@@ -86,14 +88,10 @@ func probeRead(ctx context.Context, c *modbus.Client, d readDef, start, n int) (
 
 // probeUnits 按检测方式读：逐个寄存器时每个地址单独读一次；按点表分段时一段读一次，读不通的段逐点再读，
 // 找出是哪个点。异常码不中断检测。结果和 probe 一样按地址标记，不在点表里的地址保持 0。
-func probeUnits(ctx context.Context, c *modbus.Client, d readDef, mode probeMode, segs []probeSegment, progress func(int)) ([]int8, error) {
+func probeUnits(ctx context.Context, c probeClient, d readDef, mode probeMode, segs []probeSegment, progress func(int)) ([]int8, error) {
 	res := make([]int8, d.Qty)
 	done := 0
-	read := func(start, n int) (int8, error) {
-		if ctx.Err() != nil {
-			return 0, ctx.Err()
-		}
-		state, err := probeRead(ctx, c, d, start, n)
+	mark := func(start, n int, state int8) {
 		if state != 0 {
 			for i := start; i < start+n; i++ {
 				if res[i] == 0 {
@@ -103,6 +101,13 @@ func probeUnits(ctx context.Context, c *modbus.Client, d readDef, mode probeMode
 			}
 			progress(done)
 		}
+	}
+	read := func(start, n int) (int8, error) {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		state, err := probeRead(ctx, c, d, start, n)
+		mark(start, n, state)
 		return state, err
 	}
 	stop := func(err error) ([]int8, error) {
@@ -120,9 +125,17 @@ func probeUnits(ctx context.Context, c *modbus.Client, d readDef, mode probeMode
 		return res, nil
 	}
 	for i := range segs {
+		if ctx.Err() != nil {
+			return stop(ctx.Err())
+		}
 		s := &segs[i]
-		state, err := read(s.start, s.n)
+		state, err := probeRead(ctx, c, d, s.start, s.n)
 		s.state = state
+		// 整段失败不能证明每个点都失败。需要逐点复核的段保持未检测，
+		// 只有点的读取完成后才记录结论和进度，停止时不沿用整段异常。
+		if state == 1 || len(s.points) == 1 || err != nil {
+			mark(s.start, s.n, state)
+		}
 		if err != nil {
 			return stop(err)
 		}
@@ -142,7 +155,7 @@ func probeUnits(ctx context.Context, c *modbus.Client, d readDef, mode probeMode
 // address responses, and falls back to single reads for other batch failures.
 // 1 可读，-1 单地址异常 02，-2 其他错误，-3 超时/网关 0B，0 未检测。
 // TCP 单地址未响应继续检测；无事务编号的协议超时后停止，避免错认迟到响应。
-func probe(ctx context.Context, c *modbus.Client, d readDef, progress func(int), recheck ...func(int)) ([]int8, error) {
+func probe(ctx context.Context, c probeClient, d readDef, progress func(int), recheck ...func(int)) ([]int8, error) {
 	if err := validateProbeDef(d); err != nil {
 		return nil, err
 	}
@@ -202,6 +215,8 @@ func probe(ctx context.Context, c *modbus.Client, d readDef, progress func(int),
 			mark(start, n, -1)
 		case errors.Is(err, modbus.ErrTimeout) || isEx && ex.Code == modbus.ExceptionGatewayTargetFailed:
 			mark(start, n, -3)
+		case errors.Is(err, errProbeUnstable):
+			mark(start, n, -2)
 		default:
 			mark(start, n, -2)
 			return fmt.Errorf("%s %s", refSpan(d.area(), d.Start+uint16(start), n), errSummary(err))

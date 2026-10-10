@@ -48,7 +48,7 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 
 Linux 版目前没有专用代码和安装包：同一份代码可以在 Linux 上编译运行（见 [从源码编译](#从源码编译)），持续集成里每次都测。编译输出在 `dist/`、`bin/`，不进仓库。
 
-寄存器检测按职责集中在 `internal/ui/` 的四个文件：`registerprobe.go` 管理参数表单、进度和轮询暂停恢复；`registerprobe_scan.go` 执行批量检测、异常地址定位和超时复核；`registerprobe_result.go` 展示统计、具体地址并处理复制和应用范围；`registerprobe_test.go` 保留协议、地址缺口与界面的回归测试。`scan.go` 负责从站、串口参数扫描和通信诊断计数器。
+寄存器检测集中在 `internal/ui/`：`registerprobe.go` 管理参数表单、进度和轮询暂停恢复；`registerprobe_connection.go` 管理独立检测连接、断线重连与请求重试；`registerprobe_scan.go` 执行批量检测、异常地址定位和超时复核；`registerprobe_result.go` 展示统计、具体地址并处理复制和应用范围。`registerprobe_test.go` 和 `robustness_test.go` 覆盖协议、点表分段、断线重连与检测状态恢复；`import_load_test.go` 覆盖 1000 点 CSV / XLSX 的后台导入与建窗数量。`scan.go` 负责从站、串口参数扫描和通信诊断计数器。
 
 AI 界面由 `ai.go` 管理设置、来源、异步请求与取消；`ai_context.go` 在界面线程复制冻结证据并校验日志帧，`ai_report.go` 用纯文本显示报告并导出冻结证据。`ai_test.go` 和 `ai_workflow_test.go` 覆盖隐私默认值、快照不可变、最小连接测试、来源切换、无效帧、未知历史字段、报告导出、取消 / 关闭、重试保留上次报告、范围数量匹配和亚毫秒延迟。`internal/ai/client_test.go` 使用本地 HTTP 测试服务验证请求、证据引用、错误、重定向、超时及大小边界；CI 不需要实际 API Key，不请求外部模型。调试截图的 AI 报告使用本地合成响应。
 
@@ -60,8 +60,8 @@ AI 界面由 `ai.go` 管理设置、来源、异步请求与取消；`ai_context
 
 ```sh
 go run ./cmd/modbus-ai              # 运行桌面应用（启动时为空；“读取 → 打开换热站示例”加载示例并连接内置模拟器）
-VERSION=1.0.0 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
-VERSION=1.0.0 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
+VERSION=1.0.2 build/macos.sh       # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG
+VERSION=1.0.2 build/windows.sh     # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
 
 go build -o bin/ ./cmd/...
 

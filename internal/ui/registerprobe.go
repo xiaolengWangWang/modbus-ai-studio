@@ -48,8 +48,8 @@ func (ws *Workspace) registerProbeDialog() {
 	if ws.probeRunning {
 		return
 	}
-	if ws.session == nil {
-		dialog.ShowError(errors.New("先连接，再检测寄存器"), ws.win)
+	if _, err := ws.probeConfig(); err != nil {
+		dialog.ShowError(err, ws.win)
 		return
 	}
 	d := defaultDef()
@@ -64,7 +64,11 @@ func (ws *Workspace) registerProbeDialog() {
 	fn := widget.NewSelect(names, nil)
 	fn.SetSelected(d.Function.String())
 	mode := widget.NewSelect(probeModeNames, nil)
-	mode.SetSelected(probeModeNames[probeAuto])
+	initialMode := probeAuto
+	if _, _, ok := pointProbeDef(ws.points, d); ok {
+		initialMode = probePoints
+	}
+	mode.SetSelected(probeModeNames[initialMode])
 	modeOf := func() probeMode { return probeMode(max(0, slices.Index(probeModeNames, mode.Selected))) }
 	preview := widget.NewLabel("")
 	preview.Wrapping = fyne.TextWrapWord
@@ -138,7 +142,7 @@ func (ws *Workspace) registerProbeDialog() {
 		addr.Validate()
 		qty.Validate()
 	}
-	validate("")
+	mode.OnChanged(mode.Selected)
 	items := []*widget.FormItem{
 		widget.NewFormItem("Slave ID", slave),
 		widget.NewFormItem("功能码", fn),
@@ -168,12 +172,13 @@ func (ws *Workspace) runRegisterProbe(w *readWindow, d readDef) {
 
 // runRegisterProbeMode 按检测方式检测 d；按点表分段时 segs 是各段。检测期间暂停这个连接上的轮询。
 func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMode, segs []probeSegment) {
-	if ws.probeRunning {
+	if ws.probeRunning || ws.closed {
 		return
 	}
 	s := ws.session
-	if s == nil {
-		dialog.ShowError(errors.New("先连接，再检测寄存器"), ws.win)
+	cfg, err := ws.probeConfig()
+	if err != nil {
+		dialog.ShowError(err, ws.win)
 		return
 	}
 	if err := validateProbeDef(d); err != nil {
@@ -190,8 +195,26 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 			x.setPaused(true)
 		}
 	}
+	parent := context.Background()
+	var reconnectDone <-chan struct{}
+	if s != nil {
+		parent = s.ctx
+		if !cfg.mode.Serial() {
+			reconnectDone = s.reconnectDone
+			if s.reconnectCancel != nil {
+				s.reconnectCancel()
+			}
+			s.client.Close()
+		}
+	}
+	ctx, cancel := context.WithCancel(parent)
+	ws.probeCancel = cancel
+	if s == nil {
+		ws.setInputsEnabled(false)
+		ws.timeoutE.Disable()
+		ws.connBtn.Disable()
+	}
 	ws.refreshStatus()
-	ctx, cancel := context.WithCancel(s.ctx)
 	total := d.Qty // 进度按寄存器数；按点表分段时只算点占的寄存器
 	if mode == probePoints {
 		total = 0
@@ -217,10 +240,18 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 	dlg.Show()
 	go func() {
 		defer cancel()
+		if reconnectDone != nil {
+			select {
+			case <-reconnectDone:
+			case <-ctx.Done():
+			}
+		}
 		rechecking := false
+		lastProgress := 0 // 以下状态只在 UI 线程读写。
 		progress := func(n int) {
 			uiDo(func() {
 				if !ws.closed && ctx.Err() == nil && !rechecking {
+					lastProgress = n
 					prog.SetValue(float64(n))
 					text := fmt.Sprintf("已检测 %d / %d", n, total)
 					if mode != probePoints { // 分段检测不按地址顺序推进，不显示当前地址
@@ -232,8 +263,31 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 		}
 		var res []int8
 		var stopErr error
+		waiting := func(waiting bool) {
+			uiDo(func() {
+				if ws.closed || ctx.Err() != nil {
+					return
+				}
+				if waiting {
+					now.SetText(fmt.Sprintf("已检测 %d / %d · 设备离线，等待自动重连…（可停止）", lastProgress, total))
+				} else if rechecking {
+					now.SetText("连接已恢复，继续复核未响应地址…")
+				} else {
+					now.SetText(fmt.Sprintf("已检测 %d / %d · 连接已恢复，继续检测…", lastProgress, total))
+				}
+			})
+		}
+		var client probeClient
+		var network *networkProbeClient
+		if cfg.mode.Serial() {
+			client = &sessionProbeClient{ws: ws, session: s, waiting: waiting}
+		} else {
+			network = &networkProbeClient{cfg: cfg, observer: ws, waiting: waiting}
+			defer network.close()
+			client = network
+		}
 		if mode == probeAuto {
-			res, stopErr = probe(ctx, s.client, d, progress, func(offset int) {
+			res, stopErr = probe(ctx, client, d, progress, func(offset int) {
 				uiDo(func() {
 					if !ws.closed && ctx.Err() == nil {
 						rechecking = true
@@ -242,16 +296,28 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 				})
 			})
 		} else {
-			res, stopErr = probeUnits(ctx, s.client, d, mode, segs, progress)
+			res, stopErr = probeUnits(ctx, client, d, mode, segs, progress)
 		}
 		if ctx.Err() != nil && stopErr == nil {
 			stopErr = context.Canceled
 		}
+		if network != nil {
+			network.close()
+		}
 		uiDo(func() {
 			dlg.Hide()
 			ws.probeRunning = false
+			ws.probeCancel = nil
+			if network != nil {
+				ws.restoreProbeSession(s)
+			}
 			if ws.closed {
 				return
+			}
+			if ws.session == nil {
+				ws.setInputsEnabled(true)
+				ws.timeoutE.Enable()
+				ws.connBtn.Enable()
 			}
 			for _, x := range resume {
 				if slices.Contains(ws.windows, x) {

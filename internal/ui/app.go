@@ -36,6 +36,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -94,8 +95,10 @@ type Workspace struct {
 
 	session      *session
 	connecting   bool
-	connErr      string       // 上次连接失败的原因，重试时清空。
-	probeRunning bool         // 检测及停止清理期间，同一工作区只允许一次检测
+	connErr      string // 上次连接失败的原因，重试时清空。
+	probeRunning bool   // 检测及停止清理期间，同一工作区只允许一次检测
+	probeCancel  context.CancelFunc
+	importTask   *pointImportTask
 	recID        atomic.Int64 // 正在记录的会话 ID，收发回调里读；0 表示不记录
 	points       pointTable   // 本窗口的点表，初始为空
 	readOnly     bool         // 只读模式，禁止一切写入（readonly.go）
@@ -237,6 +240,13 @@ func (ws *Workspace) stop() {
 		return
 	}
 	ws.closed = true
+	if ws.probeCancel != nil {
+		ws.probeCancel()
+	}
+	if ws.importTask != nil {
+		ws.importTask.cancel()
+		ws.importTask = nil
+	}
 	if ws.ai != nil {
 		ws.ai.cancelRequest()
 	}

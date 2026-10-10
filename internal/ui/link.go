@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -190,20 +191,22 @@ func probeClosed(t modbus.Transport, wait time.Duration) (time.Duration, error) 
 }
 
 // onPacket 是每条连接自己的收发回调：除了公共处理，还跟踪连接活动，第一次出现连接错误时交给界面线程处理断开。
-func (ws *Workspace) onPacket(s *session, p modbus.Packet) {
+func (ws *Workspace) onPacket(s *session, l *linkState, p modbus.Packet) {
 	ws.OnPacket(p)
-	if l := s.link.Load(); l != nil && l.observe(p) {
+	if l != nil && l.observe(p) {
 		uiDo(func() { ws.connLost(s, l, p) })
 	}
 }
 
 func (ws *Workspace) clientOptions(s *session, timeout time.Duration) modbus.Options {
-	return modbus.Options{Mode: s.mode, Timeout: timeout, Observer: modbus.ObserverFunc(func(p modbus.Packet) { ws.onPacket(s, p) })}
+	// 每个客户端绑定创建时的 link；旧客户端的迟到错误不能污染恢复后的连接。
+	l := s.link.Load()
+	return modbus.Options{Mode: s.mode, Timeout: timeout, Observer: modbus.ObserverFunc(func(p modbus.Packet) { ws.onPacket(s, l, p) })}
 }
 
 // connLost 处理一次断开：停止轮询（不再刷连接错误），分析原因，TCP 类自动重连。p 是第一条连接错误。
 func (ws *Workspace) connLost(s *session, l *linkState, p modbus.Packet) {
-	if ws.session != s || s.link.Load() != l || s.lost != nil {
+	if ws.session != s || s.link.Load() != l || s.lost != nil || ws.probeRunning && !s.mode.Serial() {
 		return // 旧连接迟到的回调
 	}
 	e := classifyLoss(s.mode, l, p.Err)
@@ -218,7 +221,7 @@ func (ws *Workspace) connLost(s *session, l *linkState, p modbus.Packet) {
 		if e.uptime >= stableFor {
 			start = 0
 		}
-		go ws.reconnectLoop(s, start)
+		ws.startReconnect(s, start)
 	}
 	ws.refreshAll()
 }
@@ -250,21 +253,41 @@ func (ws *Workspace) refreshAll() {
 }
 
 // reconnectLoop 按 1 / 2 / 5 / 10 s 退避重连，直到成功或用户断开。连上后先探一下是不是马上被关。
-func (ws *Workspace) reconnectLoop(s *session, attempt int) {
+func (ws *Workspace) startReconnect(s *session, attempt int) {
+	if s.reconnectCancel != nil {
+		s.reconnectCancel()
+	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	s.reconnectCancel = cancel
+	done := make(chan struct{})
+	s.reconnectDone = done
+	go func() {
+		defer close(done)
+		ws.reconnectLoop(ctx, s, attempt)
+	}()
+}
+
+func (ws *Workspace) reconnectLoop(ctx context.Context, s *session, attempt int) {
 	for ; ; attempt++ {
+		if ctx.Err() != nil {
+			return
+		}
 		d := reconnectDelays[min(attempt, len(reconnectDelays)-1)]
 		uiDo(func() {
+			if ctx.Err() != nil || ws.session != s {
+				return
+			}
 			s.tries++
 			s.retryAt = time.Now().Add(d)
 			ws.refreshStatus()
 		})
 		select {
-		case <-s.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-time.After(d):
 		}
-		t, err := transport.DialTCP(s.ctx, s.target, 3*time.Second)
-		if s.ctx.Err() != nil {
+		t, err := transport.DialTCP(ctx, s.target, 3*time.Second)
+		if ctx.Err() != nil {
 			if err == nil {
 				t.Close()
 			}
@@ -273,6 +296,9 @@ func (ws *Workspace) reconnectLoop(s *session, attempt int) {
 		if err != nil {
 			msg := dialErrText(err)
 			uiDo(func() {
+				if ctx.Err() != nil || ws.session != s {
+					return
+				}
 				if msg != s.dialErr && ws.session == s { // 同样的失败只记第一次
 					cfg := connConfig{mode: s.mode, target: s.target}
 					ws.addLog(newLogEntry(recorder.EventConnectFail, 0, fmt.Sprintf("第 %d 次重连失败 · %s", s.tries, msg),
@@ -283,18 +309,37 @@ func (ws *Workspace) reconnectLoop(s *session, attempt int) {
 			})
 			continue
 		}
-		if after, err := probeClosed(t, acceptProbe); err != nil {
+		closed := make(chan struct{})
+		stop := context.AfterFunc(ctx, func() { t.Close(); close(closed) })
+		after, err := probeClosed(t, acceptProbe)
+		if !stop() {
+			<-closed
+		}
+		if ctx.Err() != nil {
+			t.Close()
+			return
+		}
+		if err != nil {
 			e := lossEvent{at: time.Now(), kind: lossOnConnect, uptime: after, close: closeKindOf(err), err: err.Error(), addrs: connAddrs(t)}
 			t.Close()
 			uiDo(func() {
-				if ws.session == s {
+				if ws.session == s && ctx.Err() == nil {
 					ws.addLoss(s, e)
 					ws.refreshAll()
 				}
 			})
 			continue
 		}
-		uiDo(func() { ws.relink(s, t, attempt) })
+		applied := make(chan struct{})
+		uiDo(func() {
+			defer close(applied)
+			if ctx.Err() != nil {
+				t.Close()
+				return
+			}
+			ws.relink(s, t, attempt)
+		})
+		<-applied
 		return
 	}
 }

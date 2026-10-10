@@ -326,6 +326,9 @@ func TestRegisterProbeDialogDefaultsRangeAndCopy(t *testing.T) {
 		}
 	})
 	waitFor(t, 15*time.Second, "scan result", func() bool { return strings.Contains(overlayText(ws), "非法地址（125") })
+	waitFor(t, 5*time.Second, "original polling connection restored", func() bool {
+		return ws.session != nil && ws.session.lost == nil && paused.stateLbl.Text == "已暂停"
+	})
 	locked(func() {
 		if !paused.paused || running.paused {
 			t.Error("Detection must restore each window's original pause state")
@@ -493,14 +496,62 @@ func TestProbeByPointSegments(t *testing.T) {
 			sent++
 		}
 	}), 6) // 设备只有 0–5：第二段（5–7）读不通，“回水温度”跨到 6、“频率”在 7，都无效
-	res, err := probeUnits(context.Background(), c, d, probePoints, segs, func(int) {})
+	var progress []int
+	res, err := probeUnits(context.Background(), c, d, probePoints, segs, func(n int) { progress = append(progress, n) })
 	if err != nil || fmt.Sprint(res) != "[1 1 1 0 0 -1 -1 -1]" || sent != 4 || segs[0].state != 1 || segs[1].state != -1 {
 		t.Fatalf("按段检测：%v，发了 %d 条，段 %d %d，%v", res, sent, segs[0].state, segs[1].state, err)
+	}
+	if fmt.Sprint(progress) != "[3 5 6]" {
+		t.Errorf("失败段的进度应随逐点复核推进，到全部确认才完成：%v", progress)
 	}
 	text, summary, bad := pointProbeText(d, res, segs)
 	if bad != 2 || !strings.Contains(text, "40006 回水温度（FLOAT32）：非法地址") || !strings.Contains(text, "40008 频率（UINT16）：非法地址") ||
 		!strings.Contains(text, "40001–40003（2 个点）：整段可读") || !strings.Contains(summary, "4 个点：可读 2") {
 		t.Errorf("结果：%s\n%s", summary, text)
+	}
+}
+
+// 整段异常后中途停止：未逐点复核的点必须保持未检测。
+func TestProbeByPointSegmentsCancellationKeepsUnverifiedPointsUntested(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		stopAfter    int
+		wantStates   string
+		wantProgress string
+		wantBad      int
+		wantUntested string
+	}{
+		{"after-readable-point", 2, "[1 1 0 0 0]", "[2]", 0, "未检测 2"},
+		{"after-illegal-point", 4, "[1 1 -1 -1 0]", "[2 4]", 1, "未检测 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pts := newPointTable([]point{
+				{Area: modbus.AreaHoldingRegisters, Offset: 0, Name: "温度", Type: modbus.TypeFloat32},
+				{Area: modbus.AreaHoldingRegisters, Offset: 2, Name: "压力", Type: modbus.TypeFloat32},
+				{Area: modbus.AreaHoldingRegisters, Offset: 4, Name: "状态", Type: modbus.TypeUint16},
+			})
+			d, segs, _ := pointProbeDef(pts, readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters})
+			c := registerProbeClient(t, modbus.ModeTCP, simulator.Faults{}, nil, 2)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var progress []int
+			res, err := probeUnits(ctx, c, d, probePoints, segs, func(n int) {
+				progress = append(progress, n)
+				if n >= tc.stopAfter {
+					cancel()
+				}
+			})
+			if err != nil || fmt.Sprint(res) != tc.wantStates {
+				t.Fatalf("停止应保留已确认可读的点，其余点未检测，不能沿用整段异常：%v, %v", res, err)
+			}
+			if fmt.Sprint(progress) != tc.wantProgress {
+				t.Errorf("进度应只统计已完成确认的寄存器：%v", progress)
+			}
+			text, summary, bad := pointProbeText(d, res, segs)
+			if bad != tc.wantBad || !strings.Contains(summary, "可读 1") || !strings.Contains(summary, tc.wantUntested) || strings.Contains(text, "状态（UINT16）：非法地址") {
+				t.Fatalf("停止后的点位报告不应把未复核点算作非法地址：%s\n%s", summary, text)
+			}
+		})
 	}
 }
 
@@ -521,7 +572,7 @@ func TestRegisterProbeDialogModes(t *testing.T) {
 					mode = x
 				}
 			case *widget.Label:
-				if strings.Contains(x.Text, "Offset 从 0 起始") {
+				if strings.Contains(x.Text, "Offset 从 0 起始") || strings.Contains(x.Text, "按点表分段：") {
 					preview = x
 				}
 			case *widget.Entry:
@@ -530,6 +581,9 @@ func TestRegisterProbeDialogModes(t *testing.T) {
 		})
 		if mode == nil || preview == nil || len(entries) != 3 {
 			t.Fatalf("检测对话框缺少检测方式或说明：%v %v %d", mode, preview, len(entries))
+		}
+		if mode.Selected != probeModeNames[probePoints] || !entries[1].Disabled() || !entries[2].Disabled() {
+			t.Error("已有点表时应默认检测全部点表分段")
 		}
 		mode.SetSelected(probeModeNames[probePoints])
 		if !entries[1].Disabled() || !entries[2].Disabled() || !strings.Contains(preview.Text, "按点表分段") || !strings.Contains(preview.Text, "个点") {
