@@ -1,4 +1,5 @@
-// release 在本机发版：等 GitHub Actions 测试和打包，下载并核对三个安装包，发布到 GitHub 和 Gitee，再核对发布结果。
+// release 在本机发版：等 GitHub Actions 测试和打包，下载并核对桌面版三个安装包和 Linux Web 版两个包，
+// 发布到 GitHub 和 Gitee，再核对发布结果。
 // 版本号取自 cmd/modbus-ai/main.go，发布说明取自 dist/release-<版本>-summary.md（第一行“# Modbus AI Studio <版本>”）。
 //
 //	go run ./build/release prepare  # 等测试通过、打包，下载并核对安装包，生成带 SHA-256 的发布说明
@@ -116,7 +117,7 @@ func (r *release) file(suffix string) string {
 	return filepath.Join(r.dist, "release-"+r.version+suffix)
 }
 
-// prepare 确认要发布的提交已推送、版本号递增，等 CI 测试通过并打包，下载核对三个安装包，生成发布说明。
+// prepare 确认要发布的提交已推送、版本号递增，等 CI 测试通过并打包，下载核对全部安装包，生成发布说明。
 func (r *release) prepare(ctx context.Context) error {
 	summary, err := r.summary()
 	if err != nil {
@@ -295,7 +296,7 @@ func (r *release) verify(ctx context.Context) error {
 	if err := r.downloadGitee(ctx, files, m.Assets, dir); err != nil {
 		return err
 	}
-	r.log.Print("Gitee 核对通过：三个安装包下载后的 SHA-256 与 CI 产物一致")
+	r.log.Printf("Gitee 核对通过：%d 个安装包下载后的 SHA-256 与 CI 产物一致", len(m.Assets))
 	var rel update.Release
 	if err := retry(ctx, r.log, "用检查更新代码核对", func() (err error) {
 		if rel, err = update.Latest(ctx); err != nil {
@@ -316,8 +317,8 @@ func (r *release) verify(ctx context.Context) error {
 		"github":      ghRel.HTMLURL,
 		"gitee":       "https://gitee.com/" + update.GiteeRepo + "/releases/tag/" + r.tag,
 		"checks": []string{
-			"GitHub 最新正式版是这个版本，说明一致，三个文件的 SHA-256 摘要与 CI 产物一致",
-			"Gitee 说明一致，三个安装包下载后的 SHA-256 与 CI 产物一致",
+			"GitHub 最新正式版是这个版本，说明一致，全部文件的 SHA-256 摘要与 CI 产物一致",
+			"Gitee 说明一致，全部安装包下载后的 SHA-256 与 CI 产物一致",
 			"检查更新优先查到 Gitee 上的这个版本，三个平台的安装包和校验值一致，GitHub 可备用",
 		},
 		"assets": m.Assets,

@@ -29,6 +29,7 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 |  | `assets/screenshots/` | 文档里的截图，由界面测试生成（见 [测试](#测试)） |
 | 核心代码 | `cmd/modbus-ai/` | 桌面应用入口 |
 |  | `cmd/modbus-cli/`、`cmd/modbus-sim/` | 命令行主站、命令行模拟从站 |
+|  | `cmd/modbus-web/`、`internal/web/` | Linux Web 版：入口和服务端（页面在 `internal/web/static/`，编进程序），见 [Linux Web 版](#linux-web-版) |
 |  | `internal/modbus/` | 协议核心：PDU、MBAP / RTU / ASCII 分帧、客户端、数据类型与字节序、地址解析 |
 |  | `internal/transport/` | TCP 与串口 |
 |  | `internal/detect/` | 协议自动识别 |
@@ -43,10 +44,10 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 |  | `platform/macos/` | `Info.plist` 模板 |
 |  | `platform/windows/` | Windows 绿色版说明模板 `README.txt`，打包时替换版本号、加 UTF-8 BOM 和 CRLF |
 | 文档 | `README.md`、`docs/` | 首页；`guide.md` 使用说明、`points.md` 点表格式、`faq.md` 常见问题、`development.md` 开发与发布 |
-| 打包编译 | `build/` | `macos.sh`（.app 和 DMG）、`windows.sh`（交叉编译绿色版 zip）、`release/`（本机发版工具，见 [打包与发版](#打包与发版)）、`icon/`（图标生成器） |
-|  | `.github/workflows/` | `test.yml` 在 Windows、macOS、Linux 上跑 vet 和全部测试；`package.yml` 打三个安装包（GitHub 规定的位置） |
+| 打包编译 | `build/` | `macos.sh`（.app 和 DMG）、`windows.sh`（交叉编译绿色版 zip）、`linux-web.sh`（Linux Web 版 x64 / ARM64 的 tar.gz）、`release/`（本机发版工具，见 [打包与发版](#打包与发版)）、`icon/`（图标生成器） |
+|  | `.github/workflows/` | `test.yml` 在 Windows、macOS、Linux 上跑 vet 和全部测试；`package.yml` 打桌面版三个安装包和 Linux Web 版两个包（GitHub 规定的位置） |
 
-Linux 版目前没有专用代码和安装包：同一份代码可以在 Linux 上编译运行（见 [从源码编译](#从源码编译)），持续集成里每次都测。编译输出在 `dist/`、`bin/`，不进仓库。
+桌面版没有 Linux 安装包：同一份代码可以在 Linux 上编译运行（见 [从源码编译](#从源码编译)），持续集成里每次都测；Linux 网关和服务器上用 Web 版。编译输出在 `dist/`、`bin/`，不进仓库。
 
 寄存器检测集中在 `internal/ui/`：`registerprobe.go` 管理参数表单、进度和轮询暂停恢复；`registerprobe_connection.go` 管理独立检测连接、断线重连与请求重试；`registerprobe_scan.go` 执行批量检测、异常地址定位和超时复核；`registerprobe_result.go` 展示统计、具体地址并处理复制和应用范围。`registerprobe_test.go` 和 `robustness_test.go` 覆盖协议、点表分段、断线重连与检测状态恢复；`import_load_test.go` 覆盖 1000 点 CSV / XLSX 的后台导入与建窗数量。`scan.go` 负责从站、串口参数扫描和通信诊断计数器。
 
@@ -62,6 +63,8 @@ AI 界面由 `ai.go` 管理设置、来源、异步请求与取消；`ai_context
 go run ./cmd/modbus-ai              # 运行桌面应用（启动时为空；“读取 → 打开换热站示例”加载示例并连接内置模拟器）
 build/macos.sh                      # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG（版本号取自 cmd/modbus-ai/main.go）
 build/windows.sh                    # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
+build/linux-web.sh                  # 编 Linux Web 版 x64 / ARM64 的 tar.gz（不需要 cgo；装了加密软件的电脑上会因说明被加密而停止）
+go run ./cmd/modbus-web -listen 127.0.0.1:8502 -data /tmp/web   # 本机运行 Web 版，终端打印地址和访问口令
 
 go build -o bin/ ./cmd/...
 
@@ -94,7 +97,7 @@ go test -race -count=3 ./...        # 并发与稳定性
 
 ## 打包与发版
 
-`build/macos.sh` 在 macOS 上打 Intel 和 Apple Silicon 两个 .app 和 DMG（ad-hoc 签名，最低 macOS 12）；`build/windows.sh` 在 Linux / macOS 上用 mingw-w64 交叉编译 Windows x64 绿色版 zip（静态链接，只依赖系统 DLL）。Actions 分别使用 Ubuntu 和 macOS runner。
+`build/macos.sh` 在 macOS 上打 Intel 和 Apple Silicon 两个 .app 和 DMG（ad-hoc 签名，最低 macOS 12）；`build/windows.sh` 在 Linux / macOS 上用 mingw-w64 交叉编译 Windows x64 绿色版 zip（静态链接，只依赖系统 DLL）；`build/linux-web.sh` 用 `CGO_ENABLED=0` 编 Linux Web 版 x64 和 ARM64，各打一个 tar.gz（`modbus-web` 加 `README.txt`，打包时写上可执行位）。Actions 分别使用 Ubuntu 和 macOS runner，Web 版和 Windows 版都在 Ubuntu 上打。
 
 Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\ModbusAIStudio\app.log`，每行带进程号，多个实例不会相互覆盖日志；图标资源可用 `go-winres extract` 检查 `GLFW_ICON` 和高 DPI 清单。主窗口默认 1040 × 680 逻辑尺寸，并按屏幕可用区域和 DPI 缩放适配；关闭按钮默认隐藏到托盘，采集继续，托盘菜单退出时关闭本实例全部连接并写完数据库缓冲。界面测试覆盖后台轮询、独立窗口关闭和退出清理，Windows 本机已验证两个进程同时运行及隐藏后保留进程。150% 缩放、16 像素图标和启动速度仍需在不同设备上验证；遇到问题时请附 `app.log`。
 
@@ -104,16 +107,16 @@ Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\Modbus
 2. 写发布说明 `dist/release-x.y.z-summary.md`，第一行 `# Modbus AI Studio x.y.z`；不写 SHA-256 段落。
 3. `go run ./build/release prepare`：
    - 确认 GitHub 上的 main 就是本地 HEAD、版本号比已发布的新，`platform/windows/README.txt` 里有这一版的更新记录（`### x.y.z …` 标题）；
-   - 等 `test` 工作流在三个平台上通过；这个提交还没打过包就触发 `package` 工作流，它在 GitHub Actions 上调用 `build/windows.sh` 和 `build/macos.sh`，本机不需要 macOS 编译环境；macOS runner 排不上、任务被取消时自动重跑；
-   - 下载两个产物，按 GitHub 记录的摘要核对，再逐个检查安装包：DMG 结尾有 koly 块；Windows zip 只有 `ModbusAIStudio.exe` 和 `README.txt`、路径用 `/`，README 是没被加密的 UTF-8 BOM + CRLF 文本、带这一版的更新记录，exe 的文件版本、`GLFW_ICON` 图标和 per monitor v2 高 DPI 清单都在；
+   - 等 `test` 工作流在三个平台上通过；这个提交还没打过包就触发 `package` 工作流，它在 GitHub Actions 上调用 `build/windows.sh`、`build/linux-web.sh` 和 `build/macos.sh`，本机不需要 macOS 编译环境；macOS runner 排不上、任务被取消时自动重跑；
+   - 下载两个产物，按 GitHub 记录的摘要核对，再逐个检查安装包：DMG 结尾有 koly 块；Windows zip 只有 `ModbusAIStudio.exe` 和 `README.txt`、路径用 `/`，README 是没被加密的 UTF-8 BOM + CRLF 文本、带这一版的更新记录，exe 的文件版本、`GLFW_ICON` 图标和 per monitor v2 高 DPI 清单都在；Web 版 tar.gz 只有可执行的 `modbus-web` 和明文 `README.txt`，程序是对应架构（x86-64 / ARM64）的 Linux ELF，说明里有这一版的版本号；
    - 生成 `dist/release-x.y.z.md`（说明末尾加 `## SHA-256` 段落，每行 `校验值  文件名`，自动更新按它校验下载的安装包）、各安装包的 `.sha256` 和记录 `release-x.y.z-assets.json`；Windows 版另解压到 `dist/ModbusAIStudio-x.y.z-Windows-x64/`，可以直接试用。
 4. 看一遍 `dist/release-x.y.z.md`，运行 `go run ./build/release publish`：
-   - 在打包的提交上打 tag，推到 GitHub；建草稿，逐个上传三个安装包（网络慢时一次传完会超时），按 GitHub 算出的摘要核对后发布为最新版；
-   - 把这个提交和 tag 推到 Gitee 镜像，建发行版，上传三个安装包；Gitee 没有草稿，传完之前检查更新会改用 GitHub 上的同一版本；
-   - 核对结果（也可单独运行 `verify`）：两边的说明都与本地一致；不带令牌从 Gitee 下载三个安装包，SHA-256 与 CI 产物一致；用程序自己的检查更新代码确认优先查到 Gitee 上的新版本，三个平台的安装包和校验值都对，GitHub 可作备用下载源；
+   - 在打包的提交上打 tag，推到 GitHub；建草稿，逐个上传五个安装包（网络慢时一次传完会超时），按 GitHub 算出的摘要核对后发布为最新版；
+   - 把这个提交和 tag 推到 Gitee 镜像，建发行版，上传五个安装包；Gitee 没有草稿，传完之前检查更新会改用 GitHub 上的同一版本；
+   - 核对结果（也可单独运行 `verify`）：两边的说明都与本地一致；不带令牌从 Gitee 下载全部安装包，SHA-256 与 CI 产物一致；用程序自己的检查更新代码确认优先查到 Gitee 上的新版本，三个平台的安装包和校验值都对，GitHub 可作备用下载源；
    - 删掉 `dist/` 里旧版本的文件。
 
-安装包文件名不要改：程序检查更新时同时查 Gitee 和 GitHub，按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包。
+安装包文件名不要改：程序检查更新时同时查 Gitee 和 GitHub，按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包。Web 版的包（`ModbusAIStudio-Web-x.y.z-Linux-x64.tar.gz`、`-Linux-arm64.tar.gz`）只随发布上传，检查更新不认它们，Web 版没有自动更新，换新版本时替换程序后重启。
 
 凭据：GitHub 用 git 凭据管理器里推送用的令牌（或环境变量 `GH_TOKEN`）；Gitee 用 `~/.gitee_token` 里的私人令牌（勾选 projects，或环境变量 `GITEE_TOKEN`），推送走 https，由工具回答 git 的用户名和密码提问，令牌不出现在命令行里。
 
@@ -121,11 +124,20 @@ Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\Modbus
 
 发布前会先验证两侧凭据、本地安装包名称与 SHA-256、发布说明中的校验值，再执行推 tag 和远程发布。可以编辑发布正文，校验段必须与核对过的安装包一致。
 
+## Linux Web 版
+
+`modbus-web` 在网关或服务器上运行，用浏览器调试设备。连接、读取表、写入回读、协议识别和报文监视都在服务端执行，页面只负责显示和操作，多个浏览器看到的是同一份状态；状态变化和新报文通过 Server-Sent Events 推给页面，页面重连时带上最后一条报文的序号，服务端补发中间漏掉的。页面、样式和脚本在 `internal/web/static/`，用 `embed` 编进程序，不依赖外部资源。
+
+- 安全：访问口令首次启动时随机生成，存在数据目录的 `web-password`；同一来源 5 分钟内输错 5 次暂时拒绝；写操作只接受 JSON 且 Origin 必须是本站，页面带 CSP。跨网访问用 `-cert` / `-key` 开 HTTPS。
+- 记录：收发报文按天写入数据目录的 `records/packets-YYYYMMDD-NNN.sqlite3`，表结构与桌面版相同，页面上可下载，桌面版的历史记录能直接打开。
+- 编译：不需要 cgo，SQLite 用纯 Go 的 `modernc.org/sqlite`（`internal/recorder/driver_purego.go`），一份静态程序可在任何 Linux 发行版上运行；CI 在 Linux 上用 `CGO_ENABLED=0` 跑 `internal/web` 的测试，与发出去的程序一致。
+- 断线原因判断与桌面版共用 `internal/transport/netcause.go`。
+
 ## SQLite3 存储
 
 应用直接读写标准 SQLite3 文件，不编译或附带 `sqlite3.exe`。会话、报文、日志的字段、压缩标记、索引及兼容规则见 [SQLite3 数据文件与表结构](sqlite-storage.md)。大字段采用无损 zlib 压缩，查询条件保留原样；历史列表先选择最近的会话，再只统计这些会话。数据库迁移和压缩的公共逻辑集中在 `internal/recorder/`，建表定义只保留在 `schema` 一处。
 
-CI 在原有 cgo 测试之外单独验证纯 Go SQLite 驱动：`CGO_ENABLED=0 go test ./internal/recorder`。本机缺少 C 编译器时可用 `go test -tags ci ./...` 运行 Fyne 软件渲染回归；桌面安装包的原生构建仍由三个平台的 CI 检查。
+CI 在原有 cgo 测试之外单独验证纯 Go SQLite 驱动：`CGO_ENABLED=0 go test ./internal/recorder ./internal/web`。本机缺少 C 编译器时可用 `go test -tags ci ./...` 运行 Fyne 软件渲染回归；桌面安装包的原生构建仍由三个平台的 CI 检查。
 
 ## 协议引擎的约定
 

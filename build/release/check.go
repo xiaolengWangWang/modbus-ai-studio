@@ -1,9 +1,12 @@
 package main
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
+	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -36,11 +39,20 @@ type asset struct {
 	SHA256 string `json:"sha256"`
 }
 
-// installers 是三个安装包的文件名。结尾不能改：程序检查更新时按结尾找本机的安装包。
+// installers 是桌面版三个安装包的文件名。结尾不能改：程序检查更新时按结尾找本机的安装包。
 func installers(version string) []string {
 	p := "ModbusAIStudio-" + version
 	return []string{p + "-Windows-x64.zip", p + "-macOS-Intel.dmg", p + "-macOS-AppleSilicon.dmg"}
 }
+
+// webPackages 是 Linux Web 版的两个包。检查更新不认它们（按结尾找不到），只随发布一起上传。
+func webPackages(version string) []string {
+	p := "ModbusAIStudio-Web-" + version + "-Linux-"
+	return []string{p + "x64.tar.gz", p + "arm64.tar.gz"}
+}
+
+// packages 是一次发布的全部文件：桌面版安装包和 Linux Web 版的包。
+func packages(version string) []string { return append(installers(version), webPackages(version)...) }
 
 // summary 读发布说明正文，第一行必须是这个版本的标题，免得用错上一版的说明。
 func (r *release) summary() (string, error) {
@@ -79,7 +91,7 @@ func localView(notes string, assets []asset) update.Release {
 	return rel
 }
 
-// checkUpdaterView 用检查更新的代码在发布里找三个平台的安装包和校验值，与核对过的安装包比较。
+// checkUpdaterView 用检查更新的代码在发布里找桌面版三个平台的安装包和校验值，与核对过的安装包比较。
 // mirrors 为 true 时还要求另一个下载源上也有同一个文件。
 func checkUpdaterView(rel update.Release, assets []asset, mirrors bool) error {
 	for _, p := range [][2]string{{"windows", "amd64"}, {"darwin", "amd64"}, {"darwin", "arm64"}} {
@@ -123,10 +135,10 @@ func (r *release) load() (manifest, string, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return m, "", err
 	}
-	if m.Version != r.version || !lowerHex(m.Commit, 40) || len(m.Assets) != 3 {
+	names := packages(r.version)
+	if m.Version != r.version || !lowerHex(m.Commit, 40) || len(m.Assets) != len(names) {
 		return m, "", fmt.Errorf("%s 不是 %s 的完整记录，重新运行 prepare", r.file("-assets.json"), r.version)
 	}
-	names := installers(r.version)
 	seen := make(map[string]bool, len(names))
 	for _, a := range m.Assets {
 		// 只认预期的完整文件名，拒绝重复记录和任何目录、绝对路径或其他版本。
@@ -157,9 +169,9 @@ func (r *release) load() (manifest, string, error) {
 	return m, string(notes), nil
 }
 
-// checkInstallers 从 CI 产物里取出三个安装包放到 dist/，逐个核对，返回大小和 SHA-256。
+// checkInstallers 从 CI 产物里取出全部安装包放到 dist/，逐个核对，返回大小和 SHA-256。
 func (r *release) checkInstallers(ci string) ([]asset, error) {
-	names := installers(r.version)
+	names := packages(r.version)
 	if err := extractInstallers(ci, r.dist, names); err != nil {
 		return nil, err
 	}
@@ -167,9 +179,12 @@ func (r *release) checkInstallers(ci string) ([]asset, error) {
 	for _, name := range names {
 		pkg := filepath.Join(r.dist, name)
 		var err error
-		if strings.HasSuffix(name, ".dmg") {
+		switch {
+		case strings.HasSuffix(name, ".dmg"):
 			err = checkDMG(pkg)
-		} else {
+		case strings.HasSuffix(name, ".tar.gz"):
+			err = checkLinuxWeb(pkg, r.version)
+		default:
 			err = r.checkWindows(pkg, ci)
 		}
 		if err != nil {
@@ -261,6 +276,77 @@ func checkDMG(pkg string) error {
 		return errors.New("结尾没有 koly 块，不是完整的 DMG")
 	}
 	return nil
+}
+
+// checkLinuxWeb 核对 Linux Web 版的 tar.gz：顶层目录下只有可执行的 modbus-web 和明文 README.txt，
+// modbus-web 是对应架构（x64 / ARM64）的 Linux 程序，说明里有这一版的版本号。
+func checkLinuxWeb(pkg, version string) error {
+	f, err := os.Open(pkg)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	top := strings.TrimSuffix(filepath.Base(pkg), ".tar.gz") + "/"
+	machine := elf.EM_X86_64
+	if strings.HasSuffix(top, "-arm64/") {
+		machine = elf.EM_AARCH64
+	}
+	seen := map[string]bool{}
+	tr := tar.NewReader(zr)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if h.Typeflag == tar.TypeDir {
+			continue
+		}
+		switch h.Name {
+		case top + "modbus-web":
+			if h.Typeflag != tar.TypeReg || h.Mode&0o111 == 0 {
+				return errors.New("modbus-web 不是可执行的普通文件，解压后运行不了")
+			}
+			b, err := io.ReadAll(tr)
+			if err != nil {
+				return err
+			}
+			ef, err := elf.NewFile(bytes.NewReader(b))
+			if err != nil {
+				return fmt.Errorf("modbus-web 不是 Linux 程序：%w", err)
+			}
+			if ef.Machine != machine {
+				return fmt.Errorf("modbus-web 是 %s 的程序，应为 %s", ef.Machine, machine)
+			}
+		case top + "README.txt":
+			b, err := io.ReadAll(tr)
+			if err != nil {
+				return err
+			}
+			switch {
+			case !utf8.Valid(b) || encrypted(b) || bytes.IndexByte(b, 0) >= 0:
+				return errors.New("README.txt 不是可读的 UTF-8 文本（被加密软件加密了？）")
+			case !bytes.Contains(b, []byte(version)):
+				return fmt.Errorf("README.txt 里没有版本号 %s", version)
+			}
+		default:
+			return fmt.Errorf("多了 %s，包里只该有 modbus-web 和 README.txt", h.Name)
+		}
+		seen[h.Name] = true
+	}
+	for _, name := range []string{"modbus-web", "README.txt"} {
+		if !seen[top+name] {
+			return fmt.Errorf("缺少 %s", top+name)
+		}
+	}
+	_, err = io.Copy(io.Discard, zr) // 读到结尾，gzip 才会核对校验和
+	return err
 }
 
 // checkWindows 核对 Windows zip 的内容和 exe 的资源，再解压一份到 dist/ 下同名目录，方便直接试用。

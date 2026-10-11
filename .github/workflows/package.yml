@@ -37,6 +37,9 @@ jobs:
       - name: Package Windows x64
         if: runner.os == 'Linux'
         run: sh build/windows.sh
+      - name: Package Linux Web x64 and ARM64
+        if: runner.os == 'Linux'
+        run: sh build/linux-web.sh
       - name: Package macOS Intel and Apple Silicon
         if: runner.os == 'macOS'
         run: sh build/macos.sh
@@ -48,5 +51,6 @@ jobs:
             dist/ModbusAIStudio-*-Windows-x64.zip
             dist/ModbusAIStudio-*-macOS-Intel.dmg
             dist/ModbusAIStudio-*-macOS-AppleSilicon.dmg
+            dist/ModbusAIStudio-Web-*-Linux-*.tar.gz
           if-no-files-found: error
           retention-days: 14

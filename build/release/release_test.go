@@ -1,10 +1,14 @@
 package main
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"debug/elf"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -37,13 +41,13 @@ func TestVersionOf(t *testing.T) {
 
 func testAssets(version string) []asset {
 	var assets []asset
-	for i, name := range installers(version) {
+	for i, name := range packages(version) {
 		assets = append(assets, asset{name, int64(i + 1), strings.Repeat(string(rune('a'+i)), 64)})
 	}
 	return assets
 }
 
-// 生成的说明要能被程序的检查更新代码认出三个平台的安装包和校验值，更新内容不含 SHA-256 段落。
+// 生成的说明要能被程序的检查更新代码认出三个平台的安装包和校验值（Linux Web 版的包不干扰），更新内容不含 SHA-256 段落。
 func TestNotesReadableByUpdater(t *testing.T) {
 	assets := testAssets("1.2.3")
 	summary := "# Modbus AI Studio 1.2.3\n\n- 修复"
@@ -91,11 +95,7 @@ func preparedRelease(t *testing.T) (*release, manifest, string) {
 		t.Fatal(err)
 	}
 	m := manifest{Version: "1.2.3", Commit: strings.Repeat("a", 40)}
-	for _, name := range []string{
-		"ModbusAIStudio-1.2.3-Windows-x64.zip",
-		"ModbusAIStudio-1.2.3-macOS-Intel.dmg",
-		"ModbusAIStudio-1.2.3-macOS-AppleSilicon.dmg",
-	} {
+	for _, name := range packages("1.2.3") {
 		body := []byte("installer " + name)
 		if err := os.WriteFile(filepath.Join(r.dist, name), body, 0o644); err != nil {
 			t.Fatal(err)
@@ -337,8 +337,8 @@ func TestUnpackWindows(t *testing.T) {
 
 func TestExtractInstallers(t *testing.T) {
 	ci, dst := t.TempDir(), t.TempDir()
-	names := installers("1.2.3")
-	writeZip(t, filepath.Join(ci, "installers-Linux.zip"), map[string]string{names[0]: "win"})
+	names := packages("1.2.3")
+	writeZip(t, filepath.Join(ci, "installers-Linux.zip"), map[string]string{names[0]: "win", names[3]: "web x64", names[4]: "web arm64"})
 	writeZip(t, filepath.Join(ci, "installers-macOS.zip"), map[string]string{names[1]: "intel", names[2]: "arm", "other.txt": "x"})
 	if err := extractInstallers(ci, dst, names); err != nil {
 		t.Fatal(err)
@@ -349,6 +349,79 @@ func TestExtractInstallers(t *testing.T) {
 	os.Remove(filepath.Join(ci, "installers-Linux.zip"))
 	if err := extractInstallers(ci, dst, names); err == nil {
 		t.Fatal("缺少 Windows 安装包时应报错")
+	}
+}
+
+// elfHeader 是只有文件头的最小 ELF，够 debug/elf 认出架构。
+func elfHeader(t *testing.T, m elf.Machine) []byte {
+	t.Helper()
+	h := elf.Header64{Type: uint16(elf.ET_EXEC), Machine: uint16(m), Version: 1, Ehsize: 64}
+	copy(h.Ident[:], []byte{0x7f, 'E', 'L', 'F', byte(elf.ELFCLASS64), byte(elf.ELFDATA2LSB), byte(elf.EV_CURRENT)})
+	var buf bytes.Buffer
+	if err := binary.Write(&buf, binary.LittleEndian, h); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+type tarEntry struct {
+	name string
+	mode int64
+	body []byte
+}
+
+func writeTarGz(t *testing.T, path string, entries []tarEntry) {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(zw)
+	for _, e := range entries {
+		if err := tw.WriteHeader(&tar.Header{Name: e.name, Mode: e.mode, Size: int64(len(e.body)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		tw.Write(e.body)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Linux Web 版的包：只有可执行、架构对得上的 modbus-web 和明文说明。
+func TestCheckLinuxWeb(t *testing.T) {
+	names := webPackages("1.2.3")
+	readme := []byte("Modbus AI Studio Web 版 1.2.3（Linux x64）\n")
+	good := func(name string, m elf.Machine) []tarEntry {
+		top := strings.TrimSuffix(name, ".tar.gz") + "/"
+		return []tarEntry{{top + "modbus-web", 0o755, elfHeader(t, m)}, {top + "README.txt", 0o644, readme}}
+	}
+	dir := t.TempDir()
+	for name, m := range map[string]elf.Machine{names[0]: elf.EM_X86_64, names[1]: elf.EM_AARCH64} {
+		pkg := filepath.Join(dir, name)
+		writeTarGz(t, pkg, good(name, m))
+		if err := checkLinuxWeb(pkg, "1.2.3"); err != nil {
+			t.Fatalf("%s：%v", name, err)
+		}
+	}
+	pkg := filepath.Join(dir, names[1])
+	for what, mutate := range map[string]func([]tarEntry) []tarEntry{
+		"ARM64 包里是 x64 程序": func(e []tarEntry) []tarEntry { e[0].body = elfHeader(t, elf.EM_X86_64); return e },
+		"程序没有可执行位":         func(e []tarEntry) []tarEntry { e[0].mode = 0o644; return e },
+		"程序不是 ELF":         func(e []tarEntry) []tarEntry { e[0].body = []byte("MZ"); return e },
+		"说明被加密":            func(e []tarEntry) []tarEntry { e[1].body = []byte("b\x14#e+\x00E-SafeNet\x00LOCK"); return e },
+		"说明里没有版本号":         func(e []tarEntry) []tarEntry { e[1].body = []byte("Modbus AI Studio Web\n"); return e },
+		"缺少说明":             func(e []tarEntry) []tarEntry { return e[:1] },
+		"多了文件":             func(e []tarEntry) []tarEntry { return append(e, tarEntry{e[0].name + ".bak", 0o644, []byte("x")}) },
+	} {
+		writeTarGz(t, pkg, mutate(good(names[1], elf.EM_AARCH64)))
+		if err := checkLinuxWeb(pkg, "1.2.3"); err == nil {
+			t.Errorf("%s：应报错", what)
+		}
 	}
 }
 

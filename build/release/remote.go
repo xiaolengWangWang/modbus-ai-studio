@@ -589,7 +589,7 @@ func giteeFiles(ctx context.Context, gt *api, id int64) ([]giteeFile, error) {
 	return files, gt.call(ctx, "GET", fmt.Sprintf("/releases/%d/attach_files?per_page=100", id), nil, &files)
 }
 
-// checkGiteeFiles 确认三个安装包各有一份且大小对。Gitee 自动生成的源码包不算。
+// checkGiteeFiles 确认每个安装包各有一份且大小对。Gitee 自动生成的源码包不算。
 func checkGiteeFiles(files []giteeFile, want []asset) error {
 	for _, a := range want {
 		n := 0
@@ -704,7 +704,7 @@ func (r *release) verifyGitee(ctx context.Context, gt *api, m manifest, notes st
 	return files, checkGiteeFiles(files, m.Assets)
 }
 
-// downloadGitee 不带令牌，像用户一样从 Gitee 下载三个安装包，核对 SHA-256。Gitee 不提供摘要，只能下载来比。
+// downloadGitee 不带令牌，像用户一样从 Gitee 下载全部安装包，核对 SHA-256。Gitee 不提供摘要，只能下载来比。
 func (r *release) downloadGitee(ctx context.Context, files []giteeFile, assets []asset, dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
