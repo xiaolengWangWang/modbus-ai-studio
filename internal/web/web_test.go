@@ -234,7 +234,7 @@ func TestDemoReadWriteAndRecords(t *testing.T) {
 	os.WriteFile(saved, data, 0o600)
 	sessions, err := new(recorder.Recorder).SessionsFile(saved, 10)
 	if err != nil || len(sessions) != 1 || sessions[0].Mode != modbus.ModeTCP || !strings.HasPrefix(sessions[0].Target, "内置模拟器") {
-		t.Fatalf("下载的文件应能用桌面版的历史记录打开：%+v %v", sessions, err)
+		t.Fatalf("下载的文件应能用桌面版历史报文的按路径查询读出：%+v %v", sessions, err)
 	}
 	packets, err := new(recorder.Recorder).PacketsFile(saved, sessions[0].ID, 1000)
 	if err != nil || len(packets) < 4 {

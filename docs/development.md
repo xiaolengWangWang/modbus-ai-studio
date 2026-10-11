@@ -129,7 +129,7 @@ Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\Modbus
 `modbus-web` 在网关或服务器上运行，用浏览器调试设备。连接、读取表、写入回读、协议识别和报文监视都在服务端执行，页面只负责显示和操作，多个浏览器看到的是同一份状态；状态变化和新报文通过 Server-Sent Events 推给页面，页面重连时带上最后一条报文的序号，服务端补发中间漏掉的。页面、样式和脚本在 `internal/web/static/`，用 `embed` 编进程序，不依赖外部资源。
 
 - 安全：访问口令首次启动时随机生成，存在数据目录的 `web-password`；同一来源 5 分钟内输错 5 次暂时拒绝；写操作只接受 JSON 且 Origin 必须是本站，页面带 CSP。跨网访问用 `-cert` / `-key` 开 HTTPS。
-- 记录：收发报文按天写入数据目录的 `records/packets-YYYYMMDD-NNN.sqlite3`，表结构与桌面版相同，页面上可下载，桌面版的历史记录能直接打开。
+- 记录：收发报文按天写入数据目录的 `records/packets-YYYYMMDD-NNN.sqlite3`，表结构与桌面版相同，页面上可下载，桌面版历史报文用“打开文件…”只读查看（文件名不是桌面版的编号格式，不出现在它的文件列表里）。
 - 编译：不需要 cgo，SQLite 用纯 Go 的 `modernc.org/sqlite`（`internal/recorder/driver_purego.go`），一份静态程序可在任何 Linux 发行版上运行；CI 在 Linux 上用 `CGO_ENABLED=0` 跑 `internal/web` 的测试，与发出去的程序一致。
 - 断线原因判断与桌面版共用 `internal/transport/netcause.go`。
 

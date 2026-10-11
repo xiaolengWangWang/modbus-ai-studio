@@ -12,6 +12,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -138,6 +139,17 @@ func (ws *Workspace) openHistory() {
 	var selectedID int64
 	var generation uint64
 	closed := false
+	// 用“打开文件…”选的其他数据库文件：下拉框里的名字 → 完整路径
+	other := map[string]string{}
+	var otherNames []string
+	nameOf := func(p string) string {
+		for name, x := range other {
+			if x == p {
+				return name
+			}
+		}
+		return filepath.Base(p)
+	}
 	sel := widget.NewSelect(nil, nil)
 	sel.PlaceHolder = "选择一次连接"
 	sel.OnChanged = func(name string) {
@@ -222,6 +234,9 @@ func (ws *Workspace) openHistory() {
 	files.PlaceHolder = "选择数据库文件"
 	changeFile := func(name string) {
 		selectedPath = filepath.Join(filepath.Dir(r.Path()), name)
+		if p, ok := other[name]; ok {
+			selectedPath = p
+		}
 		followCurrent = selectedPath == r.Path()
 		selectedID = 0
 		path.SetText("SQLite 文件：" + selectedPath + " · 单个文件上限 50 MB，旧文件保留")
@@ -241,13 +256,35 @@ func (ws *Workspace) openHistory() {
 		for i := len(paths) - 1; i >= 0; i-- {
 			names = append(names, filepath.Base(paths[i]))
 		}
+		names = append(names, otherNames...)
 		// Refresh the same file without resetting its selected session.
 		files.OnChanged = nil
 		files.SetOptions(names)
-		files.SetSelected(filepath.Base(selectedPath))
+		files.SetSelected(nameOf(selectedPath))
 		files.OnChanged = changeFile
 		path.SetText("SQLite 文件：" + selectedPath + " · 单个文件上限 50 MB，旧文件保留")
 		load()
+	}
+	// 打开其他数据库文件：Web 版下载的按天记录、别的电脑拷来的数据库，表结构相同，按路径只读查询。
+	openOther := func() {
+		pickDatabaseFn(w, func(p string) {
+			paths, _ := r.Files()
+			if slices.Contains(paths, p) { // 本机的编号文件，直接在列表里选中
+				selectedPath, followCurrent = p, p == r.Path()
+			} else {
+				name := filepath.Base(p) + "（其他文件）"
+				if q, ok := other[name]; ok && q != p { // 不同文件夹里的同名文件
+					name = p + "（其他文件）"
+				}
+				if _, ok := other[name]; !ok {
+					otherNames = append(otherNames, name)
+				}
+				other[name] = p
+				selectedPath, followCurrent = p, false
+			}
+			selectedID = 0
+			refresh()
+		})
 	}
 	refresh()
 	dbBtns := container.NewHBox(
@@ -261,7 +298,9 @@ func (ws *Workspace) openHistory() {
 	split := container.NewHSplit(tabs, in.root)
 	split.Offset = 0.58
 	top := container.NewBorder(nil, nil, widget.NewLabel("连接"), nil, sel)
-	fileRow := container.NewBorder(nil, nil, widget.NewLabel("数据库文件"), widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), refresh), files)
+	fileRow := container.NewBorder(nil, nil, widget.NewLabel("数据库文件"), container.NewHBox(
+		widget.NewButtonWithIcon("打开文件…", theme.FolderOpenIcon(), openOther),
+		widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), refresh)), files)
 	w.SetContent(container.NewBorder(container.NewVBox(fileRow, top, info), container.NewBorder(nil, nil, nil, dbBtns, path), nil, nil, split))
 	ws.addTool(w, func() { closed = true; in.closed = true; ws.historyWin = nil })
 	showTool(w)
@@ -271,6 +310,25 @@ func (ws *Workspace) openHistory() {
 var showInFolderFn = platform.ShowInFolder
 
 var openFileFn = platform.OpenFile
+
+// pickDatabaseFn 让用户选一个 SQLite 数据库文件，取消时不调用 done；测试时替换。
+var pickDatabaseFn = func(parent fyne.Window, done func(path string)) {
+	d := dialog.NewFileOpen(func(rc fyne.URIReadCloser, err error) {
+		if err != nil {
+			dialog.ShowError(err, parent)
+			return
+		}
+		if rc == nil {
+			return
+		}
+		path := filepath.FromSlash(rc.URI().Path())
+		rc.Close()
+		done(path)
+	}, parent)
+	d.SetFilter(storage.NewExtensionFileFilter([]string{".db", ".sqlite3", ".sqlite"}))
+	d.Resize(fyne.NewSize(900, 600))
+	d.Show()
+}
 
 // openDatabaseTool 使用已关联的 SQLite 管理工具打开标准数据库文件。
 func (ws *Workspace) openDatabaseTool(parent fyne.Window) {

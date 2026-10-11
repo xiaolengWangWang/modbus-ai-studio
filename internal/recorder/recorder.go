@@ -109,7 +109,7 @@ func DefaultPath() (string, error) {
 func Open(path string) (*Recorder, error) { return open(path, false, 10000) }
 
 // OpenDaily 在 dir 下按天记录：packets-YYYYMMDD-001.sqlite3，单个文件写满 50 MB 换下一个编号，
-// 过了零点换新日期的文件。表结构与 Open 相同，桌面版的历史记录可以直接打开这些文件。
+// 过了零点换新日期的文件。表结构与 Open 相同，桌面版历史报文用“打开文件…”按路径只读查看这些文件。
 func OpenDaily(dir string) (*Recorder, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err

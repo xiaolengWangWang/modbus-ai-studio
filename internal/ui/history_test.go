@@ -83,6 +83,95 @@ func TestHistorySelectsArchivedDatabaseAndCopiesItsPath(t *testing.T) {
 	snapshotPNG(t, ws.historyWin, "history-rotation.png")
 }
 
+// “打开文件…”能查看数据目录以外的数据库，例如 Web 版下载的按天记录（文件名不是本机的编号格式，列表里没有）。
+func TestHistoryOpensOtherDatabaseFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "packets.db")
+	r, err := recorder.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetRecorder(r, path, nil)
+	t.Cleanup(func() { SetRecorder(nil, "", nil); r.Close() })
+
+	web, err := recorder.OpenDaily(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := web.StartSession(modbus.ModeTCP, "web:502", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web.Record(id, modbus.Packet{Time: time.Now(), Mode: modbus.ModeTCP, Dir: modbus.DirTX, Slave: 1, Function: 3, Raw: []byte{0, 1, 0, 0, 0, 6, 1, 3, 0, 0, 0, 2}, Status: modbus.StatusSent})
+	if err := web.Log(id, recorder.Event{Kind: recorder.EventReadFail, Detail: "Web 版日志"}); err != nil {
+		t.Fatal(err)
+	}
+	webFile := web.Path()
+	if err := web.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	old := pickDatabaseFn
+	pickDatabaseFn = func(_ fyne.Window, done func(string)) { done(webFile) }
+	t.Cleanup(func() { pickDatabaseFn = old })
+	ws := openWS(t, test.NewTempApp(t), false)
+	locked(ws.openHistory)
+	locked(func() { findButtons(ws.historyWin.Content(), "打开文件…")[0].OnTapped() })
+	var label string
+	waitFor(t, 3*time.Second, "显示其他文件中的会话", func() bool { // waitFor 已在界面锁内调用
+		for _, sel := range findSelects(ws.historyWin.Content()) {
+			if strings.Contains(sel.Selected, "web:502") {
+				label = sel.Selected
+			}
+		}
+		return label != ""
+	})
+	if !strings.Contains(label, "文件内的连接分段") {
+		t.Errorf("其他文件里没结束的连接应标为文件内的连接分段：%s", label)
+	}
+	locked(func() {
+		named := false
+		for _, sel := range findSelects(ws.historyWin.Content()) {
+			named = named || sel.Selected == filepath.Base(webFile)+"（其他文件）"
+		}
+		if !named {
+			t.Error("数据库文件下拉框应选中并标注打开的其他文件")
+		}
+		findButtons(ws.historyWin.Content(), "复制路径")[0].OnTapped()
+		if got := ws.app.Clipboard().Content(); got != webFile {
+			t.Errorf("复制路径应是打开的文件：%s", got)
+		}
+	})
+	waitFor(t, 3*time.Second, "读出其他文件的日志", func() bool {
+		for _, l := range findLabels(ws.historyWin.Content()) {
+			if strings.Contains(l.Text, "日志 1 条") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// findLabels 找出界面里全部文字标签。
+func findLabels(o fyne.CanvasObject) []*widget.Label {
+	switch x := o.(type) {
+	case *widget.Label:
+		return []*widget.Label{x}
+	case *fyne.Container:
+		var out []*widget.Label
+		for _, c := range x.Objects {
+			out = append(out, findLabels(c)...)
+		}
+		return out
+	case fyne.Widget:
+		var out []*widget.Label
+		for _, c := range test.WidgetRenderer(x).Objects() {
+			out = append(out, findLabels(c)...)
+		}
+		return out
+	}
+	return nil
+}
+
 // 刷新应重读当前会话；会话的计数和结束时间变化后，仍按 ID 保留选择。
 func TestHistoryRefreshKeepsSessionAndReloadsLogs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "packets.db")

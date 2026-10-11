@@ -584,7 +584,7 @@ async function loadRecords() {
   try {
     const r = await api('GET', '/api/records');
     $('r-dir').textContent = r.enabled
-      ? `保存在 ${r.dir}：每天一个文件，超过 50 MB 换下一个编号。表结构与桌面版相同，可用桌面版“历史记录”或 SQLite 工具打开。`
+      ? `保存在 ${r.dir}：每天一个文件，超过 50 MB 换下一个编号。表结构与桌面版相同，可在桌面版“历史报文”里点“打开文件…”查看（1.2.1 起），也可用 SQLite 工具打开。`
       : '没有开启报文记录。';
     box.replaceChildren(r.files.length
       ? h('table', {}, h('tr', {}, h('th', {}, '文件'), h('th', {}, '大小'), h('th', {}, '修改时间'), h('th', {}, '')),
