@@ -7,9 +7,7 @@ import (
 	"math"
 	"net"
 	"os"
-	"runtime"
 	"sync"
-	"syscall"
 	"time"
 
 	"modbus-ai-studio/internal/modbus"
@@ -83,7 +81,7 @@ func (l *linkState) observe(p modbus.Packet) bool {
 type lossEvent struct {
 	at     time.Time
 	kind   lossKind
-	close  closeKind     // TCP 是怎么断的：FIN、RST、重传超时……
+	close  transport.CloseKind     // TCP 是怎么断的：FIN、RST、重传超时……
 	req    modbus.Packet // 断开前最后一条请求；连上就断时为空
 	gap    time.Duration
 	uptime time.Duration
@@ -101,7 +99,7 @@ func classifyLoss(mode modbus.Mode, l *linkState, err error) lossEvent {
 	if err != nil {
 		errText = err.Error()
 	}
-	e := lossEvent{at: time.Now(), req: l.last, gap: l.gap, uptime: time.Since(l.up), err: errText, close: closeKindOf(err), addrs: l.addrs}
+	e := lossEvent{at: time.Now(), req: l.last, gap: l.gap, uptime: time.Since(l.up), err: errText, close: transport.CloseKindOf(err), addrs: l.addrs}
 	switch ok := l.ok[e.key()]; {
 	case mode.Serial():
 		e.kind = lossSerial
@@ -133,7 +131,7 @@ func (e lossEvent) describe() string {
 	switch e.kind {
 	case lossOnConnect:
 		s := "连接建立后 " + roundDur(e.uptime) + " 就被设备关闭，还没发请求"
-		if l := e.close.label(); l != "" {
+		if l := e.close.Label(); l != "" {
 			s += "：" + l
 		}
 		return s
@@ -146,29 +144,10 @@ func (e lossEvent) describe() string {
 
 // how 是断开方式加原始错误，例如“设备关闭了连接（收到 FIN）· EOF”；判断不出时只有原始错误。
 func (e lossEvent) how() string {
-	if l := e.close.label(); l != "" {
+	if l := e.close.Label(); l != "" {
 		return l + " · " + e.err
 	}
 	return e.err
-}
-
-func dialErrText(err error) string {
-	switch {
-	case isConnRefused(err):
-		return "连接被拒绝：设备的 Modbus 服务没开，或端口不对"
-	case errors.Is(err, os.ErrDeadlineExceeded), isNetTimeout(err):
-		return "连接超时：设备不在线或网络不通"
-	}
-	return err.Error()
-}
-
-// isConnRefused 判断连接被拒绝。Windows 上的错误码是 WSAECONNREFUSED（10061），和 syscall.ECONNREFUSED 不相等。
-func isConnRefused(err error) bool {
-	if errors.Is(err, syscall.ECONNREFUSED) {
-		return true
-	}
-	var errno syscall.Errno
-	return runtime.GOOS == "windows" && errors.As(err, &errno) && errno == 10061
 }
 
 func isNetTimeout(err error) bool {
@@ -294,7 +273,7 @@ func (ws *Workspace) reconnectLoop(ctx context.Context, s *session, attempt int)
 			return
 		}
 		if err != nil {
-			msg := dialErrText(err)
+			msg := transport.DialErrText(err)
 			uiDo(func() {
 				if ctx.Err() != nil || ws.session != s {
 					return
@@ -320,7 +299,7 @@ func (ws *Workspace) reconnectLoop(ctx context.Context, s *session, attempt int)
 			return
 		}
 		if err != nil {
-			e := lossEvent{at: time.Now(), kind: lossOnConnect, uptime: after, close: closeKindOf(err), err: err.Error(), addrs: connAddrs(t)}
+			e := lossEvent{at: time.Now(), kind: lossOnConnect, uptime: after, close: transport.CloseKindOf(err), err: err.Error(), addrs: connAddrs(t)}
 			t.Close()
 			uiDo(func() {
 				if ws.session == s && ctx.Err() == nil {
@@ -418,14 +397,14 @@ func (ws *Workspace) lossDiagnosis() diagnosis {
 		}
 	case lossRandom:
 		switch e.close {
-		case closeFIN:
+		case transport.CloseFIN:
 			dg.Hint = fmt.Sprintf("连接用了 %s 后被设备主动关闭（收到 FIN），断开前的请求平时正常：设备可能限制了连接时长、会定时重启，"+
 				"或者别的主站连上来，把这条连接挤掉了（设备连接数已满）。", roundDur(e.uptime))
-		case closeRST:
+		case transport.CloseRST:
 			dg.Hint = fmt.Sprintf("连接用了 %s 后被复位（收到 RST），断开前的请求平时正常：设备的 Modbus 服务重启或出错，"+
 				"或者中间的防火墙、网关清掉了这条连接。", roundDur(e.uptime))
-		case closeAborted, closeUnreachable:
-			dg.Hint = fmt.Sprintf("连接用了 %s 后断开，%s。%s", roundDur(e.uptime), e.close.label(), e.close.explain())
+		case transport.CloseAborted, transport.CloseUnreachable:
+			dg.Hint = fmt.Sprintf("连接用了 %s 后断开，%s。%s", roundDur(e.uptime), e.close.Label(), e.close.Explain())
 		default:
 			dg.Hint = fmt.Sprintf("连接用了 %s 后断开，断开前的请求平时正常：更像是网络不稳（网线、交换机、无线网桥）或设备重启。", roundDur(e.uptime))
 		}
@@ -434,8 +413,8 @@ func (ws *Workspace) lossDiagnosis() diagnosis {
 			dg.Hint += fmt.Sprintf("本次连接已断开 %d 次，平均 %s 一次。", n, roundDur(span/time.Duration(n-1)))
 		}
 	}
-	if e.kind != lossRandom && e.close != closeUnknown {
-		dg.Hint += "\n断开方式：" + e.close.label() + "。" + e.close.explain()
+	if e.kind != lossRandom && e.close != transport.CloseUnknown {
+		dg.Hint += "\n断开方式：" + e.close.Label() + "。" + e.close.Explain()
 	}
 	if s.dialErr != "" {
 		dg.Hint += "\n上次重连：" + s.dialErr

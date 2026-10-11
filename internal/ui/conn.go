@@ -224,7 +224,7 @@ func (ws *Workspace) connect() {
 				return
 			}
 			if err != nil {
-				ws.connErr = dialErrText(err)
+				ws.connErr = transport.DialErrText(err)
 				ws.connBtn.SetText("连接")
 				ws.setInputsEnabled(true)
 				ws.logConnectFail(cfg, err)

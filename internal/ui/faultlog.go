@@ -15,6 +15,7 @@ import (
 
 	"modbus-ai-studio/internal/modbus"
 	"modbus-ai-studio/internal/recorder"
+	"modbus-ai-studio/internal/transport"
 )
 
 // 日志：连接失败、读取失败与恢复、断开、重连。每条带原因分析和出错时抓到的原始报文（逐字段解析），
@@ -321,7 +322,7 @@ func connectFailCause(cfg connConfig, err error) []string {
 		return []string{"分析：串口打不开（" + err.Error() + "）。",
 			"检查：串口是否被别的程序或另一个主窗口占用；USB 转 485 是否插好、驱动是否正常（刚插上时等几秒，串口列表会刷新）。"}
 	}
-	lines := []string{"分析：" + dialErrText(err) + "。"}
+	lines := []string{"分析：" + transport.DialErrText(err) + "。"}
 	switch {
 	case strings.Contains(lines[0], "拒绝"):
 		lines = append(lines, "检查：IP 能到达，但这个端口没有 Modbus 服务。确认端口（默认 502）和设备的 Modbus TCP 功能已开启。")

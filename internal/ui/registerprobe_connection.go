@@ -161,7 +161,7 @@ func (ws *Workspace) restoreProbeSession(s *session) {
 				return
 			}
 			if err != nil {
-				s.dialErr = dialErrText(err)
+				s.dialErr = transport.DialErrText(err)
 				ws.startReconnect(s, 0)
 			} else {
 				s.link.Store(linkFor(t))

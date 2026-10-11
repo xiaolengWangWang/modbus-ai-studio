@@ -2,14 +2,9 @@ package ui
 
 import (
 	"errors"
-	"fmt"
-	"io"
 	"net"
-	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -18,6 +13,7 @@ import (
 	"modbus-ai-studio/internal/modbus"
 	"modbus-ai-studio/internal/recorder"
 	"modbus-ai-studio/internal/simulator"
+	"modbus-ai-studio/internal/transport"
 )
 
 // 测试里把退避和阈值调小，几秒内跑完。在任何 goroutine 启动前设置，不会有数据竞争。
@@ -106,52 +102,16 @@ func TestReconnectAfterDrop(t *testing.T) {
 	}
 }
 
-// 从读写错误判断断开方式：EOF 是 FIN，复位是 RST，重传超时、网络不可达是网络问题。Windows 的 WSA 错误码单独判断。
-func TestCloseKindOf(t *testing.T) {
-	op := func(err error) error {
-		return &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", err)}
-	}
-	cases := []struct {
-		err  error
-		want closeKind
-	}{
-		{nil, closeUnknown},
-		{errors.New("其他错误"), closeUnknown},
-		{io.EOF, closeFIN},
-		{fmt.Errorf("读响应：%w", io.ErrUnexpectedEOF), closeFIN},
-		{op(syscall.ECONNRESET), closeRST},
-		{op(syscall.ECONNABORTED), closeAborted},
-		{op(syscall.ETIMEDOUT), closeAborted},
-		{op(syscall.ENETUNREACH), closeUnreachable},
-	}
-	if runtime.GOOS == "windows" {
-		cases = append(cases, []struct {
-			err  error
-			want closeKind
-		}{
-			{op(syscall.Errno(10054)), closeRST},
-			{op(syscall.Errno(10053)), closeAborted},
-			{op(syscall.Errno(10060)), closeAborted},
-			{op(syscall.Errno(10051)), closeUnreachable},
-		}...)
-	}
-	for _, c := range cases {
-		if got := closeKindOf(c.err); got != c.want {
-			t.Errorf("%v：得到 %d，期望 %d", c.err, got, c.want)
-		}
-	}
-}
-
 // 断开方式：设备正常关闭是 FIN，被复位是 RST。分析写明是哪一种；通信报文的连接错误行、日志里附带的
 // 出错前收发都标出来，日志写明这条连接的两端地址。
 func TestDisconnectFINOrRST(t *testing.T) {
 	for _, c := range []struct {
 		faults simulator.Faults
-		kind   closeKind
+		kind   transport.CloseKind
 		want   string
 	}{
-		{simulator.Faults{DisconnectOn: []simulator.AddrRange{{Start: 0, Count: 10}}}, closeFIN, "收到 FIN"},
-		{simulator.Faults{ResetOn: []simulator.AddrRange{{Start: 0, Count: 10}}}, closeRST, "收到 RST"},
+		{simulator.Faults{DisconnectOn: []simulator.AddrRange{{Start: 0, Count: 10}}}, transport.CloseFIN, "收到 FIN"},
+		{simulator.Faults{ResetOn: []simulator.AddrRange{{Start: 0, Count: 10}}}, transport.CloseRST, "收到 RST"},
 	} {
 		srv, addr := startSim(t, simulator.Faults{})
 		ws, wins := linkWS(t, addr, 100*time.Millisecond, 0)
@@ -285,14 +245,3 @@ func TestSerialLoss(t *testing.T) {
 	})
 }
 
-// 连接被拒绝要给出原因：Windows 上的错误码是 WSAECONNREFUSED（10061），和 syscall.ECONNREFUSED 不相等。
-func TestDialErrTextConnRefused(t *testing.T) {
-	refused := syscall.ECONNREFUSED
-	if runtime.GOOS == "windows" {
-		refused = syscall.Errno(10061)
-	}
-	err := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", refused)}
-	if got := dialErrText(err); !strings.Contains(got, "连接被拒绝") {
-		t.Errorf("连接被拒绝没有识别出来：%s", got)
-	}
-}

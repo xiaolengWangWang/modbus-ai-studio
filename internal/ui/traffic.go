@@ -13,6 +13,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/internal/modbus"
+	"modbus-ai-studio/internal/transport"
 )
 
 const maxTraffic = 5000
@@ -151,7 +152,7 @@ func trafficLine(p modbus.Packet, ts bool) (string, widget.Importance) {
 		if p.Status == modbus.StatusCRCError && p.Mode.IsASCII() {
 			s = "LRC 错误，已丢弃"
 		}
-		if l := closeKindOf(p.Err).label(); p.Status == modbus.StatusConnectionError && l != "" {
+		if l := transport.CloseKindOf(p.Err).Label(); p.Status == modbus.StatusConnectionError && l != "" {
 			s += "：" + l // 连接是怎么断的：FIN、RST、重传超时
 		}
 		text += "   ← " + s
