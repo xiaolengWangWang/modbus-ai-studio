@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Modbus AI Studio</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+
+<div id="login" class="login" hidden>
+  <form id="login-form">
+    <h1>Modbus AI Studio</h1>
+    <p class="muted">Linux Web 版 · 请输入访问口令</p>
+    <input type="password" id="password" autocomplete="current-password" placeholder="访问口令" required>
+    <button type="submit" class="primary">登录</button>
+    <p id="login-error" class="error"></p>
+    <p class="muted small">口令在程序启动时打印在终端里，也保存在数据目录的 web-password 文件中。</p>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="brand">Modbus AI Studio<span class="ver" id="version"></span></div>
+    <div class="conn-wrap"><div class="conn-chip" id="conn-chip" role="button" tabindex="0"><span class="dot"></span><span id="conn-text">未连接</span></div></div>
+    <button id="pause-all" hidden>全部暂停</button>
+    <button id="logout" class="ghost">退出登录</button>
+  </header>
+
+  <section class="connbar">
+    <label>协议
+      <select id="c-mode">
+        <option value="tcp">Modbus TCP</option>
+        <option value="rtu-over-tcp">RTU over TCP</option>
+        <option value="ascii-over-tcp">ASCII over TCP</option>
+        <option value="rtu">Modbus RTU（串口）</option>
+        <option value="ascii">Modbus ASCII（串口）</option>
+      </select>
+    </label>
+    <label class="tcp-only">设备地址 <input id="c-target" placeholder="192.168.1.10:502" size="17" autocomplete="off"></label>
+    <label class="tcp-only check"><input type="checkbox" id="c-sim"> 内置模拟器</label>
+    <label class="serial-only">串口 <select id="c-port"></select></label>
+    <button class="serial-only ghost" id="c-refresh" title="重新列出本机串口">刷新串口</button>
+    <label class="serial-only">波特率
+      <select id="c-baud">
+        <option>1200</option><option>2400</option><option>4800</option><option selected>9600</option>
+        <option>19200</option><option>38400</option><option>57600</option><option>115200</option>
+      </select>
+    </label>
+    <label class="serial-only">数据位 <select id="c-databits"><option>8</option><option>7</option></select></label>
+    <label class="serial-only">校验 <select id="c-parity"><option value="N">无</option><option value="E">偶</option><option value="O">奇</option></select></label>
+    <label class="serial-only">停止位 <select id="c-stop"><option>1</option><option>2</option></select></label>
+    <label>超时 <input id="c-timeout" type="number" class="num" min="50" max="60000" step="50" value="1000"> ms</label>
+    <button id="connect" class="primary">连接</button>
+    <button id="disconnect">断开</button>
+    <button id="detect" class="tcp-only" title="依次尝试 Modbus TCP、RTU over TCP、ASCII over TCP">识别协议</button>
+    <button id="demo" class="ghost" title="连接内置换热站模拟器，读取表换成示例点表">换热站示例</button>
+    <span id="conn-msg" class="msg"></span>
+  </section>
+
+  <main>
+    <div class="tables-head">
+      <h2>读取</h2>
+      <button id="add-table" class="primary">新建读取表</button>
+      <span class="muted small">点可写的行（保持寄存器、线圈）可以写入</span>
+    </div>
+    <div id="tables" class="tables"></div>
+    <p id="tables-empty" class="empty" hidden>还没有读取表。连接设备后点“新建读取表”；手边没有设备时点“换热站示例”。</p>
+  </main>
+
+  <section class="dock" id="dock">
+    <div class="grip" id="grip" title="拖动调整高度"></div>
+    <nav class="tabs">
+      <button data-tab="packets" class="active">通信报文 <span class="count" id="packet-count"></span></button>
+      <button data-tab="logs">日志 <span class="count" id="log-count"></span></button>
+      <button data-tab="records">记录文件</button>
+      <span class="spacer"></span>
+      <button id="dock-toggle" class="ghost">收起</button>
+    </nav>
+    <div class="tab" id="tab-packets">
+      <div class="toolbar">
+        <select id="p-filter">
+          <option value="all">全部</option>
+          <option value="error">只看错误</option>
+          <option value="TX">只看发送</option>
+          <option value="RX">只看接收</option>
+        </select>
+        <input id="p-search" placeholder="查找字节，例如 01 03" size="20" autocomplete="off">
+        <label class="check"><input type="checkbox" id="p-hold"> 暂停滚动</label>
+        <button id="p-clear" class="ghost">清空显示</button>
+      </div>
+      <div class="packets" id="packets"></div>
+    </div>
+    <div class="tab" id="tab-logs" hidden>
+      <div class="logs" id="logs"></div>
+    </div>
+    <div class="tab" id="tab-records" hidden>
+      <div class="toolbar">
+        <button id="r-refresh" class="ghost">刷新</button>
+        <span class="muted small" id="r-dir"></span>
+      </div>
+      <div class="records" id="records"></div>
+    </div>
+  </section>
+</div>
+
+<dialog id="table-dialog">
+  <form method="dialog" id="table-form">
+    <h3 id="table-title">新建读取表</h3>
+    <div class="fields">
+      <label>名称（可不填） <input name="name" autocomplete="off"></label>
+      <label>Slave ID <input name="slave" type="number" min="0" max="255" value="1" required></label>
+      <label>功能码
+        <select name="function">
+          <option value="3">03 读保持寄存器（4x）</option>
+          <option value="4">04 读输入寄存器（3x）</option>
+          <option value="1">01 读线圈（0x）</option>
+          <option value="2">02 读离散输入（1x）</option>
+        </select>
+      </label>
+      <label>起始地址 <input name="address" value="40001" required autocomplete="off" title="支持 0、40001、4x0001、0x0010 等写法"></label>
+      <label>数量 <input name="count" type="number" min="1" max="2000" value="10" required></label>
+      <label class="reg-only">数据类型 <select name="type" data-orders="order"></select></label>
+      <label class="reg-only">字节序 <select name="order"></select></label>
+      <label class="reg-only">倍率（工程值 = 原始值 × 倍率） <input name="scale" type="number" step="any" value="1"></label>
+      <label>读取间隔 ms <input name="intervalMs" type="number" min="100" max="3600000" step="100" value="1000" required></label>
+    </div>
+    <p class="muted small" id="table-points" hidden>这是点表读取表：每行一个点，类型和倍率按点表；这里只能改通信参数。</p>
+    <p class="error" id="table-error"></p>
+    <div class="buttons">
+      <button value="cancel" formnovalidate>取消</button>
+      <button value="save" class="primary" id="table-save">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="write-dialog">
+  <form method="dialog" id="write-form">
+    <h3>写入并回读验证</h3>
+    <div class="fields">
+      <label>Slave ID <input name="slave" type="number" min="0" max="255" value="1" required></label>
+      <label>写入对象
+        <select name="target">
+          <option value="register">保持寄存器（4x）</option>
+          <option value="coil">线圈（0x）</option>
+        </select>
+      </label>
+      <label>地址 <input name="address" value="40001" required autocomplete="off"></label>
+      <label class="reg-only">数据类型 <select name="type"></select></label>
+      <label class="reg-only">字节序 <select name="order"></select></label>
+      <label class="reg-only">倍率 <input name="scale" type="number" step="any" value="1"></label>
+      <label>功能码 <select name="function"></select></label>
+      <label>写入值 <input name="value" required autocomplete="off"></label>
+    </div>
+    <p class="muted small">写入后在 0 ms、200 ms、1000 ms 回读，判断是否真正生效、是否被设备改回。</p>
+    <p class="error" id="write-error"></p>
+    <div class="result" id="write-result" hidden></div>
+    <div class="buttons">
+      <button value="cancel" formnovalidate>关闭</button>
+      <button value="write" class="primary" id="write-go">写入</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="detect-dialog">
+  <form method="dialog">
+    <h3>识别协议</h3>
+    <div class="result" id="detect-result"></div>
+    <div class="buttons">
+      <button value="cancel">关闭</button>
+      <button value="use" class="primary" id="detect-use" hidden>使用识别出的协议</button>
+    </div>
+  </form>
+</dialog>
+
+</body>
+</html>
