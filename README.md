@@ -1,6 +1,6 @@
 # Modbus AI Studio
 
-面向工业现场的 Modbus 调试与诊断工具，Windows、macOS 可用。界面参考 Modbus Poll；读不到数据时自动分析原因并给出一键处理，写入后回读确认设备真的执行了。
+面向工业现场的 Modbus 调试与诊断工具，Windows、macOS 可用，Linux 网关和服务器上有浏览器访问的 Web 版。界面参考 Modbus Poll；读不到数据时自动分析原因并给出一键处理，写入后回读确认设备真的执行了。
 
 ![主界面](assets/screenshots/main.png)
 
@@ -17,6 +17,7 @@
 - **窗口与图标**：应用、标题栏、任务栏和托盘统一图标；窗口按屏幕可用区域和 DPI 缩放适配，记住上次大小。连接与操作栏在窄窗口下自动换行，通信报文的操作和筛选分行显示。
 - 内置换热站模拟器，没有设备也能上手。
 - **软件更新**：“帮助 → 检查更新”下载新版本，校验 SHA-256 后替换程序并重启。
+- **Linux Web 版**：在网关或服务器上运行 `modbus-web`，用浏览器连接设备、按点表读取、写入回读、识别协议、看报文和日志，多个浏览器看到同一份状态；收发报文按天存进 SQLite，可在页面下载、用桌面版打开。单个程序，x64 和 ARM64 都有。
 
 ## 下载
 
@@ -27,8 +28,10 @@
 | `ModbusAIStudio-x.y.z-Windows-x64.zip` | Windows 10 / 11 64 位。绿色版，解压后双击 `ModbusAIStudio.exe` |
 | `ModbusAIStudio-x.y.z-macOS-AppleSilicon.dmg` | M 系列芯片的 Mac，macOS 12 及以上 |
 | `ModbusAIStudio-x.y.z-macOS-Intel.dmg` | Intel 芯片的 Mac，macOS 12 及以上 |
+| `ModbusAIStudio-Web-x.y.z-Linux-x64.tar.gz` | Linux x86-64 网关、服务器上的 Web 版。解压后运行 `./modbus-web`，用浏览器打开终端打印的地址 |
+| `ModbusAIStudio-Web-x.y.z-Linux-arm64.tar.gz` | Linux ARM64（树莓派 4 / 5、多数 ARM 网关）上的 Web 版 |
 
-Linux 暂时没有安装包，可以 [从源码编译](docs/development.md#从源码编译)。Windows 远程桌面、虚拟机里打不开，或 macOS 提示无法打开，见 [常见问题](docs/faq.md#安装与运行)。
+Linux 桌面版没有安装包，可以 [从源码编译](docs/development.md#从源码编译)；网关、服务器上用 Web 版，见 [Linux Web 版](docs/guide.md#linux-web-版)。Windows 远程桌面、虚拟机里打不开，或 macOS 提示无法打开，见 [常见问题](docs/faq.md#安装与运行)。
 
 ## 快速上手
 
@@ -41,7 +44,7 @@ Linux 暂时没有安装包，可以 [从源码编译](docs/development.md#从�
 
 ## 文档
 
-- [使用说明](docs/guide.md)：连接、读取、点表、写入验证、自动分析、报文与历史、工作区、只读模式、命令行工具、快捷键
+- [使用说明](docs/guide.md)：连接、读取、点表、写入验证、自动分析、报文与历史、工作区、只读模式、命令行工具、Linux Web 版、快捷键
 - [点表格式](docs/points.md)：点表的列、数据类型、字节序、平台导出的设备属性表
 - [常见问题](docs/faq.md)：连不上、超时、断开、异常码、值不对、写入失败、报文记录在哪里、安装问题
 - [开发与发布](docs/development.md)：从源码编译、目录结构、测试、打包发版
@@ -56,7 +59,7 @@ Linux 暂时没有安装包，可以 [从源码编译](docs/development.md#从�
 | 核心代码 | `cmd/`、`internal/`、`tests/` |
 | 平台代码 | `platform/`：Windows 专用代码，macOS / Windows 打包配置 |
 | 文档 | `README.md`、`docs/` |
-| 打包编译 | `build/`：macOS、Windows 打包脚本和图标生成器；`.github/workflows/`：持续集成 |
+| 打包编译 | `build/`：macOS、Windows、Linux Web 版打包脚本，发版工具和图标生成器；`.github/workflows/`：持续集成 |
 
 ## 许可证
 
