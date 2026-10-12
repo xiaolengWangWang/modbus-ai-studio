@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -55,6 +56,9 @@ type Faults struct {
 	Exceptions    []ExceptionRange // 固定返回异常的地址段
 	IgnoreWrites  []AddrRange      // 写入返回成功但值不变
 	RevertWrites  []RevertRange    // 写入后被改回原值
+	// Forwarded 模拟 MCGS 数据转发接口：只有这些寄存器地址转发了数据。FC03 / FC04 读的范围碰到其中任何一个，
+	// 就整段正常返回，没转发的位置填 0；完全碰不到就回 89 加原请求的地址和数量（非标准回显）。空表示不模拟
+	Forwarded []AddrRange
 
 	// 断开连接类故障：真实设备不回异常、直接断开 TCP 的几种情况
 	DisconnectOnAccept bool          // 接受连接后立即断开（连接数已满、IP 白名单）
@@ -329,6 +333,20 @@ func (s *Server) process(req modbus.Request, f Faults) []byte {
 		regs, ok := s.Store.Registers(area, req.Address, n)
 		if !ok {
 			return illegal
+		}
+		if len(f.Forwarded) > 0 {
+			hit := false
+			for i := range regs {
+				if slices.ContainsFunc(f.Forwarded, func(r AddrRange) bool { return r.Overlaps(req.Address+uint16(i), 1) }) {
+					hit = true
+				} else {
+					regs[i] = 0
+				}
+			}
+			if !hit {
+				pdu, _ := req.PDU()
+				return append([]byte{modbus.EchoFunction}, pdu[1:]...)
+			}
 		}
 		return modbus.EncodeResponsePDU(req, regs, nil)
 	case modbus.FuncReadCoils, modbus.FuncReadDiscreteInputs:

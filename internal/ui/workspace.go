@@ -49,19 +49,33 @@ func (ws *Workspace) encodeWorkspace() ([]byte, error) {
 
 // applyWorkspace 用文件内容替换当前工作区：先断开，再换连接参数、点表和读取窗口。打开后不自动连接。
 func (ws *Workspace) applyWorkspace(data []byte) error {
+	f, err := parseWorkspace(data)
+	if err != nil {
+		return err
+	}
+	ws.applyWorkspaceFile(f)
+	return nil
+}
+
+// parseWorkspace 解析并检查工作区文件，不碰界面，可以在后台执行。
+func parseWorkspace(data []byte) (workspaceFile, error) {
 	var f workspaceFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		return fmt.Errorf("不是有效的工作区文件：%w", err)
+		return f, fmt.Errorf("不是有效的工作区文件：%w", err)
 	}
 	for i, d := range f.Windows {
 		if err := d.validate(); err != nil {
-			return fmt.Errorf("读取窗口 %d：%w", i+1, err)
+			return f, fmt.Errorf("读取窗口 %d：%w", i+1, err)
 		}
 	}
-	proto := protoName(f.Mode)
-	if proto == "" {
-		return fmt.Errorf("不认识的协议 %q", f.Mode)
+	if protoName(f.Mode) == "" {
+		return f, fmt.Errorf("不认识的协议 %q", f.Mode)
 	}
+	return f, nil
+}
+
+func (ws *Workspace) applyWorkspaceFile(f workspaceFile) {
+	proto := protoName(f.Mode)
 	ws.disconnect()
 	for len(ws.windows) > 0 {
 		ws.removeWindow(ws.windows[0])
@@ -89,8 +103,10 @@ func (ws *Workspace) applyWorkspace(data []byte) error {
 	if len(ws.windows) > 1 {
 		ws.mdi.setMaxed(true) // 和导入点表一样：最大化显示第一个窗口，上方标签切换
 	}
-	return nil
 }
+
+// maxWorkspaceBytes 是工作区文件的上限，和点表文件一样；更大的多半选错了文件。
+const maxWorkspaceBytes = 64 << 20
 
 func (ws *Workspace) setPath(path string) {
 	ws.path = path
@@ -104,72 +120,103 @@ func (ws *Workspace) setPath(path string) {
 	prefs.SetStringList(recentKey, recent[:min(len(recent), 5)])
 }
 
+// loadWorkspace 在后台读取并解析工作区文件，界面线程只做最后的替换；读不完可以取消，原工作区不变。
+// failed 在打开失败时于界面线程调用，可为空。
+func (ws *Workspace) loadWorkspace(path string, open func() (io.ReadCloser, error), failed func()) {
+	if ws.workspaceBusy {
+		return
+	}
+	ws.workspaceBusy = true
+	ws.fileTask(ws.win, "打开工作区", "正在读取工作区："+filepath.Base(path)+"（可取消）", func(ctx context.Context) (func(), error) {
+		var f workspaceFile
+		rc, err := open()
+		if err == nil {
+			var data []byte
+			if data, err = readLimited(ctx, rc, maxWorkspaceBytes, "工作区文件"); err == nil {
+				f, err = parseWorkspace(data)
+			}
+		}
+		return func() {
+			if err != nil {
+				if failed != nil {
+					failed()
+				}
+				dialog.ShowError(fmt.Errorf("打开 %s 失败：%w", filepath.Base(path), err), ws.win)
+				return
+			}
+			ws.applyWorkspaceFile(f)
+			ws.setPath(path)
+		}, nil
+	}, func() { ws.workspaceBusy = false })
+}
+
 // openWorkspaceFile 打开最近使用的工作区。
 func (ws *Workspace) openWorkspaceFile(path string) {
-	data, err := os.ReadFile(path)
-	if err == nil {
-		err = ws.applyWorkspace(data)
-	}
-	if err != nil {
+	ws.loadWorkspace(path, func() (io.ReadCloser, error) { return os.Open(path) }, func() {
 		prefs := ws.app.Preferences()
 		prefs.SetStringList(recentKey, slices.DeleteFunc(prefs.StringList(recentKey), func(p string) bool { return p == path }))
 		ws.relayout()
-		dialog.ShowError(fmt.Errorf("打开 %s 失败：%w", filepath.Base(path), err), ws.win)
-		return
-	}
-	ws.setPath(path)
+	})
 }
 
 func (ws *Workspace) openWorkspace() {
+	if ws.workspaceBusy {
+		return
+	}
 	d := dialog.NewFileOpen(func(rc fyne.URIReadCloser, err error) {
 		if err != nil || rc == nil {
 			return
 		}
-		defer rc.Close()
-		data, err := io.ReadAll(rc)
-		if err == nil {
-			err = ws.applyWorkspace(data)
-		}
-		if err != nil {
-			dialog.ShowError(err, ws.win)
-			return
-		}
-		ws.setPath(rc.URI().Path())
+		ws.loadWorkspace(rc.URI().Path(), func() (io.ReadCloser, error) { return rc, nil }, nil)
 	}, ws.win)
 	d.SetFilter(storage.NewExtensionFileFilter([]string{".json"}))
 	d.Show()
 }
 
-// saveWorkspace 已有文件时直接覆盖保存，否则弹出另存为。
+// saveWorkspace 已有文件时直接覆盖保存，否则弹出另存为。内容在界面线程取好，写盘在后台进行，
+// 先写临时文件再替换，写到一半出错或取消时原文件不变。
 func (ws *Workspace) saveWorkspace() {
+	if ws.workspaceBusy {
+		return
+	}
 	if ws.path == "" {
 		ws.saveWorkspaceAs()
 		return
 	}
 	data, err := ws.encodeWorkspace()
-	if err == nil {
-		err = os.WriteFile(ws.path, data, 0o644)
-	}
 	if err != nil {
 		dialog.ShowError(err, ws.win)
+		return
 	}
+	path := ws.path
+	ws.workspaceBusy = true
+	ws.fileTask(ws.win, "保存工作区", "正在保存工作区："+filepath.Base(path), func(ctx context.Context) (func(), error) {
+		return nil, writeFileAtomic(ctx, path, data)
+	}, func() { ws.workspaceBusy = false })
 }
 
 func (ws *Workspace) saveWorkspaceAs() {
+	if ws.workspaceBusy {
+		return
+	}
 	d := dialog.NewFileSave(func(wc fyne.URIWriteCloser, err error) {
 		if err != nil || wc == nil {
 			return
 		}
-		defer wc.Close()
 		data, err := ws.encodeWorkspace()
-		if err == nil {
-			_, err = wc.Write(data)
-		}
 		if err != nil {
+			wc.Close()
 			dialog.ShowError(err, ws.win)
 			return
 		}
-		ws.setPath(wc.URI().Path())
+		path := wc.URI().Path()
+		ws.workspaceBusy = true
+		ws.fileTask(ws.win, "保存工作区", "正在保存工作区："+filepath.Base(path), func(ctx context.Context) (func(), error) {
+			if err := writeAll(ctx, wc, data); err != nil {
+				return nil, fmt.Errorf("保存 %s 失败：%w", filepath.Base(path), err)
+			}
+			return func() { ws.setPath(path) }, nil
+		}, func() { ws.workspaceBusy = false })
 	}, ws.win)
 	d.SetFileName("工作区.json")
 	d.Show()

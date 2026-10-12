@@ -189,16 +189,24 @@ type Response struct {
 }
 
 // ParseResponsePDU 按请求严格校验并解析响应 PDU。
-// 异常响应返回 *ExceptionError；对不上的响应返回 ErrMismatch。
+// 异常响应返回 *ExceptionError；读寄存器请求被原样回显、功能码换成 89 时返回 *NonstandardError；
+// 其他对不上的响应返回 ErrMismatch。
 func ParseResponsePDU(req Request, pdu []byte) (*Response, error) {
 	if len(pdu) < 2 {
 		return nil, fmt.Errorf("%w：PDU 只有 %d 字节", ErrMalformed, len(pdu))
 	}
 	fc := pdu[0]
 	if fc == byte(req.Function)|0x80 {
+		// 标准异常 PDU 只有功能码和异常码两个字节；多出来的字节说明这不是异常响应，第二个字节也就不是异常码
+		if len(pdu) != 2 {
+			return nil, fmt.Errorf("%w：异常响应应为 2 字节，收到 %d 字节", ErrMismatch, len(pdu))
+		}
 		return nil, &ExceptionError{Function: req.Function, Code: ExceptionCode(pdu[1])}
 	}
 	if fc != byte(req.Function) {
+		if isReadEcho(req, pdu) {
+			return nil, &NonstandardError{Function: req.Function, PDU: append([]byte(nil), pdu...)}
+		}
 		return nil, fmt.Errorf("%w：功能码 %02X，期望 %02X", ErrMismatch, fc, byte(req.Function))
 	}
 	switch req.Function {

@@ -53,7 +53,7 @@ func TestRegisterProbeFourAreasAcrossProtocols(t *testing.T) {
 				}))
 				d := readDef{Slave: 1, Function: fn, Start: 2, Qty: 4}
 				res, err := probe(context.Background(), c, d, func(int) {})
-				if err != nil || fmt.Sprint(res) != "[1 1 -1 -1]" || len(sent) > 7 {
+				if err != nil || fmt.Sprint(res) != "[2 2 -1 -1]" || len(sent) > 7 {
 					t.Fatalf("Must identify the readable range and continue past illegal addresses: %v, sent %d, %v", res, len(sent), err)
 				}
 				for _, p := range sent {
@@ -77,7 +77,7 @@ func TestRegisterProbeCancellationKeepsPartialResults(t *testing.T) {
 	for i, state := range res {
 		want := int8(0)
 		if i < 125 {
-			want = 1
+			want = 2 // 批量有返回，未单独验证
 		}
 		if state != want {
 			t.Fatalf("Stopping after the first batch must retain its 125 results: offset %d, state %d", i, state)
@@ -97,8 +97,8 @@ func TestRegisterProbeReadsValidRangeInOneRequest(t *testing.T) {
 		t.Fatalf("A valid 100-address range should need one batch request: count %d, states %v, err %v", len(sent), res, err)
 	}
 	for _, state := range res {
-		if state != 1 {
-			t.Fatalf("Valid batch should mark every address readable: %v", res)
+		if state != 2 {
+			t.Fatalf("A valid batch shows every address returned, but not individually verified: %v", res)
 		}
 	}
 }
@@ -183,15 +183,18 @@ func TestRegisterProbeLocatesSparseForwardingHoles(t *testing.T) {
 			if err != nil || len(res) != 100 {
 				t.Fatalf("Must finish the complete 40001–40100 range: %v, %v", res, err)
 			}
-			good, holes := 0, 0
+			good, holes, single := 0, 0, 0
 			for i, state := range res {
 				if i == 9 || i == 14 || i == 19 {
 					if state != wantState {
 						t.Errorf("Hole at offset %d must have state %d, got %d", i, wantState, state)
 					}
 					holes++
-				} else if state == 1 {
+				} else if state == 1 || state == 2 {
 					good++
+					if state == 1 {
+						single++
+					}
 				}
 			}
 			if good != 97 || holes != 3 {
@@ -206,7 +209,11 @@ func TestRegisterProbeLocatesSparseForwardingHoles(t *testing.T) {
 				ws.showProbeResult(nil, d, res, err)
 				test.Tap(findButtons(ws.win.Canvas().Overlays().Top(), "复制结果")[0])
 				copied := ws.app.Clipboard().Content()
-				for _, expected := range []string{"40001–40100", "40010、40015、40020", "可读（97）", "未检测（0）"} {
+				expects := []string{"40001–40100", "40010、40015、40020", fmt.Sprintf("单独读取可读（%d）", single), "未检测（0）"}
+				if good > single { // 批量读通的地址单列，不算单独读取可读
+					expects = append(expects, fmt.Sprintf("批量有返回、未单独验证（%d）", good-single))
+				}
+				for _, expected := range expects {
 					if !strings.Contains(copied, expected) {
 						t.Errorf("Result must list individual holes; missing %q: %s", expected, copied)
 					}
@@ -345,7 +352,7 @@ func TestRegisterProbeDialogDefaultsRangeAndCopy(t *testing.T) {
 		}
 		test.Tap(findButtons(ws.win.Canvas().Overlays().Top(), "复制结果")[0])
 		copied := ws.app.Clipboard().Content()
-		for _, expected := range []string{"读输入寄存器", "可读（5）", "非法地址（125", "无法判断（0）", "未检测（0）", "Offset 995–1124"} {
+		for _, expected := range []string{"读输入寄存器", "批量有返回、未单独验证（5）", "单独读取可读（0）", "非法地址（125", "无法判断（0）", "未检测（0）", "Offset 995–1124"} {
 			if !strings.Contains(copied, expected) {
 				t.Errorf("Copied scan result missing %q: %s", expected, copied)
 			}
@@ -505,7 +512,7 @@ func TestProbeByPointSegments(t *testing.T) {
 	}), 6) // 设备只有 0–5：第二段（5–7）读不通，“回水温度”跨到 6、“频率”在 7，都无效
 	var progress []int
 	res, err := probeUnits(context.Background(), c, d, probePoints, segs, func(n int) { progress = append(progress, n) })
-	if err != nil || fmt.Sprint(res) != "[1 1 1 0 0 -1 -1 -1]" || sent != 4 || segs[0].state != 1 || segs[1].state != -1 {
+	if err != nil || fmt.Sprint(res) != "[2 2 2 0 0 -1 -1 -1]" || sent != 4 || segs[0].state != 1 || segs[1].state != -1 {
 		t.Fatalf("按段检测：%v，发了 %d 条，段 %d %d，%v", res, sent, segs[0].state, segs[1].state, err)
 	}
 	if fmt.Sprint(progress) != "[3 5 6]" {
@@ -513,7 +520,7 @@ func TestProbeByPointSegments(t *testing.T) {
 	}
 	text, summary, bad := pointProbeText(d, res, segs)
 	if bad != 2 || !strings.Contains(text, "40006 回水温度（FLOAT32）：非法地址") || !strings.Contains(text, "40008 频率（UINT16）：非法地址") ||
-		!strings.Contains(text, "40001–40003（2 个点）：整段可读") || !strings.Contains(summary, "4 个点：可读 2") {
+		!strings.Contains(text, "40001–40003（2 个点）：整段有返回，各点未单独验证") || !strings.Contains(summary, "4 个点：可读 0  ·  整段有返回 2") {
 		t.Errorf("结果：%s\n%s", summary, text)
 	}
 }

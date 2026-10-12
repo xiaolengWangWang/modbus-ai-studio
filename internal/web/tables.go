@@ -293,6 +293,13 @@ func explain(err error) string {
 	if ex, ok := modbus.AsException(err); ok {
 		return fmt.Sprintf("%v。建议：%s", ex, ex.Code.Tip())
 	}
+	if ns, ok := modbus.AsNonstandard(err); ok {
+		return fmt.Sprintf("非标准响应：功能码 %02X 原样回显了请求的地址和数量，没有寄存器数据，后面的字节不是异常码。设备收到了请求，"+
+			"但这个范围可能没有转发数据：缩小范围逐个核对哪些地址读不通，再到设备的转发配置里核对", ns.PDU[0])
+	}
+	if errors.Is(err, modbus.ErrTimeout) && errors.Is(err, modbus.ErrMismatch) {
+		return err.Error() + "：设备在应答，只是内容对不上，先看报文里标为不匹配的帧"
+	}
 	if errors.Is(err, modbus.ErrTimeout) {
 		return err.Error() + "：检查 Slave ID、协议类型和接线"
 	}

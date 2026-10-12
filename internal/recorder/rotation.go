@@ -282,6 +282,15 @@ func (r *Recorder) PacketsFile(path string, session int64, limit int) ([]modbus.
 	return (&Recorder{db: db}).Packets(session, limit)
 }
 
+func (r *Recorder) AnomaliesFile(path string, session int64, limit int) ([]Anomaly, error) {
+	db, err := readDatabase(path)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	return (&Recorder{db: db}).Anomalies(session, limit)
+}
+
 func (r *Recorder) EventsFile(path string, session int64) ([]Event, error) {
 	db, err := readDatabase(path)
 	if err != nil {

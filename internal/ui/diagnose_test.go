@@ -58,7 +58,7 @@ func TestIllegalAddressDiagnosis(t *testing.T) {
 		t.Errorf("诊断应说明读取范围：%q", hint)
 	}
 	res, err := probe(context.Background(), s.client, w.def, func(int) {})
-	if err != nil || fmt.Sprint(res) != "[1 1 1 1 1 -1 -1 -1 -1 -1]" {
+	if err != nil || fmt.Sprint(res) != "[2 2 2 2 2 -1 -1 -1 -1 -1]" {
 		t.Errorf("探测结果 %v %v", res, err)
 	}
 	tap(ws.connBtn)

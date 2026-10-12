@@ -119,13 +119,20 @@ func (t *aiTool) exportReport() {
 		if w == nil {
 			return
 		}
-		if err = writeAIReport(w, report); err != nil {
-			dialog.ShowError(err, t.win)
-			return
-		}
-		if !t.closed {
-			t.state.SetText("诊断报告已导出（包含发送时的冻结证据）")
-		}
+		// 写盘放到后台，磁盘或网络盘慢时助手窗口照常响应
+		go func() {
+			err := writeAIReport(w, report)
+			uiDo(func() {
+				if t.closed {
+					return
+				}
+				if err != nil {
+					dialog.ShowError(err, t.win)
+					return
+				}
+				t.state.SetText("诊断报告已导出（包含发送时的冻结证据）")
+			})
+		}()
 	}, t.win)
 	d.SetFileName("modbus-ai-report-" + time.Now().Format("20060102-150405") + ".md")
 	d.Show()

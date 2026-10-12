@@ -32,6 +32,7 @@ const (
 	StatusCancelled       Status = "CANCELLED"
 	StatusLate            Status = "LATE_RESPONSE"
 	StatusUnexpected      Status = "UNEXPECTED"
+	StatusNonstandard     Status = "NONSTANDARD" // 属于本次请求的非标准响应，见 NonstandardError
 )
 
 // Packet 是一条收发记录。同一请求的 TX 和结果行共用 RequestID；
@@ -191,7 +192,9 @@ func (c *Client) DoRaw(ctx context.Context, slave byte, pdu []byte) ([]byte, err
 	}
 	return c.exchange(ctx, base, pdu, 0, func(p []byte) error {
 		switch {
-		case p[0] == pdu[0]|0x80 && len(p) >= 2:
+		case p[0] == pdu[0]|0x80 && len(p) != 2:
+			return fmt.Errorf("%w：异常响应应为 2 字节，收到 %d 字节", ErrMismatch, len(p))
+		case p[0] == pdu[0]|0x80:
 			return &ExceptionError{Function: FunctionCode(pdu[0]), Code: ExceptionCode(p[1])}
 		case p[0] != pdu[0]:
 			return fmt.Errorf("%w：功能码 %02X，期望 %02X", ErrMismatch, p[0], pdu[0])
@@ -258,6 +261,8 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 		c.r.skipEcho(adu, deadline)
 	}
 
+	// 事务号对上、内容却对不上的帧数（仅 Modbus TCP）。超时时据此说明设备其实回过话，不是完全没有应答
+	rejected := 0
 	for {
 		f, err := c.r.readFrame(c.opts.Mode, deadline, c.opts.CharGap)
 		switch {
@@ -272,9 +277,13 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 			result(nil, StatusCancelled, ctx.Err())
 			return nil, ctx.Err()
 		case isTimeout(err):
-			result(nil, StatusTimeout, ErrTimeout)
+			err = ErrTimeout
+			if rejected > 0 {
+				err = mismatchTimeout(rejected)
+			}
+			result(nil, StatusTimeout, err)
 			c.afterTimeout(result)
-			return nil, ErrTimeout
+			return nil, err
 		default:
 			result(nil, StatusConnectionError, err)
 			return nil, fmt.Errorf("%w：%v", ErrConnection, err)
@@ -289,6 +298,9 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 			result(f.Raw, StatusUnexpected, nil)
 			continue
 		}
+		if c.opts.Mode.mbap() {
+			rejected++ // 下面结束等待的分支都会返回，留下的只有对不上的帧
+		}
 		if len(f.PDU) == 0 {
 			result(f.Raw, StatusParseError, ErrMalformed)
 			continue
@@ -300,6 +312,20 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 			c.emit(p)
 			return f.PDU, ex
 		}
+		if ns, ok := AsNonstandard(err); ok {
+			// 事务号、Unit ID 都对上，才能确定这帧回的就是本次请求，结束等待；否则只记录
+			if c.opts.Mode.mbap() && f.Slave == base.Slave {
+				p := base
+				p.Dir, p.Raw, p.Status, p.Err, p.RTT = DirRX, f.Raw, StatusNonstandard, ns, time.Since(start)
+				c.emit(p)
+				return f.PDU, ns
+			}
+			why := "RTU / ASCII 没有事务号"
+			if c.opts.Mode.mbap() {
+				why = fmt.Sprintf("Unit ID %d 与请求的 %d 不同", f.Slave, base.Slave)
+			}
+			err = fmt.Errorf("%w：功能码 %02X 回显了请求的地址和数量，但%s，不能确定属于本次请求", ErrMismatch, f.PDU[0], why)
+		}
 		if err != nil {
 			result(f.Raw, StatusUnexpected, err)
 			continue
@@ -310,6 +336,15 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 		return f.PDU, nil
 	}
 }
+
+// mismatchTimeout 是超时前收到过事务号相同、内容对不上的帧：errors.Is 同时认 ErrTimeout 和 ErrMismatch。
+type mismatchTimeout int
+
+func (n mismatchTimeout) Error() string {
+	return fmt.Sprintf("modbus: 响应超时：期间收到 %d 帧事务号相同、但内容与请求对不上的响应，已丢弃", int(n))
+}
+
+func (mismatchTimeout) Is(target error) bool { return target == ErrTimeout || target == ErrMismatch }
 
 // afterTimeout 在超时后等待保护间隔并清空接收缓冲。保护间隔内收到的字节记为晚到响应，
 // 绝不当作下一条请求的响应（设计文档 5.5）。

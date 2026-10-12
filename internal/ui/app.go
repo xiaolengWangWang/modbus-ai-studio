@@ -93,45 +93,47 @@ type Workspace struct {
 	pauseAllBtn   *widget.Button
 	readOnlyCheck *widget.Check
 
-	session      *session
-	connecting   bool
-	connErr      string // 上次连接失败的原因，重试时清空。
-	probeRunning bool   // 检测及停止清理期间，同一工作区只允许一次检测
-	probeCancel  context.CancelFunc
-	importTask   *pointImportTask
-	recID        atomic.Int64 // 正在记录的会话 ID，收发回调里读；0 表示不记录
-	points       pointTable   // 本窗口的点表，初始为空
-	readOnly     bool         // 只读模式，禁止一切写入（readonly.go）
-	roItem       *fyne.MenuItem
-	autoUpdItem  *fyne.MenuItem // “帮助 → 自动检查更新”，勾选状态随设置变化
-	updates      updateState
-	detailsItem  *fyne.MenuItem // “视图 → 通信报文与解析面板”
-	path         string         // 工作区文件，未保存时为空
-	timeout      time.Duration
-	windows      []*readWindow
-	cur          *readWindow // 当前读取窗口（tiles.go 的 current），读取窗口的快捷键作用于它
-	nextWin      int
-	tiles        *fyne.Container // 读取窗口区：没有窗口时是新建提示，有窗口时是多文档区域
-	mdi          *mdi            // 读取窗口的多文档区域（Modbus Poll 的 MDI，mdi.go）
-	winMenu      *fyne.Menu      // “窗口”菜单，列出读取窗口
-	traffic      *trafficPanel
-	inspect      *inspector
-	log          *faultLog
-	tabs         *container.AppTabs // 通信报文 / 日志
-	mainSplit    *container.Split
-	detailsSplit *container.Split
-	logTab       *container.TabItem
-	ring         packetRing // 最近的收发，出错时取出原始报文记进日志
-	status       *widget.Label
-	stats        stats
-	evidence     evidence
-	tools        []fyne.Window // 自定义请求等工具窗口，主窗口关闭时一起关闭
-	historyWin   fyne.Window   // 打开着的历史报文窗口，只开一个
-	requestWin   fyne.Window   // 打开着的自定义请求窗口，只开一个
-	typeTool     *typeTool     // 打开着的功能码 / 数据类型 / 字节序调试窗口，只开一个
-	ai           *aiTool
-	done         chan struct{}
-	closed       bool
+	session       *session
+	connecting    bool
+	connErr       string // 上次连接失败的原因，重试时清空。
+	probeRunning  bool   // 检测及停止清理期间，同一工作区只允许一次检测
+	probeCancel   context.CancelFunc
+	importTask    *pointImportTask
+	workspaceBusy bool                     // 正在后台打开或保存工作区文件，同一时刻只做一件
+	probeLog      atomic.Pointer[probeLog] // 正在进行的检测，收发回调把原始帧记进去
+	recID         atomic.Int64             // 正在记录的会话 ID，收发回调里读；0 表示不记录
+	points        pointTable               // 本窗口的点表，初始为空
+	readOnly      bool                     // 只读模式，禁止一切写入（readonly.go）
+	roItem        *fyne.MenuItem
+	autoUpdItem   *fyne.MenuItem // “帮助 → 自动检查更新”，勾选状态随设置变化
+	updates       updateState
+	detailsItem   *fyne.MenuItem // “视图 → 通信报文与解析面板”
+	path          string         // 工作区文件，未保存时为空
+	timeout       time.Duration
+	windows       []*readWindow
+	cur           *readWindow // 当前读取窗口（tiles.go 的 current），读取窗口的快捷键作用于它
+	nextWin       int
+	tiles         *fyne.Container // 读取窗口区：没有窗口时是新建提示，有窗口时是多文档区域
+	mdi           *mdi            // 读取窗口的多文档区域（Modbus Poll 的 MDI，mdi.go）
+	winMenu       *fyne.Menu      // “窗口”菜单，列出读取窗口
+	traffic       *trafficPanel
+	inspect       *inspector
+	log           *faultLog
+	tabs          *container.AppTabs // 通信报文 / 日志
+	mainSplit     *container.Split
+	detailsSplit  *container.Split
+	logTab        *container.TabItem
+	ring          packetRing // 最近的收发，出错时取出原始报文记进日志
+	status        *widget.Label
+	stats         stats
+	evidence      evidence
+	tools         []fyne.Window // 自定义请求等工具窗口，主窗口关闭时一起关闭
+	historyWin    fyne.Window   // 打开着的历史报文窗口，只开一个
+	requestWin    fyne.Window   // 打开着的自定义请求窗口，只开一个
+	typeTool      *typeTool     // 打开着的功能码 / 数据类型 / 字节序调试窗口，只开一个
+	ai            *aiTool
+	done          chan struct{}
+	closed        bool
 }
 
 // Open 新建一个主窗口并显示。主窗口初始为空：没有读取窗口，也不自动连接。
@@ -520,6 +522,9 @@ func (ws *Workspace) OnPacket(p modbus.Packet) {
 	ws.evidence.observe(p)
 	ws.ring.push(p)
 	ws.traffic.push(p)
+	if l := ws.probeLog.Load(); l != nil {
+		l.frame(p)
+	}
 	if id := ws.recID.Load(); id != 0 {
 		if r := currentRecorder(); r != nil {
 			r.Record(id, p)

@@ -30,7 +30,8 @@ func scanSlaves(ctx context.Context, c *modbus.Client, from, to int, timeout tim
 	for id := from; id <= to && ctx.Err() == nil; id++ {
 		start := time.Now()
 		_, err := c.Do(ctx, modbus.Request{Slave: byte(id), Function: modbus.FuncReadHoldingRegisters, Quantity: 1, Timeout: timeout})
-		if _, isEx := modbus.AsException(err); err == nil || isEx {
+		_, isEx := modbus.AsException(err)
+		if _, echo := modbus.AsNonstandard(err); err == nil || isEx || echo { // 非标准回显也说明这个站号有设备作答
 			hits = append(hits, slaveHit{id, err, time.Since(start)})
 		} else if errors.Is(err, modbus.ErrConnection) {
 			return hits, err

@@ -53,7 +53,7 @@ func (e *evidence) observe(p modbus.Packet) {
 		}
 		e.txTime[p.RequestID] = p.Time
 		e.mu.Unlock()
-	case p.Status == modbus.StatusSuccess || p.Status == modbus.StatusException:
+	case p.Status == modbus.StatusSuccess || p.Status == modbus.StatusException || p.Status == modbus.StatusNonstandard:
 		e.okAt.Store(p.Time.UnixNano())
 	case p.Status == modbus.StatusLate:
 		e.late.Add(1)
@@ -91,6 +91,18 @@ func (ws *Workspace) diagnose(w *readWindow, err error) diagnosis {
 		return diagnosis{Text: "未连接"}
 	}
 	ev := &ws.evidence
+	// 收到了属于本次请求的帧，先说收到了什么，再谈超时一类的解释；不建议减数量、换功能码或扫站号
+	if ns, ok := modbus.AsNonstandard(err); ok {
+		return diagnosis{Text: fmt.Sprintf("非标准响应：功能码 %02X，原样回显了请求的地址和数量", ns.PDU[0]),
+			Hint: fmt.Sprintf("设备收到了请求并作答，但回的不是正常数据，也不是标准异常（%s 的标准异常应为 %02X），没有寄存器数据；后面的字节是地址，不是异常码。"+
+				"已知 MCGS 数据转发接口读到没有转发数据的地址时这样回，但仅凭这帧不能确定原因。用“检测寄存器”逐点核对哪些点读不通，再到设备的转发通道里核对变量连接。",
+				d.Function, byte(d.Function)|0x80),
+			Action: "检测这个范围", Do: func() { ws.probeRange(w) }}
+	}
+	if errors.Is(err, modbus.ErrTimeout) && errors.Is(err, modbus.ErrMismatch) {
+		return diagnosis{Text: "超时：期间收到过事务号对应、但内容与请求不符的响应",
+			Hint: "设备在应答，只是回的内容和请求对不上（见报文记录里的“不匹配”行，例如 Unit ID、功能码、字节数或回显不符），没有收到正常数据。这不是链路不通，先看那几帧回了什么。"}
+	}
 	if ex, ok := modbus.AsException(err); ok {
 		dg := diagnosis{Text: fmt.Sprintf("异常 %02X：%s", byte(ex.Code), ex.Code.Name())}
 		switch ex.Code {

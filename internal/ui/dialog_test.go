@@ -168,13 +168,17 @@ func TestHistoryWindowAndDatabase(t *testing.T) {
 		if len(ws.tools) != 1 || ws.historyWin == nil {
 			t.Fatalf("历史报文应只开一个，开了 %d 个", len(ws.tools))
 		}
-		selected := false
+	})
+	// 连接列表在后台读取，读完直接选中最近一次连接
+	waitFor(t, 3*time.Second, "打开历史报文时直接选中最近一次连接", func() bool {
 		for _, sel := range findSelects(ws.historyWin.Content()) {
-			selected = selected || strings.Contains(sel.Selected, "192.168.1.10:502")
+			if strings.Contains(sel.Selected, "192.168.1.10:502") {
+				return true
+			}
 		}
-		if !selected {
-			t.Error("打开历史报文时应直接选中最近一次连接")
-		}
+		return false
+	})
+	locked(func() {
 		ws.historyWin.Close()
 		if ws.historyWin != nil || len(ws.tools) != 0 {
 			t.Error("关掉后应能再开")

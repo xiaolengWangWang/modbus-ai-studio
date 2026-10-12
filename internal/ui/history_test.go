@@ -190,18 +190,22 @@ func TestHistoryRefreshKeepsSessionAndReloadsLogs(t *testing.T) {
 	var sel *widget.Select
 	var info *widget.Label
 	var refresh *widget.Button
-	locked(func() {
+	// 连接列表在后台读取
+	waitFor(t, 3*time.Second, "列出连接", func() bool {
 		for _, s := range findSelects(ws.historyWin.Content()) {
 			if strings.Contains(s.Selected, "192.168.1.10:502") {
 				sel = s
 			}
 		}
+		return sel != nil
+	})
+	locked(func() {
 		refresh = findButtons(ws.historyWin.Content(), "刷新")[0]
 		var walk func(fyne.CanvasObject)
 		walk = func(o fyne.CanvasObject) {
 			switch x := o.(type) {
 			case *widget.Label:
-				if strings.HasPrefix(x.Text, "报文共 ") || x.Text == "正在读取记录…" || x.Text == "" {
+				if strings.HasPrefix(x.Text, "报文共 ") || strings.HasPrefix(x.Text, "正在读取") || x.Text == "" {
 					info = x
 				}
 			case *fyne.Container:
@@ -283,9 +287,10 @@ func TestRecordingAndHistory(t *testing.T) {
 		}
 	}
 	walk(hw.Content())
-	if sel == nil || len(sel.Options) != 1 || !strings.Contains(sel.Options[0], "内置模拟器") {
-		t.Fatalf("历史报文应列出这次连接：%v", sel)
-	}
+	// 连接列表在后台读取
+	waitFor(t, 3*time.Second, "历史报文列出这次连接", func() bool {
+		return sel != nil && len(sel.Options) == 1 && strings.Contains(sel.Options[0], "内置模拟器")
+	})
 	locked(func() { sel.SetSelected(sel.Options[0]) })
 	waitFor(t, 3*time.Second, "载入记录", func() bool {
 		for _, l := range labels {

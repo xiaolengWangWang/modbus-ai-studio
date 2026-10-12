@@ -143,9 +143,9 @@ func TestIndependentPointProbeKeepsMainSessionAndContinuesPastDisconnects(t *tes
 		}
 		report := overlayText(ws)
 		for _, want := range []string{
-			"7 个点：可读 5", "读取出错 2", "未检测 0",
+			"7 个点：可读 3", "整段有返回 2（未逐点验证）", "读取出错 2", "未检测 0",
 			"40002 断线点一（UINT16）：读取出错", "40004 断线点二（UINT16）：读取出错",
-			"40001–40005（5 个点）：整段读不通", "40009–40010（2 个点）：整段可读",
+			"40001–40005（5 个点）：整段读不通", "40009–40010（2 个点）：整段有返回，各点未单独验证",
 		} {
 			if !strings.Contains(report, want) {
 				t.Errorf("逐点定位后应完成后续好点，报告缺少 %q：%s", want, report)
@@ -194,7 +194,7 @@ func TestIndependentPointProbeStartsWithoutMainConnection(t *testing.T) {
 			t.Error("独立点位检测不应创建主会话")
 		}
 		report := overlayText(ws)
-		if !strings.Contains(report, "2 个点：可读 2") || !strings.Contains(report, "40001–40002（2 个点）：整段可读") {
+		if !strings.Contains(report, "2 个点：可读 0  ·  整段有返回 2") || !strings.Contains(report, "40001–40002（2 个点）：整段有返回，各点未单独验证") {
 			t.Errorf("独立连接应读完连续点位：%s", report)
 		}
 	})
@@ -234,7 +234,7 @@ func TestIndependentPointProbeReleasesMainSocketForSingleClientDevice(t *testing
 		if ws.session != primary || primary.lost != nil || len(primary.losses) != 0 {
 			t.Error("单客户端检测不能丢失或触发主会话断线")
 		}
-		if report := overlayText(ws); !strings.Contains(report, "2 个点：可读 2") {
+		if report := overlayText(ws); !strings.Contains(report, "2 个点：可读 0  ·  整段有返回 2") {
 			t.Errorf("释放主 socket 后应完成独立检测：%s", report)
 		}
 	})
@@ -348,7 +348,7 @@ func TestIndependentPointProbeTakesOverInFlightMainReconnect(t *testing.T) {
 		if ws.session != primary || primary.lost != nil || len(primary.losses) != lossesBefore || primary.reconnects != reconnectsBefore {
 			t.Error("检测应接管重连并恢复原主会话，不能增加主会话损失或常规重连")
 		}
-		if report := overlayText(ws); !strings.Contains(report, "2 个点：可读 2") {
+		if report := overlayText(ws); !strings.Contains(report, "2 个点：可读 0  ·  整段有返回 2") {
 			t.Errorf("独占连接后应读完正常点位：%s", report)
 		}
 	})

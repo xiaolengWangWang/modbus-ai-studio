@@ -17,6 +17,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/assets/icon"
+	"modbus-ai-studio/internal/modbus"
 	"modbus-ai-studio/internal/recorder"
 	"modbus-ai-studio/platform"
 )
@@ -125,10 +126,17 @@ func (ws *Workspace) openHistory() {
 			in.clear()
 		}
 	}
+	// 异常报文来自单独的 anomalies 表：不受报文页只显示最后 maxTraffic 条的限制，每条带上同一请求的发送帧
+	ap := newTrafficPanel(ws)
+	ap.pauseBtn.Hide()
+	ap.title.Hide()
+	ap.onSelect = in.showPacket
+	ap.onUnselect = tp.onUnselect
+	anomalyTab := container.NewTabItem("异常报文", ap.root)
 	fl := newFaultLog(ws.app)
 	fl.onSelect = in.showLog
 	logTab := container.NewTabItem("日志", fl.root)
-	tabs := container.NewAppTabs(container.NewTabItem("报文", tp.root), logTab)
+	tabs := container.NewAppTabs(container.NewTabItem("报文", tp.root), anomalyTab, logTab)
 	fl.onChange = func(n int) {
 		logTab.Text = fmt.Sprintf("日志 (%d)", n)
 		tabs.Refresh()
@@ -163,28 +171,34 @@ func (ws *Workspace) openHistory() {
 			queryPath := selectedPath
 			info.SetText("正在读取记录…")
 			tp.clear()
+			ap.clear()
 			in.packetContext = nil
 			fl.set(nil)
 			in.clear()
 			go func() {
 				ps, err := r.PacketsFile(queryPath, s.ID, maxTraffic)
+				anomalies, err3 := r.AnomaliesFile(queryPath, s.ID, maxTraffic)
 				events, err2 := r.EventsFile(queryPath, s.ID)
+				aps := anomalyPackets(anomalies)
 				uiDo(func() {
 					if closed || request != generation {
 						return // 切换会话或关闭窗口后，丢弃旧查询结果
 					}
-					if err = errors.Join(err, err2); err != nil {
+					if err = errors.Join(err, err2, err3); err != nil {
 						info.SetText("读取失败：" + err.Error())
 						return
 					}
 					tp.setPackets(ps)
+					ap.setPackets(aps)
+					anomalyTab.Text = fmt.Sprintf("异常报文 (%d)", len(anomalies))
+					tabs.Refresh()
 					in.packetContext = ps
 					var es []logEntry
 					for _, e := range events {
 						es = append(es, logEntry{Event: e, mode: s.Mode})
 					}
 					fl.set(es)
-					text := fmt.Sprintf("报文共 %d 条，显示最后 %d 条；日志 %d 条", s.Packets, len(ps), len(es))
+					text := fmt.Sprintf("报文共 %d 条，显示最后 %d 条；异常 %d 条；日志 %d 条", s.Packets, len(ps), len(anomalies), len(es))
 					if len(ps) == 0 && len(es) > 0 {
 						tabs.Select(logTab)
 					} else {
@@ -195,37 +209,50 @@ func (ws *Workspace) openHistory() {
 			}()
 		}
 	}
+	// load 在后台读连接列表：大文件统计每次连接的报文数要一些时间，界面照常响应；换文件或关窗后丢弃旧结果。
 	load := func() {
-		ss, err := r.SessionsFile(selectedPath, 200)
-		if err != nil {
-			info.SetText("读取失败：" + err.Error())
-			return
-		}
-		sessions = ss
 		generation++
-		sel.ClearSelected()
-		var names []string
-		selected := 0
-		for i, s := range ss {
-			label := sessionLabel(s, r.Running(s.ID))
-			if selectedPath != r.Path() && s.End.IsZero() && !r.Running(s.ID) {
-				label = strings.Replace(label, "未正常断开", "文件内的连接分段", 1)
-			}
-			names = append(names, label)
-			if s.ID == selectedID {
-				selected = i
-			}
-		}
-		sel.SetOptions(names)
-		if len(ss) == 0 {
-			selectedID = 0
-			tp.clear()
-			fl.set(nil)
-			in.clear()
-			info.SetText("还没有记录。连接后全部收发会自动记录；单个文件上限 50 MB，旧文件保留。")
-		} else {
-			sel.SetSelectedIndex(selected) // 保留所选会话并重读；首次打开选最近一次连接
-		}
+		request := generation
+		queryPath := selectedPath
+		info.SetText("正在读取连接列表…")
+		sel.SetOptions(nil) // 读完之前不能选旧文件里的连接
+		go func() {
+			ss, err := r.SessionsFile(queryPath, 200)
+			uiDo(func() {
+				if closed || request != generation {
+					return
+				}
+				if err != nil {
+					info.SetText("读取失败：" + err.Error())
+					return
+				}
+				sessions = ss
+				sel.ClearSelected()
+				var names []string
+				selected := 0
+				for i, s := range ss {
+					label := sessionLabel(s, r.Running(s.ID))
+					if queryPath != r.Path() && s.End.IsZero() && !r.Running(s.ID) {
+						label = strings.Replace(label, "未正常断开", "文件内的连接分段", 1)
+					}
+					names = append(names, label)
+					if s.ID == selectedID {
+						selected = i
+					}
+				}
+				sel.SetOptions(names)
+				if len(ss) == 0 {
+					selectedID = 0
+					tp.clear()
+					ap.clear()
+					fl.set(nil)
+					in.clear()
+					info.SetText("还没有记录。连接后全部收发会自动记录；单个文件上限 50 MB，旧文件保留。")
+				} else {
+					sel.SetSelectedIndex(selected) // 保留所选会话并重读；首次打开选最近一次连接
+				}
+			})
+		}()
 	}
 	path := widget.NewLabel("")
 	path.Selectable = true
@@ -304,6 +331,27 @@ func (ws *Workspace) openHistory() {
 	w.SetContent(container.NewBorder(container.NewVBox(fileRow, top, info), container.NewBorder(nil, nil, nil, dbBtns, path), nil, nil, split))
 	ws.addTool(w, func() { closed = true; in.closed = true; ws.historyWin = nil })
 	showTool(w)
+}
+
+// anomalyPackets 把异常记录排成报文列表：先列同一请求的发送帧（同一请求有多条异常时只列一次），再列异常那一行。
+func anomalyPackets(as []recorder.Anomaly) []modbus.Packet {
+	var out []modbus.Packet
+	type key struct {
+		conn string
+		req  uint64
+	}
+	var last key
+	for _, a := range as {
+		p := a.Packet
+		if k := (key{p.ConnectionID, p.RequestID}); a.TX != nil && p.Dir == modbus.DirRX && k != last {
+			tx := p
+			tx.Time, tx.Dir, tx.Raw, tx.Status, tx.Err, tx.RTT = a.TXTime, modbus.DirTX, a.TX, modbus.StatusSent, nil, 0
+			out = append(out, tx)
+			last = k
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // 测试时替换，不真的打开访达 / 资源管理器。

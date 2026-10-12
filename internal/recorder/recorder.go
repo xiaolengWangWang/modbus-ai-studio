@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -57,11 +58,69 @@ CREATE TABLE IF NOT EXISTS events (
 	data_codec INTEGER NOT NULL DEFAULT 0,
 	rx         BLOB                         -- 收到的原始响应，超时为空
 );
+CREATE TABLE IF NOT EXISTS anomalies (
+	id            INTEGER PRIMARY KEY,
+	session_id    INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	time          INTEGER NOT NULL, -- 异常那一行的时间，Unix 微秒
+	request_id    INTEGER NOT NULL,
+	connection_id TEXT    NOT NULL DEFAULT '',
+	direction     TEXT    NOT NULL, -- 异常那一行的方向：多为 RX；发送失败为 TX
+	protocol      TEXT    NOT NULL,
+	slave         INTEGER NOT NULL,
+	tx_id         INTEGER NOT NULL,
+	function      INTEGER NOT NULL,
+	address       INTEGER NOT NULL,
+	count         INTEGER NOT NULL,
+	status        TEXT    NOT NULL, -- TIMEOUT、EXCEPTION、NONSTANDARD、UNEXPECTED、LATE_RESPONSE、CRC_ERROR ……，不含 CANCELLED
+	error         TEXT,
+	rtt_us        INTEGER NOT NULL,
+	tx_time       INTEGER,          -- 同一请求发送的时间，Unix 微秒；没有记录到时为 NULL
+	tx_raw        BLOB,             -- 同一请求发出的原始请求帧
+	rx_raw        BLOB              -- 异常那一行收到的原始字节；超时为空
+);
 CREATE INDEX IF NOT EXISTS sessions_recent ON sessions(started_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS packets_session ON packets(session_id, id);
 CREATE INDEX IF NOT EXISTS packets_time ON packets(time);
 CREATE INDEX IF NOT EXISTS events_session ON events(session_id, id);
+CREATE INDEX IF NOT EXISTS anomalies_session ON anomalies(session_id, id);
+CREATE INDEX IF NOT EXISTS anomalies_time ON anomalies(time);
 `
+
+// abnormal 表示这一行要另存进 anomalies：状态不是正常发送或正常响应。取消是断开或停止造成的，不算异常数据。
+func abnormal(s modbus.Status) bool {
+	return s != modbus.StatusSent && s != modbus.StatusSuccess && s != modbus.StatusCancelled
+}
+
+// txKey 找到异常行对应的发送帧：同一会话、同一连接代次里 RequestID 相同。
+type txKey struct {
+	session    int64
+	connection string
+	request    uint64
+}
+
+type sentFrame struct {
+	time int64
+	raw  []byte
+}
+
+// txFrames 记住最近发出的请求帧，供异常行配对。分两代保存，新一代满了就丢掉更旧的一代，
+// 内存有界；请求和它的结果一般在同一批或相邻一批写入。只由写入 goroutine 使用。
+type txFrames struct{ cur, prev map[txKey]sentFrame }
+
+func (t *txFrames) put(k txKey, f sentFrame) {
+	if t.cur == nil || len(t.cur) >= 1024 {
+		t.prev, t.cur = t.cur, make(map[txKey]sentFrame)
+	}
+	t.cur[k] = f
+}
+
+func (t *txFrames) get(k txKey) (sentFrame, bool) {
+	if f, ok := t.cur[k]; ok {
+		return f, ok
+	}
+	f, ok := t.prev[k]
+	return f, ok
+}
 
 type item struct {
 	session int64
@@ -89,6 +148,7 @@ type Recorder struct {
 	writeErr  error        // only the writer sets this; Close reads it after done
 	Dropped   atomic.Int64 // 缓冲满或写入失败而丢掉的记录数，状态栏会提示
 	running   sync.Map     // 本进程里开始了、还没结束的会话 ID
+	sent      txFrames     // 最近的请求帧，异常行写入 anomalies 时配对
 }
 
 // DefaultPath 返回本机数据库位置：macOS 为 ~/Library/Application Support/ModbusAIStudio/packets.db，
@@ -357,6 +417,13 @@ func (r *Recorder) insertBatch(batch []item) error {
 		return err
 	}
 	defer st.Close()
+	// 异常行同时写进 anomalies，和 packets 在同一个事务里，不会只写了一边
+	ast, err := tx.Prepare(`INSERT INTO anomalies (session_id, time, request_id, connection_id, direction, protocol, slave, tx_id,
+		function, address, count, status, error, rtt_us, tx_time, tx_raw, rx_raw) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer ast.Close()
 	for _, it := range batch {
 		p := it.p
 		raw, codec, err := encodeData(p.Raw)
@@ -371,8 +438,77 @@ func (r *Recorder) insertBatch(batch []item) error {
 			byte(p.Function), p.Address, p.Count, raw, string(p.Status), p.RTT.Microseconds(), e, p.ConnectionID, codec); err != nil {
 			return err
 		}
+		key := txKey{it.session, p.ConnectionID, p.RequestID}
+		if p.Dir == modbus.DirTX && p.Status == modbus.StatusSent {
+			r.sent.put(key, sentFrame{p.Time.UnixMicro(), p.Raw})
+		}
+		if !abnormal(p.Status) {
+			continue
+		}
+		var txTime, txRaw, rxRaw any
+		if p.Dir == modbus.DirTX { // 发送失败：这一行本身就是请求帧
+			txTime, txRaw = p.Time.UnixMicro(), p.Raw
+		} else {
+			rxRaw = p.Raw
+			if f, ok := r.sent.get(key); ok && p.Status != modbus.StatusLate { // 晚到帧不一定属于这条请求，不配对
+				txTime, txRaw = f.time, f.raw
+			}
+		}
+		if _, err := ast.Exec(it.session, p.Time.UnixMicro(), p.RequestID, p.ConnectionID, string(p.Dir), string(p.Mode), p.Slave, p.TxID,
+			byte(p.Function), p.Address, p.Count, string(p.Status), e, p.RTT.Microseconds(), txTime, txRaw, rxRaw); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
+}
+
+// Anomaly 是 anomalies 表的一行：一条异常收发和同一请求发出的请求帧。
+type Anomaly struct {
+	Packet modbus.Packet // 异常的那一行（超时、异常、非标准响应、不匹配、晚到、校验错误、连接错误……）
+	TXTime time.Time     // 请求发送时间；没有配对到请求帧时为零值
+	TX     []byte        // 请求帧；晚到帧或没有记录到时为空
+}
+
+// Anomalies 返回会话最后 limit 条异常记录，按时间正序。1.3.0 之前的文件没有这张表，返回空。
+func (r *Recorder) Anomalies(session int64, limit int) ([]Anomaly, error) {
+	r.dbMu.RLock()
+	defer r.dbMu.RUnlock()
+	var name string
+	switch err := r.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'anomalies'`).Scan(&name); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	rows, err := r.db.Query(`SELECT time, request_id, connection_id, direction, protocol, slave, tx_id, function, address, count,
+		status, error, rtt_us, tx_time, tx_raw, rx_raw FROM anomalies WHERE session_id = ? ORDER BY id DESC LIMIT ?`, session, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Anomaly
+	for rows.Next() {
+		var a Anomaly
+		p := &a.Packet
+		var t, rtt int64
+		var txTime sql.NullInt64
+		var fn byte
+		var e sql.NullString
+		if err := rows.Scan(&t, &p.RequestID, &p.ConnectionID, &p.Dir, &p.Mode, &p.Slave, &p.TxID, &fn, &p.Address, &p.Count,
+			&p.Status, &e, &rtt, &txTime, &a.TX, &p.Raw); err != nil {
+			return nil, err
+		}
+		p.Time, p.Function, p.RTT = time.UnixMicro(t), modbus.FunctionCode(fn), time.Duration(rtt)*time.Microsecond
+		if e.Valid {
+			p.Err = errors.New(e.String)
+		}
+		if txTime.Valid {
+			a.TXTime = time.UnixMicro(txTime.Int64)
+		}
+		out = append(out, a)
+	}
+	slices.Reverse(out)
+	return out, rows.Err()
 }
 
 // Close 写完缓冲里剩下的记录后关闭数据库。
@@ -642,8 +778,12 @@ func (r *Recorder) Prune(before time.Time) error {
 	if _, err := r.db.Exec(`DELETE FROM events WHERE time < ?`, before.UnixMilli()); err != nil {
 		return err
 	}
+	if _, err := r.db.Exec(`DELETE FROM anomalies WHERE time < ?`, before.UnixMicro()); err != nil {
+		return err
+	}
 	_, err := r.db.Exec(`DELETE FROM sessions WHERE COALESCE(ended_at, started_at) < ?
 		AND NOT EXISTS (SELECT 1 FROM packets WHERE session_id = sessions.id)
-		AND NOT EXISTS (SELECT 1 FROM events WHERE session_id = sessions.id)`, before.UnixMilli())
+		AND NOT EXISTS (SELECT 1 FROM events WHERE session_id = sessions.id)
+		AND NOT EXISTS (SELECT 1 FROM anomalies WHERE session_id = sessions.id)`, before.UnixMilli())
 	return err
 }

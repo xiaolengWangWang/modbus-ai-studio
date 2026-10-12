@@ -80,6 +80,38 @@ func AsException(err error) (*ExceptionError, bool) {
 	return e, ok
 }
 
+// EchoFunction 是读请求被原样回显时响应里的功能码。MCGS 数据转发接口读到没有转发数据的地址时这样回：
+// FC03 请求 03 00 08 00 02，响应 89 00 08 00 02。0x89 不是 FC03 的异常（83），后面的 00 也不是异常码。
+const EchoFunction = 0x89
+
+// NonstandardError 表示从站回了一帧属于本次请求、但既不是正常响应也不是标准异常的响应，没有寄存器数据。
+// 目前只认读寄存器请求被原样回显、功能码换成 89 的帧（见 EchoFunction）。
+// Modbus TCP 下事务号和 Unit ID 都与请求一致才这样判定，其他情况按对不上的帧丢弃、继续等待。
+type NonstandardError struct {
+	Function FunctionCode // 请求的功能码
+	PDU      []byte       // 收到的响应 PDU，原样保留
+}
+
+func (e *NonstandardError) Error() string {
+	return fmt.Sprintf("modbus: 非标准响应：请求 %02X，响应功能码 %02X 原样回显了请求的地址和数量，不是正常响应也不是标准异常",
+		byte(e.Function), e.PDU[0])
+}
+
+// AsNonstandard 判断 err 是否为非标准响应。
+func AsNonstandard(err error) (*NonstandardError, bool) {
+	var e *NonstandardError
+	ok := errors.As(err, &e)
+	return e, ok
+}
+
+// isReadEcho 判断 pdu 是不是 FC03 / FC04 请求的 89 回显：5 字节，地址和数量与请求完全相同。
+func isReadEcho(req Request, pdu []byte) bool {
+	if req.Function != FuncReadHoldingRegisters && req.Function != FuncReadInputRegisters || len(pdu) != 5 || pdu[0] != EchoFunction {
+		return false
+	}
+	return int(pdu[1])<<8|int(pdu[2]) == int(req.Address) && int(pdu[3])<<8|int(pdu[4]) == int(req.Quantity)
+}
+
 // ExceptionPDU 生成异常响应 PDU（模拟器使用）。
 func ExceptionPDU(f FunctionCode, code ExceptionCode) []byte {
 	return []byte{byte(f) | 0x80, byte(code)}

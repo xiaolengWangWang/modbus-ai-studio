@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -341,15 +342,16 @@ func (t *trafficPanel) copy() {
 	t.ws.app.Clipboard().SetContent(t.text())
 }
 
+// save 在界面线程取好可见报文的文字，写盘在后台进行，磁盘或网络盘慢时界面不卡。
 func (t *trafficPanel) save() {
 	d := dialog.NewFileSave(func(wc fyne.URIWriteCloser, err error) {
 		if err != nil || wc == nil {
 			return
 		}
-		defer wc.Close()
-		if _, err := wc.Write([]byte(t.text())); err != nil {
-			dialog.ShowError(err, t.ws.win)
-		}
+		data := []byte(t.text())
+		t.ws.fileTask(t.ws.win, "保存报文", "正在保存报文："+wc.URI().Name(), func(ctx context.Context) (func(), error) {
+			return nil, writeAll(ctx, wc, data)
+		})
 	}, t.ws.win)
 	d.SetFileName("modbus-traffic-" + time.Now().Format("20060102-150405") + ".txt")
 	d.Show()
@@ -358,6 +360,7 @@ func (t *trafficPanel) save() {
 var statusText = map[modbus.Status]string{
 	modbus.StatusTimeout:         "超时",
 	modbus.StatusException:       "异常",
+	modbus.StatusNonstandard:     "非标准响应",
 	modbus.StatusCRCError:        "CRC 错误，已丢弃",
 	modbus.StatusLate:            "晚到响应，已丢弃",
 	modbus.StatusUnexpected:      "不匹配，已丢弃",

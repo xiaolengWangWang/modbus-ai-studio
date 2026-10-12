@@ -15,6 +15,7 @@ var statusExplain = map[modbus.Status]string{
 	modbus.StatusCRCError:        "校验（RTU 为 CRC，ASCII 为 LRC）失败，整帧丢弃。常见原因：波特率 / 校验位不一致、线路干扰，或协议选错。",
 	modbus.StatusLate:            "这帧在超时之后才到达，或是上一次通信遗留的字节，已丢弃，不会当作下一条请求的响应。",
 	modbus.StatusUnexpected:      "这帧与请求对不上（Slave、功能码、字节数或回显不符），已丢弃并继续等待。",
+	modbus.StatusNonstandard:     "这帧的事务号、Unit ID 与请求一致，属于本次请求，但既不是正常响应也不是标准异常，没有寄存器数据，按读取失败处理。",
 	modbus.StatusCancelled:       "请求被取消（断开连接或停止轮询）。",
 	modbus.StatusConnectionError: "连接错误：连接已断开或读写失败。",
 	modbus.StatusParseError:      "收到的字节不是合法报文，已丢弃。Modbus TCP 下多半说明设备其实是 RTU over TCP。",
@@ -174,13 +175,29 @@ func describePDU(w *fieldWriter, p modbus.Packet, pdu []byte) {
 	}
 	fc := pdu[0]
 	if fc&0x80 != 0 {
-		base := modbus.FunctionCode(fc & 0x7F)
-		w.add("功能码", pdu[:1], "%02X = %s 的异常响应", fc, base)
-		if len(pdu) >= 2 {
-			code := modbus.ExceptionCode(pdu[1])
-			w.add("异常码", pdu[1:2], "%s", code.Description())
-			w.rows = append(w.rows, decodeRow{Name: "建议", Meaning: code.Tip()})
+		// 晚到帧可能属于别的请求，记录行上的功能码不一定是它的请求
+		want := p.Function
+		if p.Status == modbus.StatusLate {
+			want = 0
 		}
+		if p.Dir == modbus.DirRX && want != 0 && (fc != byte(want)|0x80 || len(pdu) != 2) {
+			describeNonstandard(w, p, want, pdu)
+			return
+		}
+		base := modbus.FunctionCode(fc & 0x7F)
+		if len(pdu) != 2 {
+			w.add("功能码", pdu[:1], "%02X：最高位为 1，形式上像 %s 的异常响应", fc, base)
+			if len(pdu) > 2 {
+				w.add("数据", pdu[1:], "标准异常只有 1 字节异常码，这里有 %d 字节，不按异常码解读", len(pdu)-1)
+			} else {
+				w.line("缺少异常码")
+			}
+			return
+		}
+		w.add("功能码", pdu[:1], "%02X = %s 的异常响应", fc, base)
+		code := modbus.ExceptionCode(pdu[1])
+		w.add("异常码", pdu[1:2], "%s", code.Description())
+		w.rows = append(w.rows, decodeRow{Name: "建议", Meaning: code.Tip()})
 		return
 	}
 	f := modbus.FunctionCode(fc)
@@ -267,6 +284,23 @@ func describePDU(w *fieldWriter, p modbus.Packet, pdu []byte) {
 	}
 }
 
+// describeNonstandard 解释最高位为 1、却不是请求功能码的标准异常（功能码不对，或不止 2 字节）的响应：
+// 读请求被原样回显时列出回显的地址和数量，其余按原样显示，不把第二个字节当作异常码。
+func describeNonstandard(w *fieldWriter, p modbus.Packet, want modbus.FunctionCode, pdu []byte) {
+	w.add("功能码", pdu[:1], "%02X：请求是 %s，正常响应应为 %02X，标准异常应为 %02X 且只有 2 字节，这帧两者都不是",
+		pdu[0], want, byte(want), byte(want)|0x80)
+	data := pdu[1:]
+	if want.IsRead() && len(data) == 4 && binary.BigEndian.Uint16(data) == p.Address && binary.BigEndian.Uint16(data[2:]) == p.Count {
+		w.add("回显地址", data[0:2], "Offset %d（%s），与请求相同", p.Address, modbus.Reference(modbus.AreaOf(want), p.Address))
+		w.add("回显数量", data[2:4], "%d，与请求相同", p.Count)
+		w.line("这帧原样回显了请求的地址和数量，没有数据；后面的字节是地址，不是异常码。")
+		return
+	}
+	if len(data) > 0 {
+		w.add("数据", data, "%d 字节，按原样显示，不按异常码解读", len(data))
+	}
+}
+
 func coilValue(v int) string {
 	switch v {
 	case 0xFF00:
@@ -323,6 +357,9 @@ func describeBits(w *fieldWriter, area modbus.Area, addr, n int, b []byte) {
 // describePDUOnly 解析自定义请求的请求或响应 PDU。响应里没有地址，地址和数量取自请求 PDU。
 func describePDUOnly(dir modbus.Direction, reqPDU, pdu []byte, pts pointTable) []decodeRow {
 	p := modbus.Packet{Dir: dir}
+	if len(reqPDU) > 0 {
+		p.Function = modbus.FunctionCode(reqPDU[0])
+	}
 	if len(reqPDU) >= 5 {
 		p.Address = binary.BigEndian.Uint16(reqPDU[1:3])
 		p.Count = binary.BigEndian.Uint16(reqPDU[3:5])

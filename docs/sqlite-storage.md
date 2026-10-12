@@ -11,8 +11,9 @@
 | `sessions` | 一次设备连接的起止、协议、目标和窗口 | `id` 为整数主键；会话编号跨进程随机起点递增，不能作为时间使用 |
 | `packets` | 每次发送、接收和失败结果 | `id` 为文件内整数主键；`session_id` 引用 `sessions.id`，删除会话时级联删除 |
 | `events` | 连接、故障、恢复及诊断日志 | `id` 为文件内整数主键；`session_id` 同样引用会话 |
+| `anomalies` | 异常收发的原始报文，每行带同一请求的发送帧（1.3.0 起） | `id` 为文件内整数主键；`session_id` 同样引用会话 |
 
-跨文件继续写入的会话会复制其元数据到新文件。`packets.id`、`events.id` 仅在各自文件内唯一；跨文件定位记录时需要同时保存文件路径。外键在写入连接上启用。
+跨文件继续写入的会话会复制其元数据到新文件。`packets.id`、`events.id`、`anomalies.id` 仅在各自文件内唯一；跨文件定位记录时需要同时保存文件路径。外键在写入连接上启用。
 
 ### sessions
 
@@ -41,7 +42,7 @@
 | `address`、`count` | INTEGER NOT NULL | 请求起始地址（协议零基偏移）、数量 |
 | `raw` | BLOB，可为 NULL | 原始报文字节，或其 zlib 压缩结果；超时等无报文时为 NULL |
 | `raw_codec` | INTEGER NOT NULL，默认 0 | 0 原文，1 zlib |
-| `status` | TEXT NOT NULL | `SENT`、`SUCCESS`、`TIMEOUT`、`EXCEPTION`、`CRC_ERROR`、`CONNECTION_ERROR`、`PARSE_ERROR`、`CANCELLED`、`LATE_RESPONSE`、`UNEXPECTED` |
+| `status` | TEXT NOT NULL | `SENT`、`SUCCESS`、`TIMEOUT`、`EXCEPTION`、`NONSTANDARD`、`CRC_ERROR`、`CONNECTION_ERROR`、`PARSE_ERROR`、`CANCELLED`、`LATE_RESPONSE`、`UNEXPECTED`。`NONSTANDARD`（1.3.0 起）是事务号、Unit ID 与请求一致，但既不是正常响应也不是标准异常的帧，例如功能码 89 原样回显读请求的地址和数量 |
 | `rtt_us` | INTEGER NOT NULL | 响应耗时，微秒；发送行通常为 0 |
 | `error` | TEXT，可为 NULL | 错误文字 |
 
@@ -58,6 +59,32 @@
 | `analysis` | TEXT NOT NULL，默认空串；压缩时存为 BLOB | 原因分析和报文字段解析 |
 | `tx`、`rx` | BLOB，可为 NULL | 原始请求、响应，或各自的 zlib 压缩结果 |
 | `data_codec` | INTEGER NOT NULL，默认 0 | 按位标记压缩字段：1 TX、2 RX、4 analysis、8 detail；各位可组合 |
+
+### anomalies
+
+`packets` 里状态不是 `SENT`、`SUCCESS`、`CANCELLED` 的行，同时写一行进这张表，和 packets 在同一个事务里。取消是断开或停止轮询造成的，不算异常数据。每行把收到的异常字节和同一请求发出的请求帧放在一起，查一次就能看到“发了什么、回了什么”；packets 表照常保留全部记录。历史报文窗口的“异常报文”页读这张表，不受报文页只显示最后 5000 条的限制。
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id`、`session_id` | INTEGER NOT NULL | 文件内编号、所属会话 |
+| `time` | INTEGER NOT NULL | 异常那一行的时间，Unix 微秒 |
+| `request_id`、`connection_id` | INTEGER / TEXT | 与 packets 相同，可以据此回到 packets 表找同一请求的全部行 |
+| `direction` | TEXT NOT NULL | 异常那一行的方向：多为 `RX`；发送失败为 `TX` |
+| `protocol`、`slave`、`tx_id`、`function`、`address`、`count` | | 与 packets 相同 |
+| `status`、`error`、`rtt_us` | | 异常那一行的状态、错误文字、耗时 |
+| `tx_time` | INTEGER，可为 NULL | 同一请求的发送时间，Unix 微秒 |
+| `tx_raw` | BLOB，可为 NULL | 同一请求发出的原始请求帧；晚到帧（`LATE_RESPONSE`）不一定属于当时的请求，不配对，为 NULL；发送失败时为发送的帧 |
+| `rx_raw` | BLOB，可为 NULL | 异常那一行收到的原始字节；超时为 NULL |
+
+Modbus 帧不超过 260 字节，这张表的报文不压缩，管理工具可以直接查看。1.3.0 之前的文件没有这张表：按路径只读查看时当作没有异常记录，不修改文件；作为当前写入文件打开时自动建表，表里只有之后的异常。
+
+```sql
+SELECT time, status, hex(tx_raw), hex(rx_raw), error
+FROM anomalies
+WHERE session_id = ?
+ORDER BY id DESC
+LIMIT 100;
+```
 
 ## 压缩与兼容
 
@@ -96,6 +123,8 @@ with sqlite3.connect("file:packets.sqlite3?mode=ro", uri=True) as db:
 | `packets_session(session_id, id)` | 按会话取最后若干条报文、游标分页、会话计数 |
 | `packets_time(time)` | 按时间定位和清理报文 |
 | `events_session(session_id, id)` | 会话日志、故障与断开计数 |
+| `anomalies_session(session_id, id)` | 按会话取最后若干条异常报文 |
+| `anomalies_time(time)` | 按时间定位和清理异常报文 |
 
 历史会话列表先按索引取最近 N 个会话，再统计这些会话的报文与事件。统计只读状态等元数据，不读取或解压 BLOB。报文列表使用 `ORDER BY id DESC LIMIT ?`，只解压返回行。
 
