@@ -20,22 +20,23 @@ import (
 var version = "dev"
 
 var (
-	target  = flag.String("target", "", "TCP 地址，例如 192.168.1.100:502")
-	port    = flag.String("port", "", "串口，例如 COM3、/dev/ttyUSB0、/dev/cu.usbserial-xxx")
-	baud    = flag.Int("baud", 9600, "波特率")
-	parity  = flag.String("parity", "N", "校验位：N、E、O")
-	stop    = flag.Int("stop", 1, "停止位：1 或 2")
-	modeArg = flag.String("mode", "", "协议：tcp、rtu-over-tcp、ascii-over-tcp、rtu、ascii（默认 TCP 地址用 tcp，串口用 rtu）")
-	dataBit = flag.Int("databits", 8, "数据位：8，Modbus ASCII 常用 7")
-	slave   = flag.Uint("slave", 1, "Slave ID（站号）")
-	timeout = flag.Duration("timeout", time.Second, "响应超时，例如 500ms、3s；scan 没指定时每个站号等 200ms")
-	fcArg   = flag.Int("fc", 0, "功能码。read：1 线圈、2 离散输入、3 保持寄存器、4 输入寄存器；\nwrite：5 单个线圈、6 单个寄存器、16 多个寄存器。不填时按地址写法判断（40001 → 3，30001 → 4，10001 → 2）")
-	typ     = flag.String("type", "uint16", "寄存器的数据类型：int16、uint16、int32、uint32、float32、int64、uint64、float64")
-	order   = flag.String("order", "", "字节序：AB、BA、ABCD、CDAB、BADC、DCBA，64 位还可写 ABCDEFGH、GHEFCDAB、BADCFEHG、HGFEDCBA\n（默认标准大端；64 位写 32 位的名字时按同样规则换算，CDAB 即 GHEFCDAB）")
-	scale   = flag.Float64("scale", 1, "工程值 = 原始值 × scale")
-	jsonOut = flag.Bool("json", false, "结果按 JSON 打印到标准输出（一个对象，ok 表示是否成功），方便脚本和 AI 解析")
-	trace   = flag.Bool("trace", false, "把收发报文打印到标准错误")
-	echo    = flag.Bool("echo", false, "丢弃 RS485 转换器回显的发送帧")
+	target     = flag.String("target", "", "TCP 地址，例如 192.168.1.100:502")
+	port       = flag.String("port", "", "串口，例如 COM3、/dev/ttyUSB0、/dev/cu.usbserial-xxx")
+	baud       = flag.Int("baud", 9600, "波特率")
+	parity     = flag.String("parity", "N", "校验位：N、E、O")
+	stop       = flag.Int("stop", 1, "停止位：1 或 2")
+	modeArg    = flag.String("mode", "", "协议：tcp、rtu-over-tcp、ascii-over-tcp、rtu、ascii（默认 TCP 地址用 tcp，串口用 rtu）")
+	dataBit    = flag.Int("databits", 8, "数据位：8，Modbus ASCII 常用 7")
+	slave      = flag.Uint("slave", 1, "Slave ID（站号）")
+	timeout    = flag.Duration("timeout", time.Second, "响应超时，例如 500ms、3s；scan 没指定时每个站号等 200ms")
+	fcArg      = flag.Int("fc", 0, "功能码。read：1 线圈、2 离散输入、3 保持寄存器、4 输入寄存器；\nwrite：5 单个线圈、6 单个寄存器、16 多个寄存器。不填时按地址写法判断（40001 → 3，30001 → 4，10001 → 2）")
+	typ        = flag.String("type", "uint16", "寄存器的数据类型：int16、uint16、int32、uint32、float32、int64、uint64、float64")
+	order      = flag.String("order", "", "字节序：AB、BA、ABCD、CDAB、BADC、DCBA，64 位还可写 ABCDEFGH、GHEFCDAB、BADCFEHG、HGFEDCBA\n（默认标准大端；64 位写 32 位的名字时按同样规则换算，CDAB 即 GHEFCDAB）")
+	scale      = flag.Float64("scale", 1, "工程值 = 原始值 × scale")
+	pointsFile = flag.String("points", "", "点表文件（CSV 或 xlsx，本程序的点表或平台导出的设备属性表），points、get、set 命令用")
+	jsonOut    = flag.Bool("json", false, "结果按 JSON 打印到标准输出（一个对象，ok 表示是否成功），方便脚本和 AI 解析")
+	trace      = flag.Bool("trace", false, "把收发报文打印到标准错误")
+	echo       = flag.Bool("echo", false, "丢弃 RS485 转换器回显的发送帧")
 )
 
 func main() {
@@ -62,6 +63,12 @@ func main() {
 		runScan(ctx, rest)
 	case cmd == "raw" && len(rest) > 0:
 		runRaw(ctx, strings.Join(rest, ""))
+	case cmd == "points" && len(rest) == 0:
+		runPoints()
+	case cmd == "get":
+		runGet(ctx, rest)
+	case cmd == "set" && len(rest) == 2:
+		runSet(ctx, rest[0], rest[1])
 	default:
 		if *jsonOut {
 			output(failure{Error: "命令或参数个数不对，运行 modbus-cli manual 查看用法"}, nil)

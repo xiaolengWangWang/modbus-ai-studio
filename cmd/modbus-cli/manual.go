@@ -6,7 +6,8 @@ import (
 )
 
 const usage = `用法：modbus-cli [选项] <命令> [参数]（选项写在命令前面）
-  read <地址> <数量> · write <地址> <值> · detect · scan [起始 结束] · raw <PDU> · manual · version
+  read <地址> <数量> · write <地址> <值> · detect · scan [起始 结束] · raw <PDU>
+  -points 点表 points · get [点名…] · set <点名> <值> · manual · version
 运行 modbus-cli manual 查看完整说明。
 
 选项：
@@ -29,8 +30,17 @@ modbus-cli 是命令行的 Modbus 主站，和桌面版用同一套通信核心�
   detect                识别 Modbus TCP 还是 RTU over TCP（需要 -target）
   scan [起始 结束]       扫描应答的站号，默认 1–247；没指定 -timeout 时每个站号等 200 ms
   raw <PDU 十六进制>     发任意请求 PDU（功能码 + 数据），打印响应 PDU，例如 raw 08 00 00 12 34
+  points                列出 -points 点表里的点（名称、地址、类型、单位、可写、范围、枚举），不连设备
+  get [点名…]           按点名读工程值，带单位和枚举含义；不写点名时读全部点
+  set <点名> <值>        按点表的类型、字节序、倍率写一个点，检查可写和允许范围，枚举点可写含义（例如 自动）；
+                        写入后在 0、200、1000 ms 回读，判断通过、未生效、被改回还是值不符
   manual                打印本说明
   version               打印版本号
+
+点表（-points）
+  和桌面版“导入点表”认同样的文件：本程序的点表（地址,名称,类型,字节序,倍率,单位,读写,最小,最大,枚举,长度）
+  或物联网平台导出的设备属性表（属性标识、属性名称……），CSV 或 xlsx。点名写全名，或写能唯一对上的几个字；
+  点名重复时写地址。相近的点合成一次读取，某一段读不出来只影响那一段的点。
 
 地址写法
   40001、400001、4x0001    保持寄存器：功能码 03 读，06 / 16 写
@@ -56,6 +66,9 @@ JSON 输出（-json）
     detect   mode、slave、by_exception、attempts（每次尝试的 mode、slave、result）
     scan     from、to、found（每项 slave、rtt_ms、note）
     raw      slave、request、response（都是 PDU 的十六进制）
+    points   file、format、count、points（每项 name、address、type、order、scale、unit、writable、min、max、enum）、skipped
+    get      mode、slave、elapsed_ms、values（每项 name、address、value、unit、registers、hint、error）
+    set      name、address、original、target、unit、result（PASS 等）、hint、readbacks（每项 at_ms、value、error）
     version  version
   失败时 "ok": false，error 是原因和建议；write 回读不符、raw 收到异常响应时也带上收到的内容。
   -trace 的收发报文打印到标准错误，不影响标准输出的 JSON。
@@ -72,12 +85,15 @@ JSON 输出（-json）
   modbus-cli -target 192.168.1.100:502 detect
   modbus-cli -port COM3 -baud 9600 scan 1 32
   modbus-cli -target 192.168.1.100:502 -slave 3 raw 08 00 00 12 34
+  modbus-cli -points 点表.xlsx points
+  modbus-cli -target 192.168.1.100:502 -points 点表.xlsx -json get 二次供温 二次回温
+  modbus-cli -target 192.168.1.100:502 -points 点表.xlsx set 温差设定 16
   modbus-cli -port /dev/ttyUSB0 -baud 9600 -trace read 40001 10
 
 给 AI 调用
   1. 先运行 modbus-cli manual 了解命令和参数。
-  2. 每次调用都加 -json，按 ok 判断成败，失败时把 error 告诉用户。
-  3. write 会改变现场设备的状态（启停、设定值），调用前先向用户确认地址和值。
+  2. 每次调用都加 -json，按 ok 判断成败，失败时把 error 告诉用户。有点表时优先用 points 看有哪些点，再用 get / set 按点名读写。
+  3. write、set 会改变现场设备的状态（启停、设定值），调用前先向用户确认点（地址）和值。
   4. 读不出来时先 detect（网络设备）或 scan（找站号），再加 -trace 看收发报文。
 `
 

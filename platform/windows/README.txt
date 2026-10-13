@@ -37,6 +37,9 @@ Windows 使用当前用户 DPAPI 加密保存密钥。默认不发送寄存器�
   modbus-cli [选项] detect               识别 Modbus TCP 还是 RTU over TCP
   modbus-cli [选项] scan [起始 结束]      扫描应答的站号，默认 1–247
   modbus-cli [选项] raw <PDU 十六进制>    发任意请求 PDU，例如 raw 08 00 00 12 34
+  modbus-cli -points 点表.xlsx points    列出点表里的点（和“导入点表”认同样的文件）
+  modbus-cli [选项] -points 点表 get [点名…]     按点名读工程值，带单位和枚举含义
+  modbus-cli [选项] -points 点表 set 点名 值      按点表写一个点，检查可写和范围，回读判断是否生效
   modbus-cli manual                      完整说明：全部选项、JSON 字段、退出码、示例
   常用选项：-target IP:端口、-port COM3 -baud 9600 -parity N、-mode rtu-over-tcp、-slave 站号、-timeout 3s、-trace
   例：modbus-cli -target 192.168.1.100:502 -json -type float32 -order CDAB read 40001 4

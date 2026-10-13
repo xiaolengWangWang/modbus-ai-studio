@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -156,5 +157,88 @@ func TestManualAndVersion(t *testing.T) {
 	}
 	if v, _ := jsonCLI(t, "version"); v["ok"] != true || v["version"] != "dev" {
 		t.Errorf("版本号：%v", v)
+	}
+}
+
+// heatStation 启动内置换热站模拟器，写一张点表，返回地址和点表文件。
+func heatStation(t *testing.T) (string, string) {
+	t.Helper()
+	srv := simulator.NewServer(modbus.ModeTCP, 1, simulator.HeatStation())
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	file := filepath.Join(t.TempDir(), "点表.csv")
+	table := "地址,名称,类型,字节序,倍率,单位,读写,最小,最大,枚举\n" +
+		"40001,二次供水温度,FLOAT32,CDAB,1,℃,R,,,\n" +
+		"40005,二次温差,INT16,,0.1,℃,R,,,\n" +
+		"40347,温差设定,FLOAT32,CDAB,1,℃,RW,5,25,\n" +
+		"40353,运行模式,UINT16,,,,RW,,,0=手动;1=自动\n" +
+		"49001,不存在的点,UINT16,,,,R,,,\n"
+	if err := os.WriteFile(file, []byte(table), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return ln.Addr().String(), file
+}
+
+func values(v map[string]any) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	list, _ := v["values"].([]any)
+	for _, x := range list {
+		m := x.(map[string]any)
+		out[m["name"].(string)] = m
+	}
+	return out
+}
+
+// 按点表读：没写点名时读全部点；某一段读不出来只影响那一段的点，退出码 1。
+func TestPointsAndGet(t *testing.T) {
+	addr, file := heatStation(t)
+	v, code := jsonCLI(t, "-points", file, "points")
+	if list, _ := v["points"].([]any); code != 0 || v["count"] != float64(5) || len(list) != 5 {
+		t.Fatalf("列出点表：%d %v", code, v)
+	}
+	v, code = jsonCLI(t, "-target", addr, "-points", file, "get")
+	got := values(v)
+	if code != 1 || v["ok"] != false || len(got) != 5 {
+		t.Fatalf("有一段读不出来时退出码 1，其他点照常给值：%d %v", code, v)
+	}
+	for name, want := range map[string]string{"二次供水温度": "45.2", "二次温差": "13.2", "温差设定": "15.0", "运行模式": "1 自动"} {
+		if got[name]["value"] != want || got[name]["error"] != nil {
+			t.Errorf("%s：%v，期望 %s", name, got[name], want)
+		}
+	}
+	if e, _ := got["不存在的点"]["error"].(string); !strings.Contains(e, "建议") {
+		t.Errorf("读不出来的点应说明原因：%v", got["不存在的点"])
+	}
+	v, code = jsonCLI(t, "-target", addr, "-points", file, "get", "温差设定", "二次温差")
+	if list, _ := v["values"].([]any); code != 0 || len(list) != 2 || list[0].(map[string]any)["name"] != "温差设定" {
+		t.Errorf("按点名读，按写的顺序输出：%d %v", code, v)
+	}
+	if v, code := jsonCLI(t, "-target", addr, "-points", file, "get", "温差"); code != 1 || !strings.Contains(v["error"].(string), "对上了 2 个点") {
+		t.Errorf("“温差”对上两个点，应让写全名：%d %v", code, v)
+	}
+}
+
+// 按点名写：数值和枚举含义都行，写完回读判断通过；超出范围、只读点不写。
+func TestSetPoint(t *testing.T) {
+	addr, file := heatStation(t)
+	v, code := jsonCLI(t, "-target", addr, "-points", file, "set", "温差设定", "16")
+	if code != 0 || v["result"] != "PASS" || v["original"] != "15.0" || v["target"] != "16.0" {
+		t.Fatalf("写温差设定：%d %v", code, v)
+	}
+	if v, code := jsonCLI(t, "-target", addr, "-points", file, "set", "运行模式", "手动"); code != 0 || v["target"] != "0 手动" {
+		t.Errorf("枚举点写含义：%d %v", code, v)
+	}
+	if v, code := jsonCLI(t, "-target", addr, "-points", file, "set", "温差设定", "30"); code != 1 || !strings.Contains(v["error"].(string), "超出范围") {
+		t.Errorf("超出允许范围应拒绝：%d %v", code, v)
+	}
+	if v, code := jsonCLI(t, "-target", addr, "-points", file, "set", "二次供水温度", "1"); code != 1 || !strings.Contains(v["error"].(string), "不是可写点") {
+		t.Errorf("只读点应拒绝：%d %v", code, v)
+	}
+	if v, _ := jsonCLI(t, "-target", addr, "-points", file, "get", "温差设定"); values(v)["温差设定"]["value"] != "16.0" {
+		t.Errorf("写后读：%v", v)
 	}
 }

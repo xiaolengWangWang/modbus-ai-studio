@@ -2,46 +2,12 @@ package ui
 
 import (
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 	"time"
 
 	"modbus-ai-studio/internal/modbus"
 )
-
-// formatEng 格式化工程值：浮点保留两位小数（整数显示为 45.0 这种形式），
-// 整型按 Scale 的小数位数显示（132 × 0.1 → 13.2）。64 位整型的精确显示用 pointText。
-func formatEng(p point, v float64) string {
-	if p.Type.Float() {
-		return formatFloat(v)
-	}
-	s := strconv.FormatFloat(p.Scale, 'f', -1, 64)
-	decimals := 0
-	if i := strings.IndexByte(s, '.'); i >= 0 {
-		decimals = len(s) - i - 1
-	}
-	out := strconv.FormatFloat(v, 'f', decimals, 64)
-	if name, ok := p.Enum[int(v)]; ok && v == math.Trunc(v) {
-		out += " " + name
-	}
-	return out
-}
-
-// formatFloat 保留两位小数；整数显示为 45.0；量级异常时用科学计数法，避免一长串数字。
-func formatFloat(v float64) string {
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return strconv.FormatFloat(v, 'g', -1, 64)
-	}
-	if a := math.Abs(v); a != 0 && (a < 1e-4 || a >= 1e9) {
-		return strconv.FormatFloat(v, 'g', 6, 64)
-	}
-	r := math.Round(v*100) / 100
-	if r == math.Trunc(r) {
-		return strconv.FormatFloat(r, 'f', 1, 64)
-	}
-	return strconv.FormatFloat(r, 'f', -1, 64)
-}
 
 // formatRTT 显示响应时间：10 ms 以下保留一位小数，本机模拟器这类亚毫秒响应不会显示成 0。
 func formatRTT(d time.Duration) string {
@@ -50,46 +16,6 @@ func formatRTT(d time.Duration) string {
 		return strconv.FormatFloat(ms, 'f', 1, 64) + " ms"
 	}
 	return strconv.FormatFloat(ms, 'f', 0, 64) + " ms"
-}
-
-func scaling(p point) modbus.Scaling { return modbus.Scaling{Scale: p.Scale} }
-
-// decodePoint 把点的寄存器解码为工程值，plausible 表示浮点结果是否合理。
-func decodePoint(p point, regs []uint16) (v float64, plausible bool, err error) {
-	raw, err := modbus.DecodeRaw(p.Type, p.Order, regs)
-	if err != nil {
-		return 0, false, err
-	}
-	return scaling(p).Engineering(raw), isPlausible(p.Type, raw), nil
-}
-
-// isPlausible 判断浮点值是否像真实数据，整型总是合理。
-func isPlausible(t modbus.DataType, v float64) bool {
-	switch t {
-	case modbus.TypeFloat32:
-		return modbus.PlausibleFloat32(v)
-	case modbus.TypeFloat64:
-		return modbus.PlausibleFloat64(v)
-	}
-	return true
-}
-
-// exactInt 表示按寄存器精确显示：64 位整型且没有换算。float64 只有 53 位精度，按工程值显示会丢掉低位。
-func exactInt(t modbus.DataType, s modbus.Scaling) bool {
-	return (t == modbus.TypeInt64 || t == modbus.TypeUint64) && s.Identity()
-}
-
-// pointText 显示点的工程值（带枚举含义，不带单位）。
-func pointText(p point, regs []uint16) (text string, plausible bool, err error) {
-	if exactInt(p.Type, scaling(p)) {
-		text, err = modbus.FormatInt(p.Type, p.Order, regs)
-		return text, true, err
-	}
-	v, plausible, err := decodePoint(p, regs)
-	if err != nil {
-		return "", false, err
-	}
-	return formatEng(p, v), plausible, nil
 }
 
 // frameText 是报文的显示形式：ASCII 帧本身就是可读字符，原样显示并写出结尾的 CR LF；其他显示十六进制。

@@ -26,6 +26,13 @@ var (
 	decodeString    = points.DecodeString
 	printableText   = points.Printable
 	asciiText       = points.ASCII
+	formatFloat     = points.FormatFloat
+	isPlausible     = points.Plausible
+	exactInt        = points.ExactInt
+	formatEng       = point.Format
+	decodePoint     = point.Value
+	pointText       = point.Text
+	scaling         = point.Scaling
 )
 
 // demoPoints 是换热站示例点表，与内置模拟器、设计文档 13.5 一致。

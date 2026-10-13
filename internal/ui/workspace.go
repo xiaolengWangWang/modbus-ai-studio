@@ -22,6 +22,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/internal/modbus"
+	"modbus-ai-studio/internal/points"
 )
 
 // workspaceFile 是保存到磁盘的工作区：连接参数、读取窗口和点表，一个 JSON 文件自带全部内容。
@@ -425,26 +426,11 @@ func (ws *Workspace) showImportResult(msg string) {
 // defsForPoints 按点表的地址生成读取定义：同一数据区里相近的点合成一个窗口，一次最多读 120 个地址，
 // 相隔 20 个地址以上另开窗口。
 func defsForPoints(ps []point) []readDef {
-	sorted := slices.Clone(ps)
-	slices.SortFunc(sorted, func(a, b point) int {
-		if a.Area != b.Area {
-			return int(a.Area) - int(b.Area)
-		}
-		return int(a.Offset) - int(b.Offset)
-	})
 	var out []readDef
-	for _, p := range sorted {
-		end := int(p.Offset) + p.Regs()
-		if n := len(out); n > 0 {
-			d := &out[n-1]
-			if d.area() == p.Area && end-int(d.Start) <= 120 && int(p.Offset)-(int(d.Start)+d.Qty) <= 20 {
-				d.Qty = max(d.Qty, end-int(d.Start))
-				continue
-			}
-		}
+	for _, r := range points.Ranges(ps) {
 		d := defaultDef()
-		d.Function = p.Area.ReadFunction()
-		d.Start, d.Qty, d.Kind = p.Offset, p.Regs(), kindPoint
+		d.Function = r.Area.ReadFunction()
+		d.Start, d.Qty, d.Kind = r.Start, r.Count, kindPoint
 		out = append(out, d)
 	}
 	return out
