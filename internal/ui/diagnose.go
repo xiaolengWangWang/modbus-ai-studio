@@ -14,12 +14,12 @@ import (
 // evidence 是一次连接期间积累的通信证据，供错误自动分析使用。收发回调在请求所在的
 // goroutine 里更新，界面线程读取。
 type evidence struct {
-	okAt atomic.Int64 // 最近一次正常响应（UnixNano），0 表示本次连接还没有
-	late atomic.Int64 // 晚到响应次数
+	okAt    atomic.Int64 // 最近一次正常响应（UnixNano），0 表示本次连接还没有
+	late    atomic.Int64 // 晚到响应次数，不含别的主站的响应
+	foreign atomic.Int64 // 别的主站的响应（Modbus TCP 事务号不是本连接发出的）
 
 	mu        sync.Mutex
-	txTime    map[uint64]time.Time // RequestID → 发送时刻，只保留最近几十条
-	lateDelay map[reqKey]int64     // 每种请求观测到的最大应答延迟（ms），来自超时后保护间隔内到达的晚到响应
+	lateDelay map[reqKey]int64 // 每种请求观测到的最大应答延迟（ms），来自找得到是哪条超时请求的晚到响应
 }
 
 // reqKey 标识一种请求，晚到响应按它归到对应的读取窗口。
@@ -30,11 +30,11 @@ type reqKey struct {
 }
 
 func (e *evidence) reset() {
-	for _, v := range []*atomic.Int64{&e.okAt, &e.late} {
+	for _, v := range []*atomic.Int64{&e.okAt, &e.late, &e.foreign} {
 		v.Store(0)
 	}
 	e.mu.Lock()
-	e.txTime, e.lateDelay = nil, nil
+	e.lateDelay = nil
 	e.mu.Unlock()
 }
 
@@ -45,29 +45,32 @@ func (e *evidence) delayOf(k reqKey) int64 {
 }
 
 func (e *evidence) observe(p modbus.Packet) {
+	var le *modbus.LateError
 	switch {
-	case p.Dir == modbus.DirTX:
-		e.mu.Lock()
-		if e.txTime == nil || len(e.txTime) > 64 {
-			e.txTime = map[uint64]time.Time{}
-		}
-		e.txTime[p.RequestID] = p.Time
-		e.mu.Unlock()
 	case p.Status == modbus.StatusSuccess || p.Status == modbus.StatusException || p.Status == modbus.StatusNonstandard:
 		e.okAt.Store(p.Time.UnixNano())
-	case p.Status == modbus.StatusLate:
+	case p.Status != modbus.StatusLate:
+	case errors.As(p.Err, new(*modbus.ForeignError)):
+		e.foreign.Add(1)
+	default:
 		e.late.Add(1)
-		e.mu.Lock()
-		if sent, ok := e.txTime[p.RequestID]; ok {
-			k := reqKey{p.Slave, p.Function, p.Address}
+		// 晚到帧常在等下一条请求时才到，记录行上的请求不一定是它的，按客户端找回的那条请求记；
+		// 只知道范围时取上限，超时按它调大，下次一定收得到
+		if errors.As(p.Err, &le) && !le.Cancelled && le.Max > 0 {
+			r := le.Request
+			k := reqKey{r.Slave, r.Function, r.Address}
+			e.mu.Lock()
 			if e.lateDelay == nil {
 				e.lateDelay = map[reqKey]int64{}
 			}
-			e.lateDelay[k] = max(e.lateDelay[k], p.Time.Sub(sent).Milliseconds())
+			e.lateDelay[k] = max(e.lateDelay[k], le.Max.Milliseconds())
+			e.mu.Unlock()
 		}
-		e.mu.Unlock()
 	}
 }
+
+// foreignAdvice 是收到别的主站的响应时的处理建议。
+const foreignAdvice = "停掉其他主站，或在串口服务器 / DTU 里关掉多主机共享、多中心转发（串口收到的数据发给所有连接）后再试。"
 
 // diagnosis 是读取窗口错误行下面的自动分析：错误本身、可能原因，以及可选的一键处理。
 type diagnosis struct {
@@ -100,8 +103,12 @@ func (ws *Workspace) diagnose(w *readWindow, err error) diagnosis {
 			Action: "检测这个范围", Do: func() { ws.probeRange(w) }}
 	}
 	if errors.Is(err, modbus.ErrTimeout) && errors.Is(err, modbus.ErrMismatch) {
-		return diagnosis{Text: "超时：期间收到过事务号对应、但内容与请求不符的响应",
+		dg := diagnosis{Text: "超时：期间收到过事务号对应、但内容与请求不符的响应",
 			Hint: "设备在应答，只是回的内容和请求对不上（见报文记录里的“不匹配”行，例如 Unit ID、功能码、字节数或回显不符），没有收到正常数据。这不是链路不通，先看那几帧回了什么。"}
+		if n := ev.foreign.Load(); n > 0 {
+			dg.Hint += fmt.Sprintf("这条连接上还收到了 %d 帧别的主站的响应：中间的串口服务器 / DTU 在几个主站之间转发，把别人的响应配上了本程序的事务号。%s", n, foreignAdvice)
+		}
+		return dg
 	}
 	if ex, ok := modbus.AsException(err); ok {
 		dg := diagnosis{Text: fmt.Sprintf("异常 %02X：%s", byte(ex.Code), ex.Code.Name())}
@@ -149,6 +156,9 @@ func (ws *Workspace) diagnose(w *readWindow, err error) diagnosis {
 			sug := suggestTimeout(delay)
 			dg.Hint = fmt.Sprintf("设备有应答，但约 %d ms 才到，超过了超时 %d ms（报文里记为晚到响应）。", delay, timeout)
 			dg.Action, dg.Do = fmt.Sprintf("超时改为 %d ms", sug), func() { ws.setTimeout(time.Duration(sug) * time.Millisecond) }
+		case ev.foreign.Load() > 0:
+			dg.Hint = fmt.Sprintf("这条连接上收到了 %d 帧别的主站的响应（事务号不是本程序发出的，报文里标为“非本连接的响应”）：中间的串口服务器 / DTU 把几个主站的通信都转给了这个连接，"+
+				"本程序的请求没等到自己的响应。这不是设备回得慢，调大超时也收不到。%s", ev.foreign.Load(), foreignAdvice)
 		case ev.okAt.Load() != 0:
 			dg.Hint = fmt.Sprintf("同一连接上有正常响应，链路和协议没问题。检查 Slave %d 是否存在，或该地址段是否需要更长时间才应答。", d.Slave)
 			dg.Action, dg.Do = "扫描从站地址", ws.scanSlavesDialog

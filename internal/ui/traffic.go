@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -155,6 +156,12 @@ func trafficLine(p modbus.Packet, ts bool) (string, widget.Importance) {
 		}
 		if l := transport.CloseKindOf(p.Err).Label(); p.Status == modbus.StatusConnectionError && l != "" {
 			s += "：" + l // 连接是怎么断的：FIN、RST、重传超时
+		}
+		if errors.As(p.Err, new(*modbus.ForeignError)) {
+			s = "非本连接的响应，已丢弃"
+		}
+		if p.Status == modbus.StatusLate && p.Err != nil {
+			s += "（" + p.Err.Error() + "）" // 回的是哪条请求、晚了多久；历史报文里是存下的文字
 		}
 		text += "   ← " + s
 		imp = widget.DangerImportance

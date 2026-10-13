@@ -3,11 +3,14 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -357,6 +360,9 @@ func (ws *Workspace) applyImport(imp pointImport) string {
 			lines = append(lines, fmt.Sprintf("共 %d 个读取窗口，最大化显示第一个，点读取区上方的标签切换；要同时看几个窗口，用“窗口 → 平铺”或“层叠”。", len(ws.windows)))
 		}
 	}
+	if len(ws.windows) > 0 && !slices.ContainsFunc(ws.windows, func(w *readWindow) bool { return w.def.Slave != ws.windows[0].def.Slave }) {
+		lines = append(lines, fmt.Sprintf("读取窗口读的是 Slave %d；设备站号不是 %[1]d 时，点下面的“修改站号”一次改好全部窗口。", ws.windows[0].def.Slave))
+	}
 	if imp.noOrder && slices.ContainsFunc(imp.points, func(p point) bool { return p.Type != typeString && p.regs() > 1 }) {
 		lines = append(lines, "文件里没有字节序，32 / 64 位点先按 ABCD（Telegraf 的默认值）解码；数值不对时读取窗口会提示改用哪种，一键改好。")
 	}
@@ -384,7 +390,16 @@ func (ws *Workspace) showImportResult(msg string) {
 	l.Resize(fyne.NewSize(480, 0)) // 自动换行的标签要先定宽度，MinSize 才是换行后的高度
 	scroll := container.NewVScroll(l)
 	scroll.SetMinSize(fyne.NewSize(480, min(l.MinSize().Height, 360)))
-	dialog.NewCustom("导入点表", "好", scroll, ws.win).Show()
+	d := dialog.NewCustomWithoutButtons("导入点表", scroll, ws.win)
+	slave := widget.NewButton("修改站号…", func() {
+		d.Hide()
+		ws.showSlaveDialog(ws.current())
+	})
+	if len(ws.windows) == 0 {
+		slave.Disable()
+	}
+	d.SetButtons([]fyne.CanvasObject{slave, widget.NewButton("好", d.Hide)})
+	d.Show()
 }
 
 // defsForPoints 按点表的地址生成读取定义：同一数据区里相近的点合成一个窗口，一次最多读 120 个地址，
@@ -517,6 +532,89 @@ func (ws *Workspace) showPointOrderDialog(w *readWindow) {
 		n := ws.changePointOrder(kind, w, off, modbus.ByteOrder(order.Selected))
 		dialog.ShowInformation("点表字节序", fmt.Sprintf("已调整 %d 个多寄存器数值点。", n), ws.win)
 	}, ws.win).Show()
+}
+
+// setSlave 把站号是 from 的读取窗口改成 to（from 为 0 时改全部窗口）。改的是同一台设备的地址，
+// 不是换设备，窗口里设的寄存器数据类型保留（读取定义里改 Slave ID 会清掉）。
+func (ws *Workspace) setSlave(from, to byte) {
+	changed := false
+	for _, w := range ws.windows {
+		if w.def.Slave == to || from != 0 && w.def.Slave != from {
+			continue
+		}
+		d := w.def
+		d.Slave = to
+		w.halt()
+		w.setDef(d)
+		w.start()
+		changed = true
+	}
+	if changed {
+		ws.relayout()
+	}
+}
+
+// showSlaveDialog 一键修改站号：点表对应一台设备，导入后按地址建了好几个读取窗口，不用逐个打开读取定义改。
+// 窗口用了几个站号时（同一总线上的几台设备）先选改哪一台，默认是 w 的站号。
+func (ws *Workspace) showSlaveDialog(w *readWindow) {
+	if len(ws.windows) == 0 {
+		dialog.ShowInformation("修改站号", "还没有读取窗口。", ws.win)
+		return
+	}
+	count := map[byte]int{}
+	for _, x := range ws.windows {
+		count[x.def.Slave]++
+	}
+	ids := slices.Sorted(maps.Keys(count))
+	cur := ws.windows[0].def.Slave
+	if slices.Contains(ws.windows, w) {
+		cur = w.def.Slave
+	}
+	label := func(id byte) string { return fmt.Sprintf("Slave %d 的读取窗口（%d 个）", id, count[id]) }
+	all := fmt.Sprintf("全部读取窗口（%d 个）", len(ws.windows))
+	var scopes []string
+	for _, id := range ids {
+		scopes = append(scopes, label(id))
+	}
+	slave := widget.NewEntry()
+	slave.SetText(strconv.Itoa(int(cur)))
+	slave.Validator = slaveValidator
+	scope := widget.NewSelect(append(scopes, all), func(s string) {
+		for _, id := range ids {
+			if s == label(id) {
+				slave.SetText(strconv.Itoa(int(id))) // 从这组窗口现在的站号改起
+			}
+		}
+	})
+	scope.SetSelected(label(cur))
+	var scopeItem fyne.CanvasObject = scope
+	if len(ids) == 1 {
+		scopeItem = widget.NewLabel(fmt.Sprintf("全部 %d 个读取窗口，现在是 Slave %d", len(ws.windows), cur))
+	}
+	dialog.NewForm("修改站号", "应用", "取消", []*widget.FormItem{
+		widget.NewFormItem("范围", scopeItem), widget.NewFormItem("新 Slave ID", slave),
+	}, func(ok bool) {
+		if !ok {
+			return
+		}
+		to, _ := strconv.Atoi(strings.TrimSpace(slave.Text))
+		from := byte(0)
+		for _, id := range ids {
+			if scope.Selected == label(id) {
+				from = id
+			}
+		}
+		ws.setSlave(from, byte(to))
+	}, ws.win).Show()
+	ws.win.Canvas().Focus(slave)
+}
+
+func slaveValidator(s string) error {
+	v, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || v < 1 || v > 255 {
+		return errors.New("Slave ID 应为 1–255")
+	}
+	return nil
 }
 
 // recent 返回最近打开过、且文件还在的工作区，最多 5 个。

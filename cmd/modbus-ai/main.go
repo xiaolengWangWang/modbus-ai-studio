@@ -20,6 +20,10 @@ import (
 var version = "1.3.0"
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "-version" {
+		fmt.Println(version) // 不开窗口：打包后的冒烟测试用它确认程序能在本机架构上启动
+		return
+	}
 	start := time.Now()
 	platform.Setup()
 	update.Cleanup() // 删掉上次更新换下来的旧文件

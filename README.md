@@ -30,6 +30,7 @@
 | `ModbusAIStudio-x.y.z-macOS-Intel.dmg` | Intel 芯片的 Mac，macOS 12 及以上 |
 | `ModbusAIStudio-Web-x.y.z-Linux-x64.tar.gz` | Linux x86-64 网关、服务器上的 Web 版。解压后运行 `./modbus-web`，用浏览器打开终端打印的地址 |
 | `ModbusAIStudio-Web-x.y.z-Linux-arm64.tar.gz` | Linux ARM64（树莓派 4 / 5、多数 ARM 网关）上的 Web 版 |
+| `modbus-cli-x.y.z-<系统>-<架构>.zip / .tar.gz` | 命令行工具 modbus-cli：windows-x64、macos-x64 / macos-arm64、linux-x64 / linux-arm64。加 `-json` 输出 JSON，方便脚本和 AI 调用，见 [命令行工具](docs/guide.md#命令行工具) |
 
 Linux 桌面版没有安装包，可以 [从源码编译](docs/development.md#从源码编译)；网关、服务器上用 Web 版，见 [Linux Web 版](docs/guide.md#linux-web-版)。Windows 远程桌面、虚拟机里打不开，或 macOS 提示无法打开，见 [常见问题](docs/faq.md#安装与运行)。
 

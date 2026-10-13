@@ -259,7 +259,9 @@ func (r Release) Asset(goos, goarch string) (Asset, bool) {
 		return Asset{}, false
 	}
 	for _, a := range r.Assets {
-		if strings.HasSuffix(a.Name, suffix) {
+		// 安装包是 ModbusAIStudio-x.y.z 加平台结尾；Web 版、modbus-cli 等别的包即使结尾相同也不取
+		rest, ok := strings.CutPrefix(a.Name, "ModbusAIStudio-")
+		if ok && rest != "" && rest[0] >= '0' && rest[0] <= '9' && strings.HasSuffix(a.Name, suffix) {
 			return a, true
 		}
 	}

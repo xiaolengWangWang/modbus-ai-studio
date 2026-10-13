@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -99,6 +100,12 @@ func describePacket(p modbus.Packet, pts pointTable) []decodeRow {
 	if s, ok := statusExplain[p.Status]; ok {
 		w.line("")
 		w.line("说明：%s", s)
+		if p.Status == modbus.StatusLate && p.Err != nil {
+			w.line("%s。", p.Err.Error())
+		}
+		if errors.As(p.Err, new(*modbus.ForeignError)) {
+			w.line("这帧不是设备回得慢：中间的串口服务器 / DTU 把别的主站的响应也转给了这个连接，调大超时也收不到。%s", foreignAdvice)
+		}
 	}
 	return w.rows
 }

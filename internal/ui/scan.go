@@ -191,11 +191,8 @@ func (ws *Workspace) showSlaveScanResult(hits []slaveHit, err error, stopped boo
 	if len(hits) == 1 && len(ws.windows) > 0 && ws.firstSlave() != hits[0].id {
 		id := hits[0].id
 		dlg := dialog.NewCustomConfirm("扫描结果", fmt.Sprintf("读取窗口改用 Slave %d", id), "关闭", body, func(ok bool) {
-			if !ok {
-				return
-			}
-			for _, w := range append([]*readWindow(nil), ws.windows...) {
-				ws.redefine(w, func(d *readDef) { d.Slave = byte(id) })
+			if ok {
+				ws.setSlave(0, byte(id))
 			}
 		}, ws.win)
 		dlg.Resize(fyne.NewSize(480, 0))

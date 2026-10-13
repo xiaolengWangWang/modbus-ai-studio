@@ -40,6 +40,9 @@ jobs:
       - name: Package Linux Web x64 and ARM64
         if: runner.os == 'Linux'
         run: sh build/linux-web.sh
+      - name: Package modbus-cli for Windows, macOS and Linux
+        if: runner.os == 'Linux'
+        run: sh build/cli.sh
       - name: Package macOS Intel and Apple Silicon
         if: runner.os == 'macOS'
         run: sh build/macos.sh
@@ -52,5 +55,35 @@ jobs:
             dist/ModbusAIStudio-*-macOS-Intel.dmg
             dist/ModbusAIStudio-*-macOS-AppleSilicon.dmg
             dist/ModbusAIStudio-Web-*-Linux-*.tar.gz
+            dist/modbus-cli-*.zip
+            dist/modbus-cli-*.tar.gz
           if-no-files-found: error
           retention-days: 14
+
+  # 每个包都在对应的系统和 CPU 上运行一次（build/smoke.sh），全部通过 package 才算成功，发版才会继续。
+  smoke:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, name: Windows x64 }
+          - { os: macos-15-intel, name: macOS Intel }
+          - { os: macos-latest, name: macOS Apple Silicon }
+          - { os: ubuntu-latest, name: Linux x64 }
+          - { os: ubuntu-24.04-arm, name: Linux ARM64 }
+    name: smoke (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installers-*
+          path: dist
+          merge-multiple: true
+      - name: Run the packages built for this platform
+        shell: bash
+        run: sh build/smoke.sh

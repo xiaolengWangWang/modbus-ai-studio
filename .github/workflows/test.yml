@@ -7,11 +7,19 @@ on:
   pull_request:
 
 jobs:
+  # 发布的每种架构都在对应的机器上测：桌面版 Windows x64、macOS Intel / Apple Silicon（Linux 桌面版不发布，
+  # 但 Linux x64 上照样全测）；Web 版和 modbus-cli 不用 cgo，在 Linux x64 / ARM64 上按发布时的编法测它们用到的全部包。
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        include:
+          - { os: windows-latest, name: Windows x64 }
+          - { os: macos-15-intel, name: macOS Intel }
+          - { os: macos-latest, name: macOS Apple Silicon }
+          - { os: ubuntu-latest, name: Linux x64 }
+          - { os: ubuntu-24.04-arm, name: Linux ARM64（Web 版、modbus-cli）, nocgo-only: true }
+    name: test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -19,17 +27,22 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Linux 下 Fyne 需要的 OpenGL / X11 / Wayland 头文件
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !matrix.nocgo-only
         # 软件渲染也需要中文字体，避免缺字时反复查找字体拖慢 race 测试。
         run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev fonts-noto-cjk
       - run: go vet ./...
-      - name: 测试纯 Go SQLite 驱动（直接读写数据库文件；Linux Web 版就是这样编的）
+        if: '!matrix.nocgo-only'
+      - name: 不用 cgo 测 Web 版和 modbus-cli 用到的全部包（发布时就这样编，SQLite 用纯 Go 驱动）
         if: runner.os == 'Linux'
+        shell: bash
         env:
           CGO_ENABLED: '0'
-        run: go test -count=1 ./internal/recorder ./internal/web
+        run: |
+          pkgs=$(go list -deps ./cmd/modbus-web ./cmd/modbus-cli | grep '^modbus-ai-studio/')
+          go vet $pkgs
+          go test -count=1 $pkgs
       - name: 测试（界面测试用 Fyne 的软件渲染驱动，不需要显卡）
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && !matrix.nocgo-only
         run: go test -race -count=1 -timeout 15m ./...
       - name: 测试（Windows），界面截图存下来检查中文字体和布局
         if: runner.os == 'Windows'

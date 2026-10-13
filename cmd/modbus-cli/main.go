@@ -1,35 +1,23 @@
-// modbus-cli 是最小的命令行主站，用来在 GUI 完成前联调协议核心。
+// modbus-cli 是命令行 Modbus 主站：读写寄存器和线圈、识别协议、扫描从站、发自定义请求。
+// 加 -json 时每条命令在标准输出打印一个 JSON 对象，方便脚本和 AI 调用；modbus-cli manual 打印完整说明。
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"slices"
-	"strconv"
 	"strings"
 	"time"
 
-	"modbus-ai-studio/internal/control"
-	"modbus-ai-studio/internal/detect"
 	"modbus-ai-studio/internal/modbus"
 	"modbus-ai-studio/internal/transport"
 )
 
-const usage = `用法：
-  modbus-cli [选项] read  <地址> <数量>   读寄存器，地址支持 346、0x015A、40347、4x0347
-  modbus-cli [选项] write <地址> <值>     按 -type/-order 编码写入，并立即回读验证
-  modbus-cli [选项] detect               自动识别 Modbus TCP / RTU over TCP
-
-示例：
-  modbus-cli -target 127.0.0.1:1502 -type float32 -order CDAB read 40001 4
-  modbus-cli -target 127.0.0.1:1502 -type float32 -order CDAB write 40347 16
-  modbus-cli -target 127.0.0.1:1502 -type uint64 -order CDAB read 40701 8
-  modbus-cli -port /dev/cu.usbserial-110 -baud 9600 read 40001 10
-
-选项：`
+// version 在打包时用 -ldflags "-X main.version=…" 覆盖。
+var version = "dev"
 
 var (
 	target  = flag.String("target", "", "TCP 地址，例如 192.168.1.100:502")
@@ -39,17 +27,19 @@ var (
 	stop    = flag.Int("stop", 1, "停止位：1 或 2")
 	modeArg = flag.String("mode", "", "协议：tcp、rtu-over-tcp、ascii-over-tcp、rtu、ascii（默认 TCP 地址用 tcp，串口用 rtu）")
 	dataBit = flag.Int("databits", 8, "数据位：8，Modbus ASCII 常用 7")
-	slave   = flag.Uint("slave", 1, "Slave ID")
-	timeout = flag.Duration("timeout", time.Second, "响应超时")
-	typ     = flag.String("type", "uint16", "数据类型：int16、uint16、int32、uint32、float32、int64、uint64、float64")
+	slave   = flag.Uint("slave", 1, "Slave ID（站号）")
+	timeout = flag.Duration("timeout", time.Second, "响应超时，例如 500ms、3s；scan 没指定时每个站号等 200ms")
+	fcArg   = flag.Int("fc", 0, "功能码。read：1 线圈、2 离散输入、3 保持寄存器、4 输入寄存器；\nwrite：5 单个线圈、6 单个寄存器、16 多个寄存器。不填时按地址写法判断（40001 → 3，30001 → 4，10001 → 2）")
+	typ     = flag.String("type", "uint16", "寄存器的数据类型：int16、uint16、int32、uint32、float32、int64、uint64、float64")
 	order   = flag.String("order", "", "字节序：AB、BA、ABCD、CDAB、BADC、DCBA，64 位还可写 ABCDEFGH、GHEFCDAB、BADCFEHG、HGFEDCBA\n（默认标准大端；64 位写 32 位的名字时按同样规则换算，CDAB 即 GHEFCDAB）")
 	scale   = flag.Float64("scale", 1, "工程值 = 原始值 × scale")
-	trace   = flag.Bool("trace", false, "打印收发报文")
-	echo    = flag.Bool("echo", false, "丢弃 RS485 回显")
+	jsonOut = flag.Bool("json", false, "结果按 JSON 打印到标准输出（一个对象，ok 表示是否成功），方便脚本和 AI 解析")
+	trace   = flag.Bool("trace", false, "把收发报文打印到标准错误")
+	echo    = flag.Bool("echo", false, "丢弃 RS485 转换器回显的发送帧")
 )
 
 func main() {
-	flag.Usage = func() { fmt.Fprintln(os.Stderr, usage); flag.PrintDefaults() }
+	flag.Usage = func() { fmt.Fprint(os.Stderr, usage); flag.PrintDefaults() }
 	flag.Parse()
 	args := flag.Args()
 	if len(args) == 0 {
@@ -57,55 +47,62 @@ func main() {
 		os.Exit(2)
 	}
 	ctx := context.Background()
-	if args[0] == "detect" {
+	switch cmd, rest := args[0], args[1:]; {
+	case cmd == "version" && len(rest) == 0:
+		output(map[string]any{"ok": true, "version": version}, func() { fmt.Println("modbus-cli", version) })
+	case cmd == "manual" && len(rest) == 0:
+		fmt.Print(manual())
+	case cmd == "read" && len(rest) == 2:
+		runRead(ctx, rest[0], rest[1])
+	case cmd == "write" && len(rest) == 2:
+		runWrite(ctx, rest[0], rest[1])
+	case cmd == "detect" && len(rest) == 0:
 		runDetect(ctx)
-		return
-	}
-	if len(args) != 3 || (args[0] != "read" && args[0] != "write") {
-		flag.Usage()
+	case cmd == "scan" && (len(rest) == 0 || len(rest) == 2):
+		runScan(ctx, rest)
+	case cmd == "raw" && len(rest) > 0:
+		runRaw(ctx, strings.Join(rest, ""))
+	default:
+		if *jsonOut {
+			output(failure{Error: "命令或参数个数不对，运行 modbus-cli manual 查看用法"}, nil)
+		} else {
+			flag.Usage()
+		}
 		os.Exit(2)
 	}
-	dt, bo := dataType(), byteOrder()
-	cand := resolveAddress(args[1])
-	c := connect(ctx)
-	defer c.Close()
-	if args[0] == "read" {
-		n, err := strconv.Atoi(args[2])
-		if err != nil || n < 1 {
-			fail("数量应为正整数")
-		}
-		runRead(ctx, c, cand, n, dt, bo)
-		return
-	}
-	runWrite(ctx, c, cand, args[2], dt, bo)
 }
+
+// modes 是 -mode 的写法，JSON 输出里的 mode 也用它。
+var modes = map[string]modbus.Mode{"tcp": modbus.ModeTCP, "rtu-over-tcp": modbus.ModeRTUOverTCP, "ascii-over-tcp": modbus.ModeASCIIOverTCP,
+	"rtu": modbus.ModeRTU, "ascii": modbus.ModeASCII}
 
 func mode() modbus.Mode {
-	switch *modeArg {
-	case "tcp":
-		return modbus.ModeTCP
-	case "rtu-over-tcp":
-		return modbus.ModeRTUOverTCP
-	case "rtu":
-		return modbus.ModeRTU
-	case "ascii-over-tcp":
-		return modbus.ModeASCIIOverTCP
-	case "ascii":
-		return modbus.ModeASCII
-	case "":
-		if *port != "" {
-			return modbus.ModeRTU
-		}
-		return modbus.ModeTCP
+	if m, ok := modes[*modeArg]; ok {
+		return m
 	}
-	fail("不支持的协议 %q", *modeArg)
-	return ""
+	if *modeArg != "" {
+		fail("不支持的协议 %q", *modeArg)
+	}
+	if *port != "" {
+		return modbus.ModeRTU
+	}
+	return modbus.ModeTCP
 }
 
-func connect(ctx context.Context) *modbus.Client {
+func modeName(m modbus.Mode) string {
+	for name, x := range modes {
+		if x == m {
+			return name
+		}
+	}
+	return string(m)
+}
+
+// connect 按选项连接。retries 是读请求超时后的重试次数，扫描从站时不重试。
+func connect(ctx context.Context, retries int) *modbus.Client {
 	m := mode()
 	opts := modbus.DefaultOptions(m)
-	opts.Timeout, opts.DiscardEcho = *timeout, *echo
+	opts.Timeout, opts.DiscardEcho, opts.ReadRetries = *timeout, *echo, retries
 	if *trace {
 		opts.Observer = modbus.ObserverFunc(printPacket)
 	}
@@ -125,7 +122,7 @@ func connect(ctx context.Context) *modbus.Client {
 	return modbus.NewClient(t, opts)
 }
 
-// 与 Modbus Poll 通信报文窗口相同的格式：Tx:000001-01 03 …
+// printPacket 用和 Modbus Poll 通信报文窗口相同的格式打印到标准错误：Tx:000001-01 03 …
 func printPacket(p modbus.Packet) {
 	tag := "Rx"
 	if p.Dir == modbus.DirTX {
@@ -141,6 +138,9 @@ func printPacket(p modbus.Packet) {
 	}
 	if p.Status != modbus.StatusSent && p.Status != modbus.StatusSuccess {
 		line += "  ← " + string(p.Status)
+		if p.Err != nil {
+			line += "：" + p.Err.Error()
+		}
 	}
 	fmt.Fprintln(os.Stderr, line)
 }
@@ -153,176 +153,39 @@ func hexs(b []byte) string {
 	return strings.Join(parts, " ")
 }
 
-func dataType() modbus.DataType {
-	t := modbus.DataType(strings.ToUpper(*typ))
-	switch t {
-	case modbus.TypeInt16, modbus.TypeUint16, modbus.TypeInt32, modbus.TypeUint32, modbus.TypeFloat32,
-		modbus.TypeInt64, modbus.TypeUint64, modbus.TypeFloat64:
-		return t
-	}
-	fail("不支持的数据类型 %q", *typ)
-	return ""
+// failure 是 -json 时出错的输出。
+type failure struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error"`
 }
 
-func byteOrder() modbus.ByteOrder {
-	dt := dataType()
-	if *order == "" {
-		return modbus.OrderAB.For(dt)
-	}
-	o := modbus.ByteOrder(strings.ToUpper(*order))
-	if dt.Registers() == 4 {
-		return o.For(dt)
-	}
-	return o
-}
-
-// 地址有歧义时按第一种解释执行，并明确告诉用户另一种写法（设计文档 6.3：不静默猜测）。
-func resolveAddress(s string) modbus.AddressCandidate {
-	cands, err := modbus.ParseAddress(s)
-	if err != nil {
-		fail("%v", err)
-	}
-	if len(cands) > 1 {
-		fmt.Fprintf(os.Stderr, "注意：%s 有 %d 种解释，已按“%s → Offset %d”执行；", s, len(cands), cands[0].Label, cands[0].Offset)
-		fmt.Fprintf(os.Stderr, "如果指的是原始 Offset %d，请写成 0x%04X。\n", cands[1].Offset, cands[1].Offset)
-	}
-	return cands[0]
-}
-
-func runRead(ctx context.Context, c *modbus.Client, a modbus.AddressCandidate, n int, dt modbus.DataType, bo modbus.ByteOrder) {
-	fc := a.Area.ReadFunction()
-	if fc != modbus.FuncReadHoldingRegisters && fc != modbus.FuncReadInputRegisters {
-		fail("modbus-cli 目前只读寄存器（3x、4x）")
-	}
-	start := time.Now()
-	resp, err := c.Do(ctx, modbus.Request{Slave: byte(*slave), Function: fc, Address: a.Offset, Quantity: uint16(n)})
-	if err != nil {
-		explain(err)
-	}
-	area := modbus.AreaOf(fc)
-	fmt.Printf("%s · Slave %d · %s × %d · %v\n\n", c.Mode(), *slave, modbus.Reference(area, a.Offset), n, time.Since(start).Round(time.Millisecond))
-	w := dt.Registers()
-	fmt.Printf("%-8s %-7s %-12s %s\n", "地址", "Offset", "寄存器", fmt.Sprintf("%s %s", dt, bo))
-	for i := 0; i+w <= len(resp.Registers); i += w {
-		regs := resp.Registers[i : i+w]
-		hexRegs := make([]string, w)
-		for j, r := range regs {
-			hexRegs[j] = fmt.Sprintf("%04X", r)
-		}
-		val := "—"
-		if exact, err := modbus.FormatInt(dt, bo, regs); err == nil && *scale == 1 {
-			val = exact // 整型精确显示，64 位不经过 float64
-		} else if raw, err := modbus.DecodeRaw(dt, bo, regs); err == nil {
-			val = formatEng(modbus.Scaling{Scale: *scale}.Engineering(raw), dt)
-			if dt == modbus.TypeFloat32 {
-				if sug, ok := modbus.SuggestByteOrder(bo, regs); ok {
-					val += fmt.Sprintf("（不合理，按 %s 解码更可能正确）", sug)
-				}
-			}
-		} else {
-			fail("%v", err)
-		}
-		off := a.Offset + uint16(i)
-		fmt.Printf("%-8s %-7d %-12s %s\n", modbus.Reference(area, off), off, strings.Join(hexRegs, " "), val)
-	}
-}
-
-// formatEng 格式化工程值：FLOAT32 按单精度显示（45.2 而不是 45.200001），
-// 整型按 Scale 的小数位数显示（132 × 0.1 显示 13.2）。
-func formatEng(v float64, dt modbus.DataType) string {
-	if dt == modbus.TypeFloat32 && *scale == 1 {
-		return strconv.FormatFloat(v, 'g', -1, 32)
-	}
-	if dt == modbus.TypeFloat64 && *scale == 1 {
-		return strconv.FormatFloat(v, 'g', -1, 64)
-	}
-	s := strconv.FormatFloat(*scale, 'f', -1, 64)
-	decimals := 0
-	if i := strings.IndexByte(s, '.'); i >= 0 {
-		decimals = len(s) - i - 1
-	}
-	if dt.Float() {
-		decimals += 3
-	}
-	return strconv.FormatFloat(v, 'f', decimals, 64)
-}
-
-// runWrite 先展示编码，再写入，并立即回读比较（控制验证的最小形态，完整流程见设计文档 11.4）。
-func runWrite(ctx context.Context, c *modbus.Client, a modbus.AddressCandidate, text string, dt modbus.DataType, bo modbus.ByteOrder) {
-	if !a.Area.Writable() {
-		fail("%s 区只读，不能写入", a.Area.Prefix())
-	}
-	t := control.Target{Type: dt, ReadOrder: bo, Scaling: modbus.Scaling{Scale: *scale}}
-	regs, _, rounded, err := control.EncodeText(t, text)
-	if err != nil {
-		fail("%v", err)
-	}
-	show := func(regs []uint16) string {
-		if s, err := modbus.FormatInt(dt, bo, regs); err == nil && *scale == 1 {
-			return s
-		}
-		raw, _ := modbus.DecodeRaw(dt, bo, regs)
-		return strconv.FormatFloat(modbus.Scaling{Scale: *scale}.Engineering(raw), 'g', -1, 64)
-	}
-	req := modbus.Request{Slave: byte(*slave), Function: modbus.FuncWriteSingleRegister, Address: a.Offset, Values: regs}
-	if len(regs) > 1 {
-		req.Function = modbus.FuncWriteMultipleRegisters
-	}
-	pdu, _ := req.PDU()
-	fmt.Printf("目标值   %s（%s %s）\n", strings.TrimSpace(text), dt, bo)
-	if rounded {
-		fmt.Printf("注意     取整后实际写入 %s\n", show(regs))
-	}
-	fmt.Printf("线上字节 %s\n寄存器   ", hexs(modbus.RegistersToBytes(regs)))
-	for i, r := range regs {
-		fmt.Printf("%s = 0x%04X  ", modbus.Reference(modbus.AreaHoldingRegisters, a.Offset+uint16(i)), r)
-	}
-	fmt.Printf("\n请求     %s\n\n", hexs(modbus.EncodeADU(c.Mode(), req.Slave, 1, pdu)))
-
-	if _, err := c.Do(ctx, req); err != nil {
-		explain(err)
-	}
-	fmt.Println("协议写入：SUCCESS")
-	resp, err := c.Do(ctx, modbus.Request{Slave: req.Slave, Function: modbus.FuncReadHoldingRegisters, Address: a.Offset, Quantity: uint16(len(regs))})
-	if err != nil {
-		fmt.Print("回读失败：")
-		explain(err)
-	}
-	if slices.Equal(resp.Registers, regs) {
-		fmt.Printf("回读：%s，与目标一致\n", show(resp.Registers))
+// output 打印结果：-json 时打印 v 的 JSON，否则调用 text 打印给人看的文字。
+func output(v any, text func()) {
+	if !*jsonOut {
+		text()
 		return
 	}
-	fmt.Printf("回读：%s，与目标 %s 不符（控制验证 FAILED）\n", show(resp.Registers), show(regs))
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		fmt.Fprintln(os.Stderr, "modbus-cli:", err)
+		os.Exit(1)
+	}
+}
+
+// fail 报错并以退出码 1 结束：-json 时在标准输出打印 {"ok": false, "error": …}。
+func fail(format string, a ...any) {
+	msg := fmt.Sprintf(format, a...)
+	if *jsonOut {
+		output(failure{Error: msg}, nil)
+	} else {
+		fmt.Fprintln(os.Stderr, "modbus-cli: "+msg)
+	}
 	os.Exit(1)
 }
 
-func runDetect(ctx context.Context) {
-	if *target == "" {
-		fail("detect 需要 -target")
-	}
-	dial := func(ctx context.Context) (modbus.Transport, error) { return transport.DialTCP(ctx, *target, *timeout) }
-	opts := detect.Options{Timeout: *timeout}
-	if *trace {
-		opts.Observer = modbus.ObserverFunc(printPacket)
-	}
-	res, err := detect.Detect(ctx, dial, opts)
-	for _, at := range res.Attempts {
-		outcome := "有响应"
-		if at.Err != nil {
-			outcome = at.Err.Error()
-		}
-		fmt.Printf("  %-15s Slave %-3d %s\n", at.Mode, at.Slave, outcome)
-	}
-	if err != nil {
-		fail("%v：连接成功但两种格式都没有得到可解析的响应", err)
-	}
-	how := "正常响应"
-	if res.ByException {
-		how = "异常响应（同样能确认协议）"
-	}
-	fmt.Printf("\n识别结果：%s，Slave %d，依据：%s\n", res.Mode, res.Slave, how)
-}
-
+// explain 把通信错误换成带建议的说明后报错。
 func explain(err error) {
 	if ex, ok := modbus.AsException(err); ok {
 		fail("%v。建议：%s", ex, ex.Code.Tip())
@@ -331,9 +194,4 @@ func explain(err error) {
 		fail("%v：%v 内没有匹配的响应。检查 Slave ID、协议类型和接线；加 -trace 查看报文", err, *timeout)
 	}
 	fail("%v", err)
-}
-
-func fail(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "modbus-cli: "+format+"\n", a...)
-	os.Exit(1)
 }

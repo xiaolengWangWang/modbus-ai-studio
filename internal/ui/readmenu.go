@@ -196,5 +196,5 @@ func (w *readWindow) cellMenu() *fyne.Menu {
 	probeItem.Disabled = ws.session == nil
 	return fyne.NewMenu("", write, copyItem, fyne.NewMenuItemSeparator(),
 		typeItem, kindItem, resetItem, orderItem, raw, fyne.NewMenuItemSeparator(),
-		fyne.NewMenuItem("读取定义…", func() { ws.showDefinition(w) }), debug, probeItem)
+		fyne.NewMenuItem("读取定义…", func() { ws.showDefinition(w) }), fyne.NewMenuItem("修改站号…", func() { ws.showSlaveDialog(w) }), debug, probeItem)
 }

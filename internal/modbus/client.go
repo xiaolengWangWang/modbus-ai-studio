@@ -92,6 +92,8 @@ type Client struct {
 	txID         uint16
 	reqID        uint64
 	connectionID string
+	sent         []sentReq // 最近发出的请求，晚到帧据此找回回的是哪条请求（late.go）
+	idle         time.Time // 上一次请求结束的时刻，之后到达的字节要等下一条请求发送前才读到
 }
 
 // NewClient 在已建立的连接上创建客户端。零值参数使用默认值（ReadRetries 除外）。
@@ -152,7 +154,9 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 
 func (c *Client) emit(p Packet) {
 	if c.opts.Observer != nil {
-		p.Time = time.Now()
+		if p.Time.IsZero() { // 发送行自带时间，晚到帧说明里的发送时间和它一致
+			p.Time = time.Now()
+		}
 		p.ConnectionID = c.connectionID
 		c.opts.Observer.OnPacket(p)
 	}
@@ -211,6 +215,7 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	defer func() { c.idle = time.Now() }()
 	c.txID++
 	c.reqID++
 	base.RequestID, base.Mode = c.reqID, c.opts.Mode
@@ -227,9 +232,13 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 	stop := context.AfterFunc(ctx, func() { _ = c.t.SetReadDeadline(time.Now()) })
 	defer stop()
 
-	// 发送前清掉上一次遗留的字节，避免被当成本次响应
+	// 发送前清掉上一次遗留的字节，避免被当成本次响应。上一次请求里已经读进缓冲的，说不清什么时候到的
+	from := c.idle
+	if len(c.r.buf) > 0 {
+		from = time.Time{}
+	}
 	if stale := c.r.drain(time.Millisecond, time.Now().Add(2*time.Millisecond)); len(stale) > 0 {
-		result(stale, StatusLate, nil)
+		c.late(stale, from, time.Now(), result)
 	}
 
 	adu := EncodeADU(c.opts.Mode, base.Slave, c.txID, pdu)
@@ -241,7 +250,7 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 		return nil, fmt.Errorf("%w：%v", ErrConnection, err)
 	}
 	tx := base
-	tx.Dir, tx.Raw, tx.Status = DirTX, adu, StatusSent
+	tx.Dir, tx.Raw, tx.Status, tx.Time = DirTX, adu, StatusSent, time.Now()
 	c.emit(tx)
 
 	// RTU 广播（Slave 0）没有响应，等待转向延迟即可
@@ -257,6 +266,8 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
+	c.sent = append(c.sent[max(0, len(c.sent)-maxSent+1):], sentReq{tx: tx, start: start, timeout: deadline.Sub(start)})
+	end := func(st Status) { c.sent[len(c.sent)-1].ended = st }
 	if c.opts.DiscardEcho && !c.opts.Mode.mbap() {
 		c.r.skipEcho(adu, deadline)
 	}
@@ -275,6 +286,7 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 			continue
 		case ctx.Err() != nil:
 			result(nil, StatusCancelled, ctx.Err())
+			end(StatusCancelled)
 			return nil, ctx.Err()
 		case isTimeout(err):
 			err = ErrTimeout
@@ -282,6 +294,7 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 				err = mismatchTimeout(rejected)
 			}
 			result(nil, StatusTimeout, err)
+			end(StatusTimeout)
 			c.afterTimeout(result)
 			return nil, err
 		default:
@@ -291,7 +304,8 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 
 		// Modbus TCP 靠 Transaction ID 关联；Unit ID 不少设备不按规范回显，不作为判断依据
 		if c.opts.Mode.mbap() && f.TxID != c.txID {
-			result(f.Raw, StatusLate, nil)
+			now := time.Now()
+			result(f.Raw, StatusLate, c.lateError(f.Raw, now, now))
 			continue
 		}
 		if !c.opts.Mode.mbap() && f.Slave != base.Slave {
@@ -348,10 +362,16 @@ func (mismatchTimeout) Is(target error) bool { return target == ErrTimeout || ta
 
 // afterTimeout 在超时后等待保护间隔并清空接收缓冲。保护间隔内收到的字节记为晚到响应，
 // 绝不当作下一条请求的响应（设计文档 5.5）。
+// 超时前已经收到半帧的，说不清什么时候到的，只说明回的是哪条请求。
 func (c *Client) afterTimeout(result func([]byte, Status, error)) {
 	until := time.Now().Add(c.opts.Guard)
-	if late := c.r.drain(c.opts.Guard, until); len(late) > 0 {
-		result(late, StatusLate, nil)
+	partial := len(c.r.buf) > 0
+	if c.r.fill(1, until) == nil {
+		at := time.Now()
+		if partial {
+			at = time.Time{}
+		}
+		c.late(c.r.drain(c.opts.Guard, until), at, at, result)
 	}
 	time.Sleep(time.Until(until))
 }

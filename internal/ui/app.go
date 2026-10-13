@@ -462,6 +462,7 @@ func (ws *Workspace) setMenu() {
 			fyne.NewMenuItemSeparator(),
 			key(item("导入点表…", modal(ws.importPoints)), fyne.KeyI, false),
 			item("调整字节序…", modal(func() { ws.showPointOrderDialog(ws.current()) })),
+			item("修改站号（Slave ID）…", modal(func() { ws.showSlaveDialog(ws.current()) })),
 			item("打开换热站示例", ws.loadDemo),
 			fyne.NewMenuItemSeparator(),
 			key(item("全部暂停", func() { ws.pauseAll(true) }), fyne.KeyP, true),
@@ -584,6 +585,9 @@ func (ws *Workspace) refreshStatus() {
 		modeName[ws.session.mode], ws.session.desc, ws.session.linkStatus(), ws.timeout.Milliseconds(), ws.stats.polls.Load(), ws.stats.ok.Load(), ws.stats.errs.Load())
 	if n := ws.evidence.late.Load(); n > 0 {
 		text += fmt.Sprintf(" · 晚到 %d", n)
+	}
+	if n := ws.evidence.foreign.Load(); n > 0 {
+		text += fmt.Sprintf(" · 别的主站的响应 %d", n)
 	}
 	if r := currentRecorder(); r != nil && r.Dropped.Load() > 0 {
 		text += fmt.Sprintf(" · 报文记录丢了 %d 条", r.Dropped.Load())

@@ -7,6 +7,8 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"debug/elf"
+	"debug/macho"
+	"debug/pe"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -51,8 +53,17 @@ func webPackages(version string) []string {
 	return []string{p + "x64.tar.gz", p + "arm64.tar.gz"}
 }
 
-// packages 是一次发布的全部文件：桌面版安装包和 Linux Web 版的包。
-func packages(version string) []string { return append(installers(version), webPackages(version)...) }
+// cliPackages 是命令行工具 modbus-cli 的五个包（build/cli.sh）。文件名小写，结尾和桌面版安装包不同：
+// 检查更新按结尾找安装包，同结尾的话已装好的旧版本会把 CLI 的包当成更新下载。
+func cliPackages(version string) []string {
+	p := "modbus-cli-" + version + "-"
+	return []string{p + "windows-x64.zip", p + "macos-x64.tar.gz", p + "macos-arm64.tar.gz", p + "linux-x64.tar.gz", p + "linux-arm64.tar.gz"}
+}
+
+// packages 是一次发布的全部文件：桌面版安装包、Linux Web 版和 modbus-cli 的包。
+func packages(version string) []string {
+	return slices.Concat(installers(version), webPackages(version), cliPackages(version))
+}
 
 // summary 读发布说明正文，第一行必须是这个版本的标题，免得用错上一版的说明。
 func (r *release) summary() (string, error) {
@@ -180,6 +191,8 @@ func (r *release) checkInstallers(ci string) ([]asset, error) {
 		pkg := filepath.Join(r.dist, name)
 		var err error
 		switch {
+		case strings.HasPrefix(name, "modbus-cli-"):
+			err = checkCLI(pkg, r.version)
 		case strings.HasSuffix(name, ".dmg"):
 			err = checkDMG(pkg)
 		case strings.HasSuffix(name, ".tar.gz"):
@@ -347,6 +360,132 @@ func checkLinuxWeb(pkg, version string) error {
 	}
 	_, err = io.Copy(io.Discard, zr) // 读到结尾，gzip 才会核对校验和
 	return err
+}
+
+// checkCLI 核对 modbus-cli 的包：顶层目录下只有 modbus-cli 程序（Windows 是 modbus-cli.exe）和明文 README.txt，
+// 程序是包名里那个系统和 CPU 的，tar.gz 里的程序有可执行位，说明里有这一版的版本号。
+func checkCLI(pkg, version string) error {
+	base := filepath.Base(pkg)
+	top, isZip := strings.CutSuffix(base, ".zip")
+	if !isZip {
+		top = strings.TrimSuffix(base, ".tar.gz")
+	}
+	exe := top + "/modbus-cli"
+	if isZip {
+		exe += ".exe"
+	}
+	files := map[string][]byte{}
+	executable := isZip
+	add := func(name string, r io.Reader) error {
+		if name != exe && name != top+"/README.txt" {
+			return fmt.Errorf("多了 %s，包里只该有 %s 和 README.txt", name, path.Base(exe))
+		}
+		b, err := io.ReadAll(r)
+		files[name] = b
+		return err
+	}
+	if isZip {
+		zr, err := zip.OpenReader(pkg)
+		if err != nil {
+			return err
+		}
+		defer zr.Close()
+		for _, f := range zr.File {
+			if strings.HasSuffix(f.Name, "/") {
+				continue
+			}
+			rc, err := f.Open()
+			if err != nil {
+				return err
+			}
+			err = add(f.Name, rc)
+			rc.Close()
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		f, err := os.Open(pkg)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		zr, err := gzip.NewReader(f)
+		if err != nil {
+			return err
+		}
+		tr := tar.NewReader(zr)
+		for {
+			h, err := tr.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if h.Typeflag == tar.TypeDir {
+				continue
+			}
+			if h.Typeflag != tar.TypeReg {
+				return fmt.Errorf("%s 不是普通文件", h.Name)
+			}
+			if h.Name == exe {
+				executable = h.Mode&0o111 != 0
+			}
+			if err := add(h.Name, tr); err != nil {
+				return err
+			}
+		}
+		if _, err := io.Copy(io.Discard, zr); err != nil { // 读到结尾，gzip 才会核对校验和
+			return err
+		}
+	}
+	bin, readme := files[exe], files[top+"/README.txt"]
+	switch {
+	case bin == nil || readme == nil:
+		return fmt.Errorf("缺少 %s 或 README.txt", path.Base(exe))
+	case !executable:
+		return errors.New("modbus-cli 没有可执行位，解压后运行不了")
+	}
+	arm := strings.HasSuffix(top, "-arm64")
+	var got, want string
+	switch {
+	case isZip:
+		f, err := pe.NewFile(bytes.NewReader(bin))
+		if err != nil {
+			return fmt.Errorf("%s 不是 Windows 程序：%w", path.Base(exe), err)
+		}
+		got, want = fmt.Sprintf("%#x", f.Machine), fmt.Sprintf("%#x", pe.IMAGE_FILE_MACHINE_AMD64)
+	case strings.Contains(top, "-macos-"):
+		f, err := macho.NewFile(bytes.NewReader(bin))
+		if err != nil {
+			return fmt.Errorf("modbus-cli 不是 macOS 程序：%w", err)
+		}
+		got, want = f.Cpu.String(), macho.CpuAmd64.String()
+		if arm {
+			want = macho.CpuArm64.String()
+		}
+	default:
+		f, err := elf.NewFile(bytes.NewReader(bin))
+		if err != nil {
+			return fmt.Errorf("modbus-cli 不是 Linux 程序：%w", err)
+		}
+		got, want = f.Machine.String(), elf.EM_X86_64.String()
+		if arm {
+			want = elf.EM_AARCH64.String()
+		}
+	}
+	if got != want {
+		return fmt.Errorf("modbus-cli 是 %s 的程序，应为 %s", got, want)
+	}
+	text := bytes.TrimPrefix(readme, []byte("\xef\xbb\xbf"))
+	switch {
+	case !utf8.Valid(text) || encrypted(text) || bytes.IndexByte(text, 0) >= 0:
+		return errors.New("README.txt 不是可读的 UTF-8 文本（被加密软件加密了？）")
+	case !bytes.Contains(text, []byte("modbus-cli "+version)):
+		return fmt.Errorf("README.txt 里没有“modbus-cli %s”", version)
+	}
+	return nil
 }
 
 // checkWindows 核对 Windows zip 的内容和 exe 的资源，再解压一份到 dist/ 下同名目录，方便直接试用。

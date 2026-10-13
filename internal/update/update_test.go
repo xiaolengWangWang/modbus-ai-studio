@@ -61,6 +61,7 @@ d58356184fe45d42077f0c9c6c75070ca6b5bc5e189dfd4013776e5dd6543c6a  ModbusAIStudio
 
 func TestReleaseAssetChecksumNotes(t *testing.T) {
 	r := Release{Tag: "v0.10.0", Body: body, Assets: []Asset{
+		{Name: "ModbusAIStudio-CLI-0.10.0-Windows-x64.zip"}, {Name: "modbus-cli-0.10.0-windows-x64.zip"}, // 排在前面也不能当成安装包
 		{Name: "ModbusAIStudio-0.10.0-macOS-AppleSilicon.dmg"}, {Name: "ModbusAIStudio-0.10.0-macOS-Intel.dmg"},
 		{Name: "ModbusAIStudio-0.10.0-Windows-x64.zip"},
 	}}

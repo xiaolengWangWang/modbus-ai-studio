@@ -148,13 +148,7 @@ func (ws *Workspace) showDefinition(w *readWindow) {
 		_, err := modbus.ParseAddress(s)
 		return err
 	}
-	slave.Validator = func(s string) error {
-		v, err := strconv.Atoi(strings.TrimSpace(s))
-		if err != nil || v < 1 || v > 255 {
-			return errors.New("Slave ID 应为 1–255")
-		}
-		return nil
-	}
+	slave.Validator = slaveValidator
 	qty.Validator = func(s string) error {
 		v, err := strconv.Atoi(strings.TrimSpace(s))
 		limit := readDef{Function: funcByName(fn.Selected)}.maxQty()

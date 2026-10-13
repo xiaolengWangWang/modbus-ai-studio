@@ -8,6 +8,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"debug/elf"
+	"debug/macho"
+	"debug/pe"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -338,7 +340,11 @@ func TestUnpackWindows(t *testing.T) {
 func TestExtractInstallers(t *testing.T) {
 	ci, dst := t.TempDir(), t.TempDir()
 	names := packages("1.2.3")
-	writeZip(t, filepath.Join(ci, "installers-Linux.zip"), map[string]string{names[0]: "win", names[3]: "web x64", names[4]: "web arm64"})
+	linux := map[string]string{names[0]: "win", names[3]: "web x64", names[4]: "web arm64"}
+	for _, name := range cliPackages("1.2.3") {
+		linux[name] = "cli"
+	}
+	writeZip(t, filepath.Join(ci, "installers-Linux.zip"), linux)
 	writeZip(t, filepath.Join(ci, "installers-macOS.zip"), map[string]string{names[1]: "intel", names[2]: "arm", "other.txt": "x"})
 	if err := extractInstallers(ci, dst, names); err != nil {
 		t.Fatal(err)
@@ -420,6 +426,79 @@ func TestCheckLinuxWeb(t *testing.T) {
 	} {
 		writeTarGz(t, pkg, mutate(good(names[1], elf.EM_AARCH64)))
 		if err := checkLinuxWeb(pkg, "1.2.3"); err == nil {
+			t.Errorf("%s：应报错", what)
+		}
+	}
+}
+
+// machoHeader、peHeader 是只有文件头的最小 Mach-O、PE，够 debug/macho、debug/pe 认出 CPU。
+func machoHeader(t *testing.T, cpu macho.Cpu) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	h := macho.FileHeader{Magic: macho.Magic64, Cpu: cpu, Type: macho.TypeExec}
+	if err := binary.Write(&buf, binary.LittleEndian, h); err != nil {
+		t.Fatal(err)
+	}
+	buf.Write(make([]byte, 4)) // 64 位文件头多 4 字节保留
+	return buf.Bytes()
+}
+
+func peHeader(t *testing.T, machine uint16) []byte {
+	t.Helper()
+	b := make([]byte, 0x80) // debug/pe 先读 96 字节的 DOS 头
+	copy(b, "MZ")
+	binary.LittleEndian.PutUint32(b[0x3c:], 0x80)
+	var buf bytes.Buffer
+	buf.Write(b)
+	buf.WriteString("PE\x00\x00")
+	if err := binary.Write(&buf, binary.LittleEndian, pe.FileHeader{Machine: machine}); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// modbus-cli 的包：顶层目录下只有对应系统和 CPU 的程序和明文说明，说明里有版本号。
+func TestCheckCLI(t *testing.T) {
+	names := cliPackages("1.2.3")
+	readme := []byte("Modbus AI Studio 命令行工具 modbus-cli 1.2.3\n")
+	dir := t.TempDir()
+	bins := map[string][]byte{
+		names[1]: machoHeader(t, macho.CpuAmd64), names[2]: machoHeader(t, macho.CpuArm64),
+		names[3]: elfHeader(t, elf.EM_X86_64), names[4]: elfHeader(t, elf.EM_AARCH64),
+	}
+	good := func(name string, bin []byte) []tarEntry {
+		top := strings.TrimSuffix(name, ".tar.gz") + "/"
+		return []tarEntry{{top + "modbus-cli", 0o755, bin}, {top + "README.txt", 0o644, readme}}
+	}
+	for name, bin := range bins {
+		pkg := filepath.Join(dir, name)
+		writeTarGz(t, pkg, good(name, bin))
+		if err := checkCLI(pkg, "1.2.3"); err != nil {
+			t.Fatalf("%s：%v", name, err)
+		}
+	}
+	win := filepath.Join(dir, names[0])
+	top := strings.TrimSuffix(names[0], ".zip") + "/"
+	writeZip(t, win, map[string]string{top + "modbus-cli.exe": string(peHeader(t, pe.IMAGE_FILE_MACHINE_AMD64)), top + "README.txt": "\xef\xbb\xbf" + string(readme)})
+	if err := checkCLI(win, "1.2.3"); err != nil {
+		t.Fatalf("%s：%v", names[0], err)
+	}
+	writeZip(t, win, map[string]string{top + "modbus-cli.exe": string(peHeader(t, pe.IMAGE_FILE_MACHINE_ARM64)), top + "README.txt": string(readme)})
+	if checkCLI(win, "1.2.3") == nil {
+		t.Error("Windows 包里是 ARM64 程序：应报错")
+	}
+	pkg := filepath.Join(dir, names[2])
+	for what, mutate := range map[string]func([]tarEntry) []tarEntry{
+		"Apple Silicon 包里是 Intel 程序": func(e []tarEntry) []tarEntry { e[0].body = machoHeader(t, macho.CpuAmd64); return e },
+		"macOS 包里是 Linux 程序":         func(e []tarEntry) []tarEntry { e[0].body = elfHeader(t, elf.EM_AARCH64); return e },
+		"程序没有可执行位":                  func(e []tarEntry) []tarEntry { e[0].mode = 0o644; return e },
+		"说明被加密":                     func(e []tarEntry) []tarEntry { e[1].body = []byte("b\x14#e+\x00E-SafeNet\x00LOCK"); return e },
+		"说明里没有版本号":                  func(e []tarEntry) []tarEntry { e[1].body = []byte("modbus-cli\n"); return e },
+		"缺少说明":                      func(e []tarEntry) []tarEntry { return e[:1] },
+		"多了文件":                      func(e []tarEntry) []tarEntry { return append(e, tarEntry{e[0].name + ".bak", 0o644, []byte("x")}) },
+	} {
+		writeTarGz(t, pkg, mutate(good(names[2], machoHeader(t, macho.CpuArm64))))
+		if err := checkCLI(pkg, "1.2.3"); err == nil {
 			t.Errorf("%s：应报错", what)
 		}
 	}
