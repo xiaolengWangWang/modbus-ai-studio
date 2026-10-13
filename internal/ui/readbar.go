@@ -152,7 +152,7 @@ func (w *readWindow) orderChoice() (opts []string, cur modbus.ByteOrder, ok bool
 			}
 		}
 		for k, p := range w.ws.points {
-			if k.area == d.area() && int(k.off) >= int(d.Start) && int(k.off)+p.regs() <= int(d.Start)+d.Qty && p.Type != typeString && p.regs() > 1 && w.valueFormat(int(k.off)-int(d.Start)).kind == kindPoint {
+			if k.Area == d.area() && int(k.Offset) >= int(d.Start) && int(k.Offset)+p.Regs() <= int(d.Start)+d.Qty && p.Type != typeString && p.Regs() > 1 && w.valueFormat(int(k.Offset)-int(d.Start)).kind == kindPoint {
 				count[p.Order.For(modbus.TypeFloat32)]++
 			}
 		}

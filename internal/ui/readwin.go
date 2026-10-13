@@ -321,7 +321,7 @@ func (w *readWindow) updateCell(id widget.TableCellID, c *cell) {
 	}
 	d := w.def
 	off := d.Start + uint16(i)
-	p, isPoint := w.ws.points.get(d.area(), off)
+	p, isPoint := w.ws.points.Get(d.area(), off)
 	isPoint = isPoint && d.usesPoints()
 	switch w.cols[id.Col%len(w.cols)] {
 	case colAddr:
@@ -355,7 +355,7 @@ func (w *readWindow) updateCell(id widget.TableCellID, c *cell) {
 			return
 		}
 		if f.kind == kindPoint {
-			if p, ok := w.ws.points.get(d.area(), off); ok {
+			if p, ok := w.ws.points.Get(d.area(), off); ok {
 				c.SetText(string(p.Type) + " " + string(p.Order))
 			} else {
 				c.SetText("Unsigned AB")
@@ -394,14 +394,14 @@ func (w *readWindow) valueText(i int) (string, widget.Importance) {
 	switch {
 	case d.Kind == kindPoint:
 		pts := w.ws.points
-		if pts.occupied(d.area(), off) && i > 0 {
+		if pts.Occupied(d.area(), off) && i > 0 {
 			return "—", widget.LowImportance
 		}
-		p, ok := pts.get(d.area(), off)
+		p, ok := pts.Get(d.area(), off)
 		if !ok {
 			return strconv.Itoa(int(regs[i])), imp(1)
 		}
-		n := p.regs()
+		n := p.Regs()
 		if i+n > len(regs) {
 			return fmt.Sprintf("需 %d 个寄存器", n), widget.DangerImportance
 		}
@@ -458,7 +458,7 @@ func (w *readWindow) canWrite() bool {
 	}
 	switch d.Function {
 	case modbus.FuncReadCoils:
-		if p, ok := w.ws.points.get(d.area(), d.Start+uint16(w.sel)); ok && d.usesPoints() {
+		if p, ok := w.ws.points.Get(d.area(), d.Start+uint16(w.sel)); ok && d.usesPoints() {
 			return p.RW
 		}
 		return true
@@ -466,15 +466,15 @@ func (w *readWindow) canWrite() bool {
 		if d.Kind == kindPoint && len(d.Formats) > 0 {
 			for i := w.sel; i < w.sel+f.width; i++ {
 				a := d.Start + uint16(i)
-				for a > d.Start && w.ws.points.occupied(d.area(), a) {
+				for a > d.Start && w.ws.points.Occupied(d.area(), a) {
 					a--
 				}
-				if p, ok := w.ws.points.get(d.area(), a); ok && (!p.RW || p.Type == typeString) {
+				if p, ok := w.ws.points.Get(d.area(), a); ok && (!p.RW || p.Type == typeString) {
 					return false
 				}
 			}
 		}
-		if p, ok := w.ws.points.get(d.area(), d.Start+uint16(w.sel)); ok && d.Kind == kindPoint {
+		if p, ok := w.ws.points.Get(d.area(), d.Start+uint16(w.sel)); ok && d.Kind == kindPoint {
 			return p.RW && p.Type != typeString // 字符串点只读，要写用自定义请求 FC16
 		}
 		return true

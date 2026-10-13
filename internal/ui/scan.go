@@ -139,11 +139,12 @@ func (ws *Workspace) runSlaveScan(s *session, from, to int, tmo time.Duration) {
 		widget.NewLabel(fmt.Sprintf("FC03 读 40001，Slave %d–%d，每个最多等 %d ms", from, to, tmo.Milliseconds())), prog, found), ws.win)
 	dlg.SetOnClosed(cancel)
 	dlg.Show()
+	started := time.Now()
 	go func() {
 		hits, err := scanSlaves(ctx, s.client, from, to, tmo, func(id int, hits []slaveHit) {
 			uiDo(func() {
 				prog.SetValue(float64(id))
-				found.SetText("找到：" + hitIDs(hits))
+				found.SetText("找到：" + hitIDs(hits) + "\n" + progressText(float64(id-from+1)/float64(to-from+1), started))
 			})
 		})
 		stopped := ctx.Err() != nil
@@ -254,11 +255,12 @@ func (ws *Workspace) runSerialScan(mode modbus.Mode, port string, slave byte, tm
 		}
 		return s, nil
 	}
+	started := time.Now()
 	go func() {
 		found, baud, format, err := scanSerial(ctx, mode, open, port, slave, tmo, ws, func(n, total int, try string) {
 			uiDo(func() {
 				prog.SetValue(float64(n) / float64(total))
-				now.SetText("正在试 " + try)
+				now.SetText("正在试 " + try + "\n" + progressText(float64(n)/float64(total), started))
 			})
 		})
 		stopped := ctx.Err() != nil

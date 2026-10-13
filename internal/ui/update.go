@@ -255,7 +255,7 @@ func (ws *Workspace) installUpdate(rel update.Release, asset update.Asset, sum s
 				speed := mb / max(time.Since(start).Seconds(), 0.1)
 				if total > 0 {
 					bar.SetValue(float64(done) / float64(total))
-					info.SetText(fmt.Sprintf("已下载 %.1f / %.1f MB · %.2f MB/s", mb, float64(total)/(1<<20), speed))
+					info.SetText(fmt.Sprintf("已下载 %.1f / %.1f MB · %.2f MB/s\n%s", mb, float64(total)/(1<<20), speed, progressText(float64(done)/float64(total), start)))
 					setUpdateNote(fmt.Sprintf("正在下载新版本 %s：%.0f%%", rel.Version(), 100*float64(done)/float64(total)))
 				} else {
 					info.SetText(fmt.Sprintf("已下载 %.1f MB · %.2f MB/s", mb, speed))

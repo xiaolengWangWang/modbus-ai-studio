@@ -123,7 +123,7 @@ func TestReadBarPointOrder(t *testing.T) {
 		}
 		w1.bar.order.SetSelected("CDAB")
 		for off, want := range map[uint16]modbus.ByteOrder{0: modbus.OrderCDAB, 2: modbus.OrderCDAB, 100: modbus.OrderABCD} {
-			if p, _ := ws.points.get(modbus.AreaHoldingRegisters, off); p.Order != want {
+			if p, _ := ws.points.Get(modbus.AreaHoldingRegisters, off); p.Order != want {
 				t.Errorf("40%03d 字节序 %s，期望 %s", off+1, p.Order, want)
 			}
 		}

@@ -200,8 +200,8 @@ func suggestPointOrder(pts pointTable, d readDef, regs []uint16) (cur, sug modbu
 	}
 	var ss []sample
 	for i := range regs {
-		p, found := pts.get(d.area(), d.Start+uint16(i))
-		if !found || !p.Type.Float() || i+p.regs() > len(regs) || !slices.ContainsFunc(regs[i:i+p.regs()], func(r uint16) bool { return r != 0 }) {
+		p, found := pts.Get(d.area(), d.Start+uint16(i))
+		if !found || !p.Type.Float() || i+p.Regs() > len(regs) || !slices.ContainsFunc(regs[i:i+p.Regs()], func(r uint16) bool { return r != 0 }) {
 			continue
 		}
 		o := p.Order.For(modbus.TypeFloat32)
@@ -209,7 +209,7 @@ func suggestPointOrder(pts pointTable, d readDef, regs []uint16) (cur, sug modbu
 			return "", "", false
 		}
 		cur = o
-		ss = append(ss, sample{p.Type, regs[i : i+p.regs()]})
+		ss = append(ss, sample{p.Type, regs[i : i+p.Regs()]})
 	}
 	good := func(o modbus.ByteOrder) int {
 		n := 0

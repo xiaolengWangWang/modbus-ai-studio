@@ -126,6 +126,15 @@ func ParseAddress(s string) ([]AddressCandidate, error) {
 	return out, nil
 }
 
+// ReferenceSpan 返回地址范围，例如 40001–40020；只有一个地址时同 Reference。
+func ReferenceSpan(area Area, offset uint16, n int) string {
+	a := Reference(area, offset)
+	if n <= 1 {
+		return a
+	}
+	return a + "–" + Reference(area, offset+uint16(n-1))
+}
+
 // Reference 返回 40001 风格的地址（9999 以上用 6 位）。
 func Reference(area Area, offset uint16) string {
 	base5, base6 := 40001, 400001

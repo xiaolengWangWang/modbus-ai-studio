@@ -331,8 +331,8 @@ func describeRegisters(w *fieldWriter, area modbus.Area, addr int, b []byte) {
 		if int16(v) < 0 {
 			meaning += fmt.Sprintf("（Signed %d）", int16(v))
 		}
-		if pt, ok := w.pts.get(area, uint16(off)); ok {
-			n := pt.regs()
+		if pt, ok := w.pts.Get(area, uint16(off)); ok {
+			n := pt.Regs()
 			if pt.Type == typeString && i+2*n <= len(b) {
 				meaning += fmt.Sprintf(" · %s “%s”", pt.Name, decodeString(pt.Order, modbus.BytesToRegisters(b[i:i+2*n])))
 			} else if i+2*n <= len(b) {

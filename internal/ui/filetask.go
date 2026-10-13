@@ -66,12 +66,14 @@ func (ws *Workspace) fileTask(parent fyne.Window, title, text string, run func(c
 
 // writeAll 把 data 写进 w 并关闭；ctx 取消后关闭 w，打断还没完成的写入。
 func writeAll(ctx context.Context, w io.WriteCloser, data []byte) error {
-	stop := context.AfterFunc(ctx, func() { _ = w.Close() })
+	closed := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { _ = w.Close(); close(closed) })
 	n, err := w.Write(data)
 	if err == nil && n != len(data) {
 		err = io.ErrShortWrite
 	}
-	if !stop() { // 已因取消关闭
+	if !stop() { // 已因取消关闭：等它关完再返回，Windows 上文件还开着时删不掉临时文件
+		<-closed
 		return ctx.Err()
 	}
 	if closeErr := w.Close(); err == nil {
@@ -113,4 +115,40 @@ func readLimited(ctx context.Context, rc io.ReadCloser, limit int64, what string
 		err = fmt.Errorf("%s超过 %d MB，不是本程序能打开的文件", what, limit>>20)
 	}
 	return data, err
+}
+
+// progressText 是长任务的进度说明：百分比、已用时间、预计还要多久。刚开始估不准，先不报剩余时间。
+func progressText(frac float64, started time.Time) string {
+	elapsed := time.Since(started)
+	text := fmt.Sprintf("%d%% · 已用 %s", int(frac*100), roughDuration(elapsed))
+	if frac >= 0.03 && frac < 1 && elapsed >= 500*time.Millisecond {
+		text += " · 预计还要 " + roughDuration(time.Duration(float64(elapsed)*(1-frac)/frac))
+	}
+	return text
+}
+
+// roughDuration 把时长写成“3 秒”“2 分 5 秒”，进度说明不需要更细。
+func roughDuration(d time.Duration) string {
+	switch {
+	case d < time.Second:
+		return "不到 1 秒"
+	case d < time.Minute:
+		return fmt.Sprintf("%d 秒", int(d.Round(time.Second)/time.Second))
+	}
+	d = d.Round(time.Second)
+	return fmt.Sprintf("%d 分 %d 秒", int(d/time.Minute), int(d%time.Minute/time.Second))
+}
+
+// progressReader 读的时候报告累计读了多少字节。
+type progressReader struct {
+	r      io.Reader
+	n      int64
+	report func(n int64)
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	k, err := p.r.Read(b)
+	p.n += int64(k)
+	p.report(p.n)
+	return k, err
 }

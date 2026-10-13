@@ -152,7 +152,7 @@ func TestExportProbeReport(t *testing.T) {
 	run := &probeRun{mode: probeEachPoint, timeout: 250 * time.Millisecond, started: time.Now(), log: newProbeLog(), target: "Modbus TCP 127.0.0.1:502"}
 	pts := floatPoints(0, 2, 4)
 	d, segs, _ := pointProbeDef(pts, readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters})
-	run.def, run.points = d, pts.list()
+	run.def, run.points = d, pts.List()
 	raw := sparseClient(t, 8, []simulator.AddrRange{{Start: 0, Count: 2}}, map[uint16]uint16{0: 0x4170}, modbus.ObserverFunc(run.log.frame))
 	checks, err := checkEachPoint(context.Background(), loggedProbe{probeClient: raw, log: run.log}, d, segs, func(int) {})
 	if err != nil {

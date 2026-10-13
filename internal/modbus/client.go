@@ -93,7 +93,6 @@ type Client struct {
 	reqID        uint64
 	connectionID string
 	sent         []sentReq // 最近发出的请求，晚到帧据此找回回的是哪条请求（late.go）
-	idle         time.Time // 上一次请求结束的时刻，之后到达的字节要等下一条请求发送前才读到
 }
 
 // NewClient 在已建立的连接上创建客户端。零值参数使用默认值（ReadRetries 除外）。
@@ -215,7 +214,6 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	defer func() { c.idle = time.Now() }()
 	c.txID++
 	c.reqID++
 	base.RequestID, base.Mode = c.reqID, c.opts.Mode
@@ -232,8 +230,9 @@ func (c *Client) exchange(ctx context.Context, base Packet, pdu []byte, timeout 
 	stop := context.AfterFunc(ctx, func() { _ = c.t.SetReadDeadline(time.Now()) })
 	defer stop()
 
-	// 发送前清掉上一次遗留的字节，避免被当成本次响应。上一次请求里已经读进缓冲的，说不清什么时候到的
-	from := c.idle
+	// 发送前清掉上一次遗留的字节，避免被当成本次响应。它们在上一次读连接之后才到（请求读到自己的响应就结束，
+	// 之后到的字节留在连接里）；上一次请求里已经读进缓冲的，说不清什么时候到的
+	from := c.r.last
 	if len(c.r.buf) > 0 {
 		from = time.Time{}
 	}

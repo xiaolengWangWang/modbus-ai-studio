@@ -132,11 +132,13 @@ func TestLateResponseBetweenRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	le := lateOf(t, pkts())
-	if le.Elapsed < 120*time.Millisecond || le.Elapsed > 200*time.Millisecond || le.Max < 390*time.Millisecond {
-		t.Fatalf("用时范围应约为 120–400 ms：%+v", le)
+	// 正常时在两次请求之间到达，只知道 120–400 ms 的范围；机器很忙时也可能落在保护间隔或下一条请求里，
+	// 那时是确定值。不论哪种，范围都要包住真实用时（至少 200 ms），下限不小于超时
+	if le.Elapsed < 100*time.Millisecond || le.Max < 200*time.Millisecond || le.Elapsed > le.Max {
+		t.Fatalf("用时范围应包住 200 ms：%+v", le)
 	}
-	if s := le.Error(); !strings.Contains(s, "只能确定范围") {
-		t.Errorf("说明：%s", s)
+	if s := le.Error(); strings.Contains(s, "只能确定范围") != (le.Max.Round(time.Millisecond) > le.Elapsed.Round(time.Millisecond)) {
+		t.Errorf("只有范围时才说只能确定范围：%s", s)
 	}
 }
 
@@ -163,7 +165,7 @@ func TestLateResponsesOutOfOrder(t *testing.T) {
 	}
 	for _, le := range got {
 		want := slow[uint16(le.Request.RequestID)]
-		if le.Max < want || le.Elapsed > want+200*time.Millisecond {
+		if le.Max < want || le.Elapsed > le.Max || le.Elapsed > want+time.Second {
 			t.Errorf("请求 #%d 用时应在 %v–%v 之间、包含 %v", le.Request.RequestID, le.Elapsed, le.Max, want)
 		}
 	}

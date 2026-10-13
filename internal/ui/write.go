@@ -63,7 +63,7 @@ func (ws *Workspace) showWrite(w *readWindow) {
 	case d.Function == modbus.FuncReadCoils:
 		ws.showCoilWrite(w, off)
 	case d.Kind == kindPoint:
-		if p, ok := ws.points.get(modbus.AreaHoldingRegisters, off); ok {
+		if p, ok := ws.points.Get(modbus.AreaHoldingRegisters, off); ok {
 			ws.showPointWrite(w, p)
 			return
 		}
@@ -131,7 +131,7 @@ func (ws *Workspace) writeForm(title string, fields []*widget.FormItem, build fu
 func (ws *Workspace) showPointWrite(w *readWindow, p point) {
 	curRegs, hasCur := w.pointRegs(p)
 	curText := "—"
-	lo, hi, ranged := p.limits()
+	lo, hi, ranged := p.Limits()
 	value := widget.NewEntry()
 	if hasCur {
 		text, _, err := pointText(p, curRegs)
@@ -253,7 +253,7 @@ func (ws *Workspace) showRegisterWrite(w *readWindow, off uint16) {
 		t := control.Target{Slave: d.Slave, Address: off, Type: dt, ReadOrder: order, Scaling: modbus.Scaling{Scale: 1}, Function: f}
 		spec := writeSpec{title: modbus.Reference(modbus.AreaHoldingRegisters, off), target: t, format: format}
 		var notes []string
-		if p, ok := ws.points.get(modbus.AreaHoldingRegisters, off); ok && d.Kind != kindPoint {
+		if p, ok := ws.points.Get(modbus.AreaHoldingRegisters, off); ok && d.Kind != kindPoint {
 			notes = append(notes, fmt.Sprintf("提示：点表里这是“%s”（%s %s），按原始值写入", p.Name, p.Type, p.Order))
 		}
 		var err error

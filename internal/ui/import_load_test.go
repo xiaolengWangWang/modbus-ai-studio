@@ -50,7 +50,7 @@ func TestPointImportThousandRowFiles(t *testing.T) {
 				if len(ws.points) != 1000 {
 					t.Fatalf("expected all 1,000 points to be retained, got %d", len(ws.points))
 				}
-				p, ok := ws.points.get(modbus.AreaHoldingRegisters, 59940)
+				p, ok := ws.points.Get(modbus.AreaHoldingRegisters, 59940)
 				if !ok || p.Name != "点999" || p.Type != modbus.TypeUint16 {
 					t.Errorf("last point was not retained correctly: %+v, found=%v", p, ok)
 				}

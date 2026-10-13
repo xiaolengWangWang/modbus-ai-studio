@@ -294,7 +294,7 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 					if !mode.usesPoints() { // 分段检测不按地址顺序推进，不显示当前地址
 						text += " · " + modbus.Reference(d.area(), d.Start+uint16(n-1))
 					}
-					now.SetText(text)
+					now.SetText(text + "\n" + progressText(float64(n)/float64(total), run.started))
 				}
 			})
 		}

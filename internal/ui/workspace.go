@@ -43,7 +43,7 @@ const recentKey = "recentWorkspaces"
 func (ws *Workspace) encodeWorkspace() ([]byte, error) {
 	f := workspaceFile{Mode: protoModes[ws.proto.Selected], Target: ws.target.Text, UseSim: ws.useSim.Checked,
 		Port: ws.port.Selected, Baud: ws.baud.Text, Format: ws.frameFmt.Selected, TimeoutMS: ws.timeout.Milliseconds(),
-		Points: ws.points.list(), ReadOnly: ws.readOnly}
+		Points: ws.points.List(), ReadOnly: ws.readOnly}
 	for _, w := range ws.windows {
 		f.Windows = append(f.Windows, w.def)
 	}
@@ -267,7 +267,9 @@ func (ws *Workspace) startPointImport(rc fyne.URIReadCloser) {
 	name := rc.URI().Name()
 	label := widget.NewLabel("正在读取点表：" + name)
 	label.Wrapping = fyne.TextWrapWord
-	dlg := dialog.NewCustom("导入点表", "取消", container.NewVBox(label, widget.NewProgressBarInfinite()), ws.win)
+	bar := widget.NewProgressBar()
+	dlg := dialog.NewCustom("导入点表", "取消", container.NewVBox(label, bar), ws.win)
+	dlg.Resize(fyne.NewSize(420, 0))
 	dlg.SetOnClosed(func() {
 		cancel()
 		if ws.importTask == task {
@@ -276,22 +278,40 @@ func (ws *Workspace) startPointImport(rc fyne.URIReadCloser) {
 	})
 	dlg.Show()
 	closeReader := sync.OnceFunc(func() { _ = rc.Close() })
+	var size int64 // 本机文件先看大小，读的时候也能报进度
+	if fi, err := os.Stat(rc.URI().Path()); err == nil {
+		size = fi.Size()
+	}
 	go func() {
 		stopClose := context.AfterFunc(ctx, closeReader)
 		defer stopClose()
 		defer closeReader()
-		data, err := io.ReadAll(io.LimitReader(rc, maxPointFileBytes+1))
+		// 进度在后台报告，最多每 0.1 秒刷新一次界面；读文件占进度条的前 10%，解析占其余
+		started, last := time.Now(), time.Time{}
+		show := func(what string, frac float64) {
+			if frac < 1 && time.Since(last) < 100*time.Millisecond {
+				return
+			}
+			last = time.Now()
+			text := what + name + "（可取消）\n" + progressText(frac, started)
+			uiDo(func() {
+				if ws.importTask == task && !ws.closed && ctx.Err() == nil {
+					bar.SetValue(frac)
+					label.SetText(text)
+				}
+			})
+		}
+		var r io.Reader = io.LimitReader(rc, maxPointFileBytes+1)
+		if size > 0 {
+			r = &progressReader{r: r, report: func(n int64) { show("正在读取点表：", 0.1*float64(min(n, size))/float64(size)) }}
+		}
+		data, err := io.ReadAll(r)
 		var imp pointImport
 		if err == nil && len(data) > maxPointFileBytes {
 			err = fmt.Errorf("点表文件超过 64 MB，请拆分后导入")
 		}
 		if err == nil && ctx.Err() == nil {
-			uiDo(func() {
-				if ws.importTask == task && !ws.closed && ctx.Err() == nil {
-					label.SetText("正在解析点表：" + name + "（可取消）")
-				}
-			})
-			imp, err = parsePointsFile(name, data)
+			imp, err = parsePoints(ctx, name, data, func(f float64) { show("正在解析点表：", 0.1+0.9*f) })
 		}
 		uiDo(func() {
 			defer cancel()
@@ -315,8 +335,8 @@ func (ws *Workspace) startPointImport(rc fyne.URIReadCloser) {
 
 // applyImport 换上导入的点表，已有读取窗口改成按点表显示；没有被完整覆盖的点自动补建窗口。
 func (ws *Workspace) applyImport(imp pointImport) string {
-	ws.setPoints(newPointTable(imp.points))
-	lines := []string{fmt.Sprintf("从%s导入了 %d 个点。", imp.format, len(imp.points))}
+	ws.setPoints(newPointTable(imp.Points))
+	lines := []string{fmt.Sprintf("从%s导入了 %d 个点。", imp.Format, len(imp.Points))}
 	converted := false
 	for _, w := range ws.windows {
 		if w.def.Kind != kindPoint {
@@ -330,10 +350,10 @@ func (ws *Workspace) applyImport(imp pointImport) string {
 		lines = append(lines, "读取窗口按点表显示名称、单位和工程值。")
 	}
 	var missing []point
-	for _, p := range imp.points {
+	for _, p := range imp.Points {
 		covered := slices.ContainsFunc(ws.windows, func(w *readWindow) bool {
 			d := w.def
-			return d.area() == p.Area && int(d.Start) <= int(p.Offset) && int(p.Offset)+p.regs() <= int(d.Start)+d.Qty
+			return d.area() == p.Area && int(d.Start) <= int(p.Offset) && int(p.Offset)+p.Regs() <= int(d.Start)+d.Qty
 		})
 		if !covered {
 			missing = append(missing, p)
@@ -363,23 +383,23 @@ func (ws *Workspace) applyImport(imp pointImport) string {
 	if len(ws.windows) > 0 && !slices.ContainsFunc(ws.windows, func(w *readWindow) bool { return w.def.Slave != ws.windows[0].def.Slave }) {
 		lines = append(lines, fmt.Sprintf("读取窗口读的是 Slave %d；设备站号不是 %[1]d 时，点下面的“修改站号”一次改好全部窗口。", ws.windows[0].def.Slave))
 	}
-	if imp.noOrder && slices.ContainsFunc(imp.points, func(p point) bool { return p.Type != typeString && p.regs() > 1 }) {
+	if imp.NoOrder && slices.ContainsFunc(imp.Points, func(p point) bool { return p.Type != typeString && p.Regs() > 1 }) {
 		lines = append(lines, "文件里没有字节序，32 / 64 位点先按 ABCD（Telegraf 的默认值）解码；数值不对时读取窗口会提示改用哪种，一键改好。")
 	}
-	if n := len(imp.skipped); n > 0 {
+	if n := len(imp.Skipped); n > 0 {
 		lines = append(lines, fmt.Sprintf("\n跳过 %d 行：", n))
-		if imp.overlaps > 0 {
+		if imp.Overlaps > 0 {
 			lines = append(lines, fmt.Sprintf("其中 %d 行和前面的点地址重叠，只导入了先出现的点。32 位点（REAL、DINT 等）占 2 个寄存器、64 位点占 4 个，"+
-				"下一个点的地址要往后隔开这么多；平台按这张表采集时，重叠的点至少有一个读数是错的，请对照设备手册核对属性标识里的地址。", imp.overlaps))
+				"下一个点的地址要往后隔开这么多；平台按这张表采集时，重叠的点至少有一个读数是错的，请对照设备手册核对属性标识里的地址。", imp.Overlaps))
 		}
-		lines = append(lines, imp.skipped[:min(n, 12)]...)
+		lines = append(lines, imp.Skipped[:min(n, 12)]...)
 		if n > 12 {
 			lines = append(lines, "……")
 		}
 	}
-	if len(imp.notes) > 0 {
+	if len(imp.Notes) > 0 {
 		lines = append(lines, "")
-		lines = append(lines, imp.notes...)
+		lines = append(lines, imp.Notes...)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -414,7 +434,7 @@ func defsForPoints(ps []point) []readDef {
 	})
 	var out []readDef
 	for _, p := range sorted {
-		end := int(p.Offset) + p.regs()
+		end := int(p.Offset) + p.Regs()
 		if n := len(out); n > 0 {
 			d := &out[n-1]
 			if d.area() == p.Area && end-int(d.Start) <= 120 && int(p.Offset)-(int(d.Start)+d.Qty) <= 20 {
@@ -424,7 +444,7 @@ func defsForPoints(ps []point) []readDef {
 		}
 		d := defaultDef()
 		d.Function = p.Area.ReadFunction()
-		d.Start, d.Qty, d.Kind = p.Offset, p.regs(), kindPoint
+		d.Start, d.Qty, d.Kind = p.Offset, p.Regs(), kindPoint
 		out = append(out, d)
 	}
 	return out
@@ -434,7 +454,7 @@ func defsForPoints(ps []point) []readDef {
 func (ws *Workspace) setPointOrder(from, to modbus.ByteOrder) {
 	pts := pointTable{}
 	for k, p := range ws.points {
-		if p.Type != typeString && p.regs() > 1 && p.Order == from.For(p.Type) {
+		if p.Type != typeString && p.Regs() > 1 && p.Order == from.For(p.Type) {
 			p.Order = to.For(p.Type)
 		}
 		pts[k] = p
@@ -459,15 +479,15 @@ func (ws *Workspace) changePointOrder(scope pointOrderScope, w *readWindow, off 
 	changed := 0
 	for k, p := range ws.points {
 		selected := scope == orderAll
-		if w != nil && k.area == w.def.area() {
+		if w != nil && k.Area == w.def.area() {
 			switch scope {
 			case orderWindow:
-				selected = int(w.def.Start) <= int(k.off) && int(k.off)+p.regs() <= int(w.def.Start)+w.def.Qty
+				selected = int(w.def.Start) <= int(k.Offset) && int(k.Offset)+p.Regs() <= int(w.def.Start)+w.def.Qty
 			case orderOne:
-				selected = k.off == off
+				selected = k.Offset == off
 			}
 		}
-		if selected && p.Type != typeString && p.regs() > 1 {
+		if selected && p.Type != typeString && p.Regs() > 1 {
 			if next := to.For(p.Type); p.Order != next {
 				p.Order = next
 				changed++
@@ -505,7 +525,7 @@ func (ws *Workspace) showPointOrderDialog(w *readWindow) {
 	var off uint16
 	if w != nil && w.sel >= 0 {
 		off = w.def.Start + uint16(w.sel)
-		if p, ok := ws.points.get(w.def.area(), off); ok && p.Type != typeString && p.regs() > 1 {
+		if p, ok := ws.points.Get(w.def.area(), off); ok && p.Type != typeString && p.Regs() > 1 {
 			scopes = append(scopes, one)
 			selected = one
 		}
@@ -519,7 +539,7 @@ func (ws *Workspace) showPointOrderDialog(w *readWindow) {
 	order := widget.NewSelect(orders, nil)
 	order.SetSelected(string(modbus.OrderABCD))
 	if selected == one {
-		p, _ := ws.points.get(w.def.area(), off)
+		p, _ := ws.points.Get(w.def.area(), off)
 		order.SetSelected(string(p.Order.For(modbus.TypeFloat32)))
 	}
 	dialog.NewForm("调整点表字节序", "应用", "取消", []*widget.FormItem{

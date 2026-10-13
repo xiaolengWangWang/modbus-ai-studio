@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"html"
 	"os"
@@ -31,7 +30,7 @@ func TestPointsCSV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, want := newPointTable(ps).list(), demoPoints().list()
+	got, want := newPointTable(ps).List(), demoPoints().List()
 	if len(got) != len(want) {
 		t.Fatalf("示例 CSV 有 %d 个点，内置点表 %d 个", len(got), len(want))
 	}
@@ -93,7 +92,7 @@ func TestImportFourAreasAndBool(t *testing.T) {
 		}
 	}
 	imp, err := parsePointsFile("attrs.csv", []byte("属性标识,属性名称,读写模式\n0x0001:BOOL,启动线圈,2\n1x0001:BOOL,故障输入,1\n"))
-	if err != nil || len(imp.points) != 2 || len(imp.skipped) != 0 || imp.points[0].Area != modbus.AreaCoils || imp.points[1].Area != modbus.AreaDiscreteInputs {
+	if err != nil || len(imp.Points) != 2 || len(imp.Skipped) != 0 || imp.Points[0].Area != modbus.AreaCoils || imp.Points[1].Area != modbus.AreaDiscreteInputs {
 		t.Fatalf("设备属性表里的 BOOL 位点应保留：%+v %v", imp, err)
 	}
 }
@@ -140,7 +139,7 @@ func TestBitPointColumnsAndWritePermission(t *testing.T) {
 				t.Errorf("%s BOOL 值 = %q，期望 1", area.Prefix(), text)
 			}
 			w.sel = 0
-			if detail := rowsText(registerInsight(w)); !strings.Contains(detail, ws.points[ptKey{area, 0}].Name) {
+			if detail := rowsText(registerInsight(w)); !strings.Contains(detail, ws.points[ptKey{Area: area, Offset: 0}].Name) {
 				t.Errorf("%s 位点解析应显示点表名称：%s", area.Prefix(), detail)
 			}
 			ws.session = &session{}
@@ -160,7 +159,7 @@ func TestStringPoints(t *testing.T) {
 	pts := newPointTable(ps)
 	h := modbus.AreaHoldingRegisters
 	for off, want := range map[uint16]bool{900: false, 901: true, 903: true, 904: false, 905: true, 906: false, 907: true} {
-		if got := pts.occupied(h, off); got != want {
+		if got := pts.Occupied(h, off); got != want {
 			t.Errorf("Offset %d occupied = %v，期望 %v", off, got, want)
 		}
 	}
@@ -369,38 +368,38 @@ func TestImportAttrTable(t *testing.T) {
 		{modbus.AreaInputRegisters, 10, "累计热量", modbus.TypeFloat64, modbus.OrderABCDEFGH, 1, false},
 		{modbus.AreaDiscreteInputs, 1, "故障输入", modbus.TypeBool, modbus.OrderAB, 1, false},
 	}
-	if imp.format != "设备属性表" || !imp.noOrder || len(imp.points) != len(wants) {
-		t.Fatalf("得到 %s %v %d 个点：%+v\n跳过：%v", imp.format, imp.noOrder, len(imp.points), imp.points, imp.skipped)
+	if imp.Format != "设备属性表" || !imp.NoOrder || len(imp.Points) != len(wants) {
+		t.Fatalf("得到 %s %v %d 个点：%+v\n跳过：%v", imp.Format, imp.NoOrder, len(imp.Points), imp.Points, imp.Skipped)
 	}
 	for i, w := range wants {
-		p := imp.points[i]
+		p := imp.Points[i]
 		if p.Area != w.area || p.Offset != w.off || p.Name != w.name || p.Type != w.typ || p.Order != w.order || p.Scale != w.scale || p.RW != w.rw {
 			t.Errorf("第 %d 个点 %+v，期望 %+v", i, p, w)
 		}
 	}
-	skipped := strings.Join(imp.skipped, "\n")
+	skipped := strings.Join(imp.Skipped, "\n")
 	for _, s := range []string{"日均温度：虚拟点位", "线圈：0x 位区只能", "重叠：地址 40002 被“一次供温”占用：它是 FLOAT32，占 40001–40002"} {
 		if !strings.Contains(skipped, s) {
 			t.Errorf("跳过说明缺少“%s”：\n%s", s, skipped)
 		}
 	}
-	if imp.overlaps != 1 {
-		t.Errorf("地址重叠的行数 %d，期望 1", imp.overlaps)
+	if imp.Overlaps != 1 {
+		t.Errorf("地址重叠的行数 %d，期望 1", imp.Overlaps)
 	}
-	if len(imp.notes) != 1 || !strings.Contains(imp.notes[0], "x*0.1+5") {
-		t.Errorf("计算公式提示 %v", imp.notes)
+	if len(imp.Notes) != 1 || !strings.Contains(imp.Notes[0], "x*0.1+5") {
+		t.Errorf("计算公式提示 %v", imp.Notes)
 	}
 
 	// 属性标识带字节序时按它来；另存成 CSV 的属性表同样能识别
 	csvData := "属性标识,属性名称,数据类型\n4x0001:REAL:CDAB,一次供温,2\n"
 	imp, err = parsePointsFile("a.csv", []byte(csvData))
-	if err != nil || imp.noOrder || imp.points[0].Order != modbus.OrderCDAB {
+	if err != nil || imp.NoOrder || imp.Points[0].Order != modbus.OrderCDAB {
 		t.Fatalf("CSV 属性表：%+v %v", imp, err)
 	}
 	// 本程序格式的点表存成 xlsx 也能导入；数字单元格存成 40005.0 这种写法时按整数识别
 	imp, err = parsePointsFile("p.xlsx", makeXLSX(t, [][]string{{"地址", "名称", "类型", "倍率", "长度"},
 		{"40005", "二次温差", "INT16", "0.1", ""}, {"40901", "设备型号", "STRING", "", "16"}}))
-	if err != nil || imp.format != "点表" || len(imp.points) != 2 || imp.points[0].Offset != 4 || imp.points[0].Scale != 0.1 || imp.points[1].Len != 16 {
+	if err != nil || imp.Format != "点表" || len(imp.Points) != 2 || imp.Points[0].Offset != 4 || imp.Points[0].Scale != 0.1 || imp.Points[1].Len != 16 {
 		t.Fatalf("xlsx 点表：%+v %v", imp, err)
 	}
 	if _, err := parsePointsFile("a.xlsx", makeXLSX(t, [][]string{{"甲", "乙"}, {"1", "2"}})); err == nil || !strings.Contains(err.Error(), "没有找到点表") {
@@ -462,7 +461,7 @@ func TestImportAddsWindowsForUncoveredPoints(t *testing.T) {
 		partial := defaultDef()
 		partial.Slave, partial.Start, partial.Qty = 7, 500, 1
 		ws.addWindow(partial)
-		imp := pointImport{format: "点表", points: []point{
+		imp := pointImport{Format: "点表", Points: []point{
 			{Area: modbus.AreaHoldingRegisters, Offset: 0, Type: modbus.TypeInt16, Name: "已覆盖"},
 			{Area: modbus.AreaHoldingRegisters, Offset: 500, Type: modbus.TypeFloat32, Name: "跨界"},
 			{Area: modbus.AreaDiscreteInputs, Offset: 0, Type: modbus.TypeBool, Name: "故障"},
@@ -476,11 +475,11 @@ func TestImportAddsWindowsForUncoveredPoints(t *testing.T) {
 				t.Errorf("补建的窗口应沿用已有窗口的站号 7，实际 %d", w.def.Slave)
 			}
 		}
-		for _, p := range imp.points {
+		for _, p := range imp.Points {
 			found := false
 			for _, w := range ws.windows {
 				d := w.def
-				if d.Kind == kindPoint && d.area() == p.Area && int(d.Start) <= int(p.Offset) && int(p.Offset)+p.regs() <= int(d.Start)+d.Qty {
+				if d.Kind == kindPoint && d.area() == p.Area && int(d.Start) <= int(p.Offset) && int(p.Offset)+p.Regs() <= int(d.Start)+d.Qty {
 					found = true
 				}
 			}
@@ -561,8 +560,8 @@ func TestImportOverlapHint(t *testing.T) {
 		fmt.Fprintf(&sb, "4x%04d:REAL,%d\n", a, a-1)
 	}
 	imp, err := parsePointsFile("a.csv", []byte(sb.String()))
-	if err != nil || len(imp.points) != 23 || imp.overlaps != 23 {
-		t.Fatalf("得到 %d 个点、%d 行重叠：%v", len(imp.points), imp.overlaps, err)
+	if err != nil || len(imp.Points) != 23 || imp.Overlaps != 23 {
+		t.Fatalf("得到 %d 个点、%d 行重叠：%v", len(imp.Points), imp.Overlaps, err)
 	}
 	ws := openWS(t, test.NewTempApp(t), false)
 	locked(func() {
@@ -612,7 +611,7 @@ func TestPointOrderSuggestion(t *testing.T) {
 		return v0 == "85.5" && v2 == "60.25" && v5 == "123456" && !w.actionBtn.Visible()
 	})
 	locked(func() {
-		if p, _ := ws.points.get(modbus.AreaHoldingRegisters, 704); p.Order != modbus.OrderAB {
+		if p, _ := ws.points.Get(modbus.AreaHoldingRegisters, 704); p.Order != modbus.OrderAB {
 			t.Errorf("16 位点不应改字节序：%s", p.Order)
 		}
 	})
@@ -638,7 +637,7 @@ func TestChangePointOrderByScope(t *testing.T) {
 		w.mu.Unlock()
 		d.Function = modbus.FuncReadInputRegisters
 		ws.addWindow(d)
-		order := func(area modbus.Area, off uint16) modbus.ByteOrder { return ws.points[ptKey{area, off}].Order }
+		order := func(area modbus.Area, off uint16) modbus.ByteOrder { return ws.points[ptKey{Area: area, Offset: off}].Order }
 		h, in := modbus.AreaHoldingRegisters, modbus.AreaInputRegisters
 		if n := ws.changePointOrder(orderOne, w, 10, modbus.OrderDCBA); n != 1 || order(h, 10) != modbus.OrderDCBA || order(h, 0) != modbus.OrderABCD {
 			t.Errorf("单点修改影响了其他点：%d, %v", n, ws.points)
@@ -674,7 +673,7 @@ func TestInspectorShowsAdjacentFloatReadingsWithoutChoosing(t *testing.T) {
 				t.Errorf("邻址解读缺少 %q：\n%s", want, text)
 			}
 		}
-		if got := ws.points[ptKey{p.Area, p.Offset}].Order; got != modbus.OrderCDAB {
+		if got := ws.points[ptKey{Area: p.Area, Offset: p.Offset}].Order; got != modbus.OrderCDAB {
 			t.Errorf("解析不应自动改字节序，得到 %s", got)
 		}
 		w.sel = 0
@@ -702,14 +701,8 @@ func TestRawRegisterInspectorShowsAdjacentFloatReadings(t *testing.T) {
 	})
 }
 
-// parsePointsCSV 按本程序的格式解析 CSV 点表（不识别设备属性表）。
+// parsePointsCSV 解析本程序格式的 CSV 点表。
 func parsePointsCSV(data []byte) ([]point, error) {
-	rows, err := readCSV(data)
-	if err != nil {
-		return nil, err
-	}
-	if len(rows) < 2 {
-		return nil, errors.New("点表至少要有表头和一行数据")
-	}
-	return parsePointRows(rows)
+	imp, err := parsePointsFile("a.csv", data)
+	return imp.Points, err
 }

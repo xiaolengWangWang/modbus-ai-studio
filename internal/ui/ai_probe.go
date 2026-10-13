@@ -59,7 +59,7 @@ func (p *aiProbeResult) data() map[string]any {
 		var contra []map[string]any
 		for _, c := range p.checks {
 			if c.contradicts() {
-				contra = append(contra, map[string]any{"offset": c.Offset, "type": string(c.Type), "registers": c.regs(),
+				contra = append(contra, map[string]any{"offset": c.Offset, "type": string(c.Type), "registers": c.Regs(),
 					"single_state": names[c.single], "batch_words": c.words, "batch_all_zero": c.allZero()})
 			}
 		}

@@ -29,7 +29,7 @@ const nonstandardNote = "非标准响应：设备回了属于这次请求的帧�
 func pointState(d readDef, res []int8, p point) int8 {
 	off := int(p.Offset) - int(d.Start)
 	st := int8(1)
-	for i := off; i < off+p.regs() && i < len(res); i++ {
+	for i := off; i < off+p.Regs() && i < len(res); i++ {
 		if res[i] != 1 && res[i] != 2 {
 			return res[i]
 		}
@@ -193,7 +193,7 @@ func probeOutputFor(d readDef, res []int8, stopErr error, segs ...probeSegment) 
 		for _, s := range segs {
 			for _, p := range s.points {
 				if st := pointState(d, res, p); st < 0 {
-					out.csvRows = append(out.csvRows, []string{modbus.Reference(d.area(), p.Offset), fmt.Sprint(p.Offset), p.Name, string(p.Type), fmt.Sprint(p.regs()), probeStateName[st]})
+					out.csvRows = append(out.csvRows, []string{modbus.Reference(d.area(), p.Offset), fmt.Sprint(p.Offset), p.Name, string(p.Type), fmt.Sprint(p.Regs()), probeStateName[st]})
 				}
 			}
 		}
@@ -242,7 +242,7 @@ func eachPointOutput(d readDef, checks []pointCheck, segs []probeSegment, stopEr
 		csvHeader: []string{"地址", "Offset", "名称", "类型", "寄存器数", "整段读取", "整段返回原始字", "单独读取", "整段有返回、单独读不通"}}
 	for _, c := range checks {
 		if c.single < 0 {
-			out.csvRows = append(out.csvRows, []string{modbus.Reference(d.area(), c.Offset), fmt.Sprint(c.Offset), c.Name, string(c.Type), fmt.Sprint(c.regs()),
+			out.csvRows = append(out.csvRows, []string{modbus.Reference(d.area(), c.Offset), fmt.Sprint(c.Offset), c.Name, string(c.Type), fmt.Sprint(c.Regs()),
 				probeStateName[c.batch], wordsText(c.words), probeStateName[c.single], map[bool]string{true: "是", false: "否"}[c.contradicts()]})
 		}
 	}

@@ -104,21 +104,6 @@ func frameText(mode modbus.Mode, raw []byte) string {
 	return body
 }
 
-// asciiText 把字节按 ASCII 字符显示：0 显示为 ·，其他不可见字符显示为 .。
-func asciiText(b []byte) string {
-	out := make([]byte, 0, len(b))
-	for _, c := range b {
-		switch {
-		case c == 0:
-			out = append(out, "·"...)
-		case c < 0x20 || c > 0x7E:
-			out = append(out, '.')
-		default:
-			out = append(out, c)
-		}
-	}
-	return string(out)
-}
 
 func hexs(b []byte) string {
 	parts := make([]string, len(b))
@@ -148,13 +133,7 @@ func parseHex(s string) ([]byte, error) {
 }
 
 // refSpan 返回地址范围，例如 40001–40020。
-func refSpan(area modbus.Area, off uint16, n int) string {
-	a := modbus.Reference(area, off)
-	if n <= 1 {
-		return a
-	}
-	return a + "–" + modbus.Reference(area, off+uint16(n-1))
-}
+var refSpan = modbus.ReferenceSpan
 
 func addrSpan(off uint16, n int) string { return refSpan(modbus.AreaHoldingRegisters, off, n) }
 

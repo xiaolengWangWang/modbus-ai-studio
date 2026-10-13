@@ -150,7 +150,7 @@ type probeOutput struct {
 func pointsDigest(ps []point) string {
 	h := sha256.New()
 	for _, p := range ps {
-		fmt.Fprintf(h, "%d\t%d\t%s\t%d\t%s\t%s\n", p.Area, p.Offset, p.Type, p.regs(), p.Order, p.Name)
+		fmt.Fprintf(h, "%d\t%d\t%s\t%d\t%s\t%s\n", p.Area, p.Offset, p.Type, p.Regs(), p.Order, p.Name)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

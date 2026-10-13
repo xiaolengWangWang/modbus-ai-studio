@@ -142,10 +142,11 @@ type Frame struct {
 
 // frameReader 在 Transport 之上做按长度分帧，未消费的字节留在 buf 里。
 type frameReader struct {
-	t   Transport
-	ctx context.Context
-	buf []byte
-	tmp [512]byte
+	t    Transport
+	ctx  context.Context
+	buf  []byte
+	tmp  [512]byte
+	last time.Time // 上一次从连接读完的时刻：之后到达的字节还在连接里没读
 }
 
 func isTimeout(err error) bool {
@@ -166,6 +167,7 @@ func (r *frameReader) fill(n int, deadline time.Time) error {
 			return err
 		}
 		k, err := r.t.Read(r.tmp[:])
+		r.last = time.Now()
 		r.buf = append(r.buf, r.tmp[:k]...)
 		if err != nil {
 			if len(r.buf) >= n {
@@ -202,6 +204,7 @@ func (r *frameReader) drain(gap time.Duration, until time.Time) []byte {
 			return out
 		}
 		k, err := r.t.Read(r.tmp[:])
+		r.last = time.Now()
 		out = append(out, r.tmp[:k]...)
 		if err != nil {
 			return out

@@ -119,7 +119,7 @@ func TestPointOrderDialog(t *testing.T) {
 		selects[1].SetSelected("DCBA")
 		pressButton(t, ws, "应用")
 		for off, want := range map[uint16]modbus.ByteOrder{0: modbus.OrderDCBA, 2: modbus.OrderHGFEDCBA, 10: modbus.OrderAB} {
-			if p, _ := ws.points.get(modbus.AreaHoldingRegisters, off); p.Order != want {
+			if p, _ := ws.points.Get(modbus.AreaHoldingRegisters, off); p.Order != want {
 				t.Errorf("40%03d 字节序 %s，期望 %s（16 位点不受影响，64 位换成八字母写法）", off+1, p.Order, want)
 			}
 		}

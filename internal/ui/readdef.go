@@ -275,7 +275,7 @@ func (d readDef) names(pts pointTable) bool {
 		return false
 	}
 	for k := range pts {
-		if k.area == d.area() && int(k.off) >= int(d.Start) && int(k.off) < int(d.Start)+d.Qty {
+		if k.Area == d.area() && int(k.Offset) >= int(d.Start) && int(k.Offset) < int(d.Start)+d.Qty {
 			return true
 		}
 	}
@@ -355,7 +355,7 @@ func (d readDef) textWidth(pts pointTable, text func(point) string, lo, hi float
 	width := lo
 	pad := 2*theme.InnerPadding() + 4
 	for k, p := range pts {
-		if k.area == d.area() && int(k.off) >= int(d.Start) && int(k.off) < int(d.Start)+d.Qty {
+		if k.Area == d.area() && int(k.Offset) >= int(d.Start) && int(k.Offset) < int(d.Start)+d.Qty {
 			width = max(width, fyne.MeasureText(text(p), theme.TextSize(), fyne.TextStyle{}).Width+pad)
 		}
 	}
@@ -368,7 +368,7 @@ func (d readDef) longInts(pts pointTable) bool {
 		return false
 	}
 	for k, p := range pts {
-		if k.area == d.area() && int(k.off) >= int(d.Start) && int(k.off) < int(d.Start)+d.Qty &&
+		if k.Area == d.area() && int(k.Offset) >= int(d.Start) && int(k.Offset) < int(d.Start)+d.Qty &&
 			(p.Type == modbus.TypeInt64 || p.Type == modbus.TypeUint64) {
 			return true
 		}

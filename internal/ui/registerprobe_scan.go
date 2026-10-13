@@ -43,7 +43,7 @@ type probeSegment struct {
 // 一段不超过一次能读的数量；中间隔着不在点表里的地址就另起一段，不把空档读进来。没有这个区的点时 ok 为 false。
 func pointProbeDef(pts pointTable, d readDef) (readDef, []probeSegment, bool) {
 	var ps []point
-	for _, p := range pts.list() {
+	for _, p := range pts.List() {
 		if p.Area == d.area() {
 			ps = append(ps, p)
 		}
@@ -54,7 +54,7 @@ func pointProbeDef(pts pointTable, d readDef) (readDef, []probeSegment, bool) {
 	first, end := int(ps[0].Offset), int(ps[0].Offset)
 	var segs []probeSegment
 	for _, p := range ps {
-		n := p.regs()
+		n := p.Regs()
 		if k := len(segs); k > 0 && int(p.Offset) == end && segs[k-1].n+n <= d.maxQty() {
 			segs[k-1].n += n
 			segs[k-1].points = append(segs[k-1].points, p)
@@ -173,7 +173,7 @@ func probeUnits(ctx context.Context, c probeClient, d readDef, mode probeMode, s
 			continue
 		}
 		for _, p := range s.points {
-			if _, err := read(phasePoint, int(p.Offset)-int(d.Start), p.regs()); err != nil {
+			if _, err := read(phasePoint, int(p.Offset)-int(d.Start), p.Regs()); err != nil {
 				return stop(err)
 			}
 		}
@@ -226,7 +226,7 @@ func checkEachPoint(ctx context.Context, c probeClient, d readDef, segs []probeS
 			checks[k].batch = state
 			if state == 1 {
 				off := int(p.Offset) - int(d.Start) - s.start
-				checks[k].words = words[off : off+p.regs()]
+				checks[k].words = words[off : off+p.Regs()]
 			}
 			k++
 		}
@@ -241,7 +241,7 @@ func checkEachPoint(ctx context.Context, c probeClient, d readDef, segs []probeS
 			return stop(ctx.Err())
 		}
 		p := checks[i].point
-		state, _, err := probeRead(withPhase(ctx, phasePoint), c, d, int(p.Offset)-int(d.Start), p.regs())
+		state, _, err := probeRead(withPhase(ctx, phasePoint), c, d, int(p.Offset)-int(d.Start), p.Regs())
 		checks[i].single = state
 		done++
 		progress(done)
@@ -257,7 +257,7 @@ func pointCheckStates(d readDef, checks []pointCheck) []int8 {
 	res := make([]int8, d.Qty)
 	for _, c := range checks {
 		off := int(c.Offset) - int(d.Start)
-		for i := off; i < off+c.regs() && i < len(res); i++ {
+		for i := off; i < off+c.Regs() && i < len(res); i++ {
 			if res[i] == 0 || c.single < 0 { // 点有重叠时，读不通的结论优先
 				res[i] = c.single
 			}

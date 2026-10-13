@@ -66,14 +66,14 @@ type quickResult struct {
 func quickUnits(pts pointTable, d readDef) []quickUnit {
 	var us []quickUnit
 	end := 0
-	for _, p := range pts.list() {
+	for _, p := range pts.List() {
 		off := int(p.Offset) - int(d.Start)
-		if p.Area != d.area() || off < end || off+p.regs() > d.Qty {
+		if p.Area != d.area() || off < end || off+p.Regs() > d.Qty {
 			continue
 		}
 		p := p
-		us = append(us, quickUnit{off: off, n: p.regs(), p: &p})
-		end = off + p.regs()
+		us = append(us, quickUnit{off: off, n: p.Regs(), p: &p})
+		end = off + p.Regs()
 	}
 	if len(us) == 0 {
 		for i := range d.Qty {

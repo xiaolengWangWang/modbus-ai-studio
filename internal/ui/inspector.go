@@ -198,7 +198,7 @@ func registerInsight(w *readWindow) []decodeRow {
 			state = "ON"
 		}
 		rows = append(rows, decodeRow{Name: "值", Meaning: fmt.Sprintf("%d（%s）", regs[i], state)})
-		if p, ok := w.ws.points.get(area, off); ok && d.usesPoints() {
+		if p, ok := w.ws.points.Get(area, off); ok && d.usesPoints() {
 			rows = append(rows, decodeRow{Name: "点表", Meaning: fmt.Sprintf("%s · %s", p.Name, p.Type)})
 			if text, _, err := pointText(p, regs[i:i+1]); err == nil {
 				rows = append(rows, decodeRow{Name: "工程值", Meaning: text + " " + p.Unit})
@@ -223,12 +223,12 @@ func registerInsight(w *readWindow) []decodeRow {
 
 	// 当前窗口按哪种宽度和字节序解读这几个寄存器，下面对应的行标“当前”
 	cur, width := modbus.ByteOrder(""), 0
-	p, isPoint := w.ws.points.get(area, off)
+	p, isPoint := w.ws.points.Get(area, off)
 	switch {
 	case d.Kind.width() > 1:
 		width, cur = d.Kind.width(), d.Order.For(d.Kind.dataType())
-	case isPoint && d.Kind == kindPoint && p.Type != typeString && p.regs() > 1:
-		width, cur = p.regs(), p.Order
+	case isPoint && d.Kind == kindPoint && p.Type != typeString && p.Regs() > 1:
+		width, cur = p.Regs(), p.Order
 	}
 	if i+1 < len(regs) {
 		pair := regs[i : i+2]
@@ -280,19 +280,19 @@ func registerInsight(w *readWindow) []decodeRow {
 		access := "只读"
 		if p.RW {
 			access = "可写"
-			if lo, hi, ok := p.limits(); ok {
+			if lo, hi, ok := p.Limits(); ok {
 				access += fmt.Sprintf("，允许 %v–%v", lo, hi)
 			}
 		}
 		if p.Type == typeString {
 			rows = append(rows, decodeRow{Name: "点表", Meaning: fmt.Sprintf("%s · STRING %d 字符 · %s · 只读", p.Name, p.Len, p.Order)})
-			if n := p.regs(); i+n <= len(regs) {
+			if n := p.Regs(); i+n <= len(regs) {
 				rows = append(rows, decodeRow{Name: "内容", Meaning: "“" + decodeString(p.Order, regs[i:i+n]) + "”"})
 			}
 			return rows
 		}
 		rows = append(rows, decodeRow{Name: "点表", Meaning: fmt.Sprintf("%s · %s %s · Scale %v · %s", p.Name, p.Type, p.Order, p.Scale, access)})
-		if n := p.regs(); i+n <= len(regs) {
+		if n := p.Regs(); i+n <= len(regs) {
 			if text, _, err := pointText(p, regs[i:i+n]); err == nil {
 				rows = append(rows, decodeRow{Name: "工程值", Meaning: text + " " + p.Unit})
 			}

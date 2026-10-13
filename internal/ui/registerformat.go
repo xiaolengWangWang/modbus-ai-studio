@@ -51,11 +51,11 @@ func (w *readWindow) valueFormat(i int) registerValue {
 		return v
 	}
 	if d.usesPoints() {
-		for v.start > 0 && w.ws.points.occupied(d.area(), d.Start+uint16(v.start)) {
+		for v.start > 0 && w.ws.points.Occupied(d.area(), d.Start+uint16(v.start)) {
 			v.start--
 		}
-		if p, ok := w.ws.points.get(d.area(), d.Start+uint16(v.start)); ok {
-			v.width = p.regs()
+		if p, ok := w.ws.points.Get(d.area(), d.Start+uint16(v.start)); ok {
+			v.width = p.Regs()
 		}
 	} else {
 		v.width = d.Kind.width()
@@ -241,7 +241,7 @@ func (w *readWindow) showRegisterFormat() {
 	kind.OnChanged = func(string) { update() }
 	if f.kind == kindPoint {
 		f.kind, f.order = kindUnsigned, modbus.OrderAB
-		if p, ok := w.ws.points.get(w.def.area(), w.def.Start+uint16(start)); ok && p.Type != typeString {
+		if p, ok := w.ws.points.Get(w.def.area(), w.def.Start+uint16(start)); ok && p.Type != typeString {
 			f.kind, f.order = toolKind(p.Type), p.Order
 		}
 	}

@@ -176,7 +176,7 @@ func (t *typeTool) fill(w *readWindow) {
 		}
 		switch {
 		case d.Kind == kindPoint:
-			if p, ok := t.ws.points.get(d.area(), start); ok && p.Type != typeString && p.Type != modbus.TypeBool {
+			if p, ok := t.ws.points.Get(d.area(), start); ok && p.Type != typeString && p.Type != modbus.TypeBool {
 				dt = p.Type
 			}
 		case d.Kind != kindHex && d.Kind != kindBinary && d.Kind != kindASCII:

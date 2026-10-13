@@ -4,8 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"modbus-ai-studio/internal/modbus"
 )
@@ -35,18 +33,6 @@ func objectName(id byte) string {
 
 var readCodeNames = map[byte]string{0x01: "基本（厂商、产品代码、版本）", 0x02: "常规", 0x03: "扩展", 0x04: "单个对象"}
 
-// printableText 把设备返回的字节按文字显示：合法 UTF-8 原样显示，不可见字符用点代替。
-func printableText(b []byte) string {
-	if !utf8.Valid(b) {
-		return asciiText(b)
-	}
-	return strings.Map(func(r rune) rune {
-		if unicode.IsPrint(r) {
-			return r
-		}
-		return '.'
-	}, string(b))
-}
 
 // describeExtra 解析结构化读写之外的功能码：07、08、11、12、17、20–24、43。
 func describeExtra(w *fieldWriter, p modbus.Packet, f modbus.FunctionCode, data []byte) {
