@@ -52,7 +52,7 @@ func TestRegisterProbeFourAreasAcrossProtocols(t *testing.T) {
 					}
 				}))
 				d := readDef{Slave: 1, Function: fn, Start: 2, Qty: 4}
-				res, err := probe(context.Background(), c, d, func(int) {})
+				res, err := probeLocate(context.Background(), c, d, func(int) {})
 				if err != nil || fmt.Sprint(res) != "[2 2 -1 -1]" || len(sent) > 7 {
 					t.Fatalf("Must identify the readable range and continue past illegal addresses: %v, sent %d, %v", res, len(sent), err)
 				}
@@ -70,7 +70,7 @@ func TestRegisterProbeCancellationKeepsPartialResults(t *testing.T) {
 	c := registerProbeClient(t, modbus.ModeTCP, simulator.Faults{}, nil, 128)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	res, err := probe(ctx, c, readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters, Qty: 130}, func(int) { cancel() })
+	res, err := probeLocate(ctx, c, readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters, Qty: 130}, func(int) { cancel() })
 	if err != nil || len(res) != 130 {
 		t.Fatalf("Stopping must preserve completed results and leave the rest untested: %v, %v", res, err)
 	}
@@ -92,7 +92,7 @@ func TestRegisterProbeReadsValidRangeInOneRequest(t *testing.T) {
 			sent = append(sent, p)
 		}
 	}), 128)
-	res, err := probe(context.Background(), c, readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters, Qty: 100}, func(int) {})
+	res, err := probeLocate(context.Background(), c, readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters, Qty: 100}, func(int) {})
 	if err != nil || len(res) != 100 || len(sent) != 1 || sent[0].Count != 100 {
 		t.Fatalf("A valid 100-address range should need one batch request: count %d, states %v, err %v", len(sent), res, err)
 	}
@@ -109,7 +109,7 @@ func TestRegisterProbeDoesNotTreatOtherExceptionsAsMissing(t *testing.T) {
 			c := registerProbeClient(t, modbus.ModeTCP, simulator.Faults{Exceptions: []simulator.ExceptionRange{{AddrRange: simulator.AddrRange{Start: 1, Count: 1}, Code: code}}}, nil)
 			d := defaultDef()
 			d.Qty = 3
-			res, err := probe(context.Background(), c, d, func(int) {})
+			res, err := probeLocate(context.Background(), c, d, func(int) {})
 			if err != nil || fmt.Sprint(res) != "[1 -2 1]" {
 				t.Fatalf("Non-address exception must remain inconclusive while later addresses are tested: %v, %v", res, err)
 			}
@@ -123,7 +123,7 @@ func TestRegisterProbeTimeoutIsInconclusive(t *testing.T) {
 	d := defaultDef()
 	d.Qty = 3
 	var rechecked []int
-	res, err := probe(context.Background(), c, d, func(int) {}, func(offset int) { rechecked = append(rechecked, offset) })
+	res, err := probeLocate(context.Background(), c, d, func(int) {}, func(offset int) { rechecked = append(rechecked, offset) })
 	if err != nil || fmt.Sprint(res) != "[1 -3 1]" {
 		t.Fatalf("A timed-out address must stay inconclusive while later addresses are tested: %v, %v", res, err)
 	}
@@ -142,7 +142,7 @@ func TestRegisterProbeStopsAfterTimeoutWithoutTransactionIDs(t *testing.T) {
 				}
 			}))
 			c.SetTimeout(50 * time.Millisecond)
-			res, err := probe(context.Background(), c, readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters, Start: 2, Qty: 4}, func(int) {})
+			res, err := probeLocate(context.Background(), c, readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters, Start: 2, Qty: 4}, func(int) {})
 			if err == nil || fmt.Sprint(res) != "[-2 -2 -2 -2]" || sent != 1 {
 				t.Fatalf("Late batch exception must not be assigned to healthy addresses: states %v, requests %d, err %v", res, sent, err)
 			}
@@ -179,7 +179,7 @@ func TestRegisterProbeLocatesSparseForwardingHoles(t *testing.T) {
 			}
 			d := defaultDef()
 			d.Qty = 100
-			res, err := probe(context.Background(), c, d, func(int) {})
+			res, err := probeLocate(context.Background(), c, d, func(int) {})
 			if err != nil || len(res) != 100 {
 				t.Fatalf("Must finish the complete 40001–40100 range: %v, %v", res, err)
 			}
@@ -238,7 +238,7 @@ func TestRegisterProbeRejectsAddressWrapBeforeSending(t *testing.T) {
 	}))
 	d := defaultDef()
 	d.Start, d.Qty = 65535, 2
-	_, err := probe(context.Background(), c, d, func(int) {})
+	_, err := probeLocate(context.Background(), c, d, func(int) {})
 	if err == nil || sent != 0 {
 		t.Fatalf("Address wrap must fail before sending: sent %d, %v", sent, err)
 	}
@@ -498,7 +498,7 @@ func TestProbeByPointSegments(t *testing.T) {
 		{Area: modbus.AreaInputRegisters, Offset: 0, Name: "别的数据区", Type: modbus.TypeUint16},
 	})
 	d, segs, ok := pointProbeDef(pts, readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters})
-	if !ok || d.Start != 0 || d.Qty != 8 || len(segs) != 2 || segs[0].n != 3 || segs[1].start != 5 || segs[1].n != 3 {
+	if !ok || d.Start != 0 || d.Qty != 8 || len(segs) != 2 || segs[0].N != 3 || segs[1].Start != 5 || segs[1].N != 3 {
 		t.Fatalf("分段：%+v %+v", d, segs)
 	}
 	if _, _, ok := pointProbeDef(pts, readDef{Slave: 1, Function: modbus.FuncReadCoils}); ok {
@@ -512,8 +512,8 @@ func TestProbeByPointSegments(t *testing.T) {
 	}), 6) // 设备只有 0–5：第二段（5–7）读不通，“回水温度”跨到 6、“频率”在 7，都无效
 	var progress []int
 	res, err := probeUnits(context.Background(), c, d, probePoints, segs, func(n int) { progress = append(progress, n) })
-	if err != nil || fmt.Sprint(res) != "[2 2 2 0 0 -1 -1 -1]" || sent != 4 || segs[0].state != 1 || segs[1].state != -1 {
-		t.Fatalf("按段检测：%v，发了 %d 条，段 %d %d，%v", res, sent, segs[0].state, segs[1].state, err)
+	if err != nil || fmt.Sprint(res) != "[2 2 2 0 0 -1 -1 -1]" || sent != 4 || segs[0].State != 1 || segs[1].State != -1 {
+		t.Fatalf("按段检测：%v，发了 %d 条，段 %d %d，%v", res, sent, segs[0].State, segs[1].State, err)
 	}
 	if fmt.Sprint(progress) != "[3 5 6]" {
 		t.Errorf("失败段的进度应随逐点复核推进，到全部确认才完成：%v", progress)

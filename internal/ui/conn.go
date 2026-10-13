@@ -536,23 +536,3 @@ func (ws *Workspace) detectProtocol() {
 	}()
 }
 
-// errSummary 是错误的短说明，用在识别结果、探测结果等列表里。
-func errSummary(err error) string {
-	if ex, ok := modbus.AsException(err); ok {
-		return "异常 " + ex.Code.Description()
-	}
-	if ns, ok := modbus.AsNonstandard(err); ok {
-		return fmt.Sprintf("非标准响应（功能码 %02X，回显请求）", ns.PDU[0])
-	}
-	switch {
-	case errors.Is(err, modbus.ErrTimeout) && errors.Is(err, modbus.ErrMismatch):
-		return "超时（收到过内容不符的响应）"
-	case errors.Is(err, modbus.ErrTimeout):
-		return "超时"
-	case errors.Is(err, modbus.ErrCRC):
-		return "CRC 错误"
-	case errors.Is(err, modbus.ErrConnection):
-		return "连接错误"
-	}
-	return err.Error()
-}

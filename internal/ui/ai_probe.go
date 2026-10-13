@@ -58,9 +58,9 @@ func (p *aiProbeResult) data() map[string]any {
 		// 点名不发送，只发地址、类型和两次读取的结果
 		var contra []map[string]any
 		for _, c := range p.checks {
-			if c.contradicts() {
+			if c.Contradicts() {
 				contra = append(contra, map[string]any{"offset": c.Offset, "type": string(c.Type), "registers": c.Regs(),
-					"single_state": names[c.single], "batch_words": c.words, "batch_all_zero": c.allZero()})
+					"single_state": names[c.Single], "batch_words": c.Words, "batch_all_zero": c.AllZero()})
 			}
 		}
 		out["mode"] = "each_point_independent"

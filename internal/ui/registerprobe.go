@@ -15,22 +15,9 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/internal/modbus"
+	"modbus-ai-studio/internal/probe"
 )
 
-// validateProbeDef allows multiple batches and validates the full range before
-// allocating or sending to prevent address wrap.
-func validateProbeDef(d readDef) error {
-	if d.Slave == 0 {
-		return errors.New("Slave ID 应为 1–255（0 是广播，没有读响应）")
-	}
-	if !slices.Contains(readFuncs, d.Function) {
-		return errors.New("检测只支持 FC01、FC02、FC03、FC04")
-	}
-	if d.Qty < 1 || d.Qty > 65536-int(d.Start) {
-		return fmt.Errorf("起始 Offset %d 的检测数量应为 1–%d，不能超出 65535", d.Start, 65536-int(d.Start))
-	}
-	return nil
-}
 
 func probeOffset(text string) (uint16, error) {
 	text = strings.TrimSpace(text)
@@ -80,7 +67,7 @@ func (ws *Workspace) registerProbeDialog() {
 			return readDef{}, nil, errors.New("Slave ID 应为 1–255")
 		}
 		nd := readDef{Slave: byte(sv), Function: funcByName(fn.Selected)}
-		if modeOf().usesPoints() {
+		if modeOf().UsesPoints() {
 			pd, segs, ok := pointProbeDef(ws.points, nd)
 			if !ok {
 				return nd, nil, fmt.Errorf("点表里没有 %s 能读的点：先导入点表，或换功能码", nd.Function)
@@ -103,13 +90,13 @@ func (ws *Workspace) registerProbeDialog() {
 		switch {
 		case err != nil:
 			preview.SetText(err.Error())
-		case modeOf().usesPoints():
+		case modeOf().UsesPoints():
 			points := 0
 			var spans []string
 			for _, s := range segs {
-				points += len(s.points)
+				points += len(s.Points)
 				if len(spans) < 6 {
-					spans = append(spans, refSpan(nd.area(), nd.Start+uint16(s.start), s.n))
+					spans = append(spans, refSpan(nd.area(), nd.Start+uint16(s.Start), s.N))
 				}
 			}
 			if len(segs) > len(spans) {
@@ -127,7 +114,7 @@ func (ws *Workspace) registerProbeDialog() {
 				refSpan(nd.area(), nd.Start, nd.Qty), nd.Qty))
 		case modeOf() == probeQuick:
 			unit := "按单个寄存器"
-			if us := quickUnits(ws.points, nd); len(us) > 0 && us[0].p != nil {
+			if us := quickUnits(ws.points, nd); len(us) > 0 && us[0].P != nil {
 				unit = fmt.Sprintf("按点表里的 %d 个点", len(us))
 			}
 			preview.SetText(fmt.Sprintf("快速排查：先批量读 %s（%d 次请求），%s，从批量返回全为 0 的段里抽查最多 %d 个单独读，"+
@@ -145,7 +132,7 @@ func (ws *Workspace) registerProbeDialog() {
 	}
 	fn.OnChanged = func(string) { qty.Validate() }
 	mode.OnChanged = func(string) {
-		if modeOf().usesPoints() { // 范围按点表算，起始地址和数量不用填
+		if modeOf().UsesPoints() { // 范围按点表算，起始地址和数量不用填
 			addr.Disable()
 			qty.Disable()
 		} else {
@@ -235,12 +222,12 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 	case probePoints:
 		total = 0
 		for _, sg := range segs {
-			total += sg.n
+			total += sg.N
 		}
 	case probeEachPoint:
 		total = len(segs)
 		for _, sg := range segs {
-			total += len(sg.points)
+			total += len(sg.Points)
 		}
 		unit = "已发请求 %d / %d（先整段，后逐点）"
 	case probeQuick:
@@ -252,16 +239,16 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 	now := widget.NewLabel(fmt.Sprintf(unit, 0, total))
 	title := map[probeMode]string{probeAuto: "定位异常地址", probeSingle: "逐个寄存器", probePoints: "按点表分段", probeEachPoint: "逐点独立验证", probeQuick: "快速排查"}[mode]
 	// 检测记录：每条请求和等待期间收到的原始帧，导出报告用
-	run := &probeRun{mode: mode, def: d, timeout: cfg.timeout, started: time.Now(), log: newProbeLog()}
+	run := &probeRun{Mode: mode, Def: probeDef(d), Timeout: cfg.timeout, Started: time.Now(), Log: newProbeLog()}
 	if s != nil {
-		run.target = modeName[s.mode] + " " + s.desc
+		run.Target = modeName[s.mode] + " " + s.desc
 	} else {
-		run.target = modeName[cfg.mode] + " " + cfg.target
+		run.Target = modeName[cfg.mode] + " " + cfg.target
 	}
 	for _, sg := range segs {
-		run.points = append(run.points, sg.points...)
+		run.Points = append(run.Points, sg.Points...)
 	}
-	ws.probeLog.Store(run.log)
+	ws.probeLog.Store(run.Log)
 	pts := ws.points // 换点表时整张替换，不会就地修改，后台可以直接读
 	dlg := dialog.NewCustom("检测寄存器 · "+title, "停止", container.NewVBox(
 		widget.NewLabel(fmt.Sprintf("Slave %d · %s · %s", d.Slave, d.Function, refSpan(d.area(), d.Start, d.Qty))), prog, now), ws.win)
@@ -291,10 +278,10 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 					lastProgress = n
 					prog.SetValue(float64(n))
 					text := fmt.Sprintf(unit, n, total)
-					if !mode.usesPoints() { // 分段检测不按地址顺序推进，不显示当前地址
+					if !mode.UsesPoints() { // 分段检测不按地址顺序推进，不显示当前地址
 						text += " · " + modbus.Reference(d.area(), d.Start+uint16(n-1))
 					}
-					now.SetText(text + "\n" + progressText(float64(n)/float64(total), run.started))
+					now.SetText(text + "\n" + progressText(float64(n)/float64(total), run.Started))
 				}
 			})
 		}
@@ -325,10 +312,10 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 			defer network.close()
 			client = network
 		}
-		client = loggedProbe{probeClient: client, log: run.log}
+		client = loggedProbe{Client: client, Log: run.Log}
 		switch mode {
 		case probeAuto:
-			res, stopErr = probe(ctx, client, d, progress, func(offset int) {
+			res, stopErr = probeLocate(ctx, client, d, progress, func(offset int) {
 				uiDo(func() {
 					if !ws.closed && ctx.Err() == nil {
 						rechecking = true
@@ -349,12 +336,12 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 		if network != nil {
 			network.close()
 		}
-		ws.probeLog.CompareAndSwap(run.log, nil)
-		run.finished, run.stopErr = time.Now(), stopErr
+		ws.probeLog.CompareAndSwap(run.Log, nil)
+		run.Finished, run.StopErr = time.Now(), stopErr
 		if quick != nil {
-			for _, u := range quick.units {
-				if u.p != nil {
-					run.points = append(run.points, *u.p)
+			for _, u := range quick.Units {
+				if u.P != nil {
+					run.Points = append(run.Points, *u.P)
 				}
 			}
 		}
@@ -397,3 +384,5 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 		})
 	}()
 }
+
+func validateProbeDef(d readDef) error { return probe.Validate(probeDef(d)) }

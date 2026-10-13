@@ -45,7 +45,7 @@ func TestRegisterProbeContinuesAfterMiddlePointException(t *testing.T) {
 				{AddrRange: simulator.AddrRange{Start: 6, Count: 1}, Code: modbus.ExceptionIllegalDataAddress},
 			}}, nil, 9)
 			d := readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters, Qty: 9}
-			res, err := probe(context.Background(), c, d, func(int) {})
+			res, err := probeLocate(context.Background(), c, d, func(int) {})
 			if err != nil || fmt.Sprint(res) != "[1 1 -2 1 1 1 -1 1 1]" {
 				t.Fatalf("must classify both middle failures and finish reading healthy neighbours: states %v, error %v", res, err)
 			}
@@ -121,7 +121,7 @@ func TestRegisterProbeClearsMiddleTimeoutBacklogBeforeFinalVerdict(t *testing.T)
 		{AddrRange: simulator.AddrRange{Start: 2, Count: 1}, Delay: 250 * time.Millisecond},
 	}}, 4)
 	d := readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters, Qty: 4}
-	res, err := probe(context.Background(), c, d, func(int) {})
+	res, err := probeLocate(context.Background(), c, d, func(int) {})
 	if err != nil || fmt.Sprint(res) != "[1 1 -3 1]" {
 		t.Fatalf("automatic detection must not retain a timeout caused only by an earlier slow request: states %v, error %v", res, err)
 	}

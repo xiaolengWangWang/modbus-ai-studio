@@ -3,7 +3,6 @@ package ui
 import (
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -272,26 +271,6 @@ func addAILogEvidence(e logEntry, raw bool, add func(string, any)) {
 // nonstandardAINote 随非标准回显一起交给 AI，防止把回显里的地址字节当成异常码。
 const nonstandardAINote = "响应功能码不是请求功能码也不是其标准异常（请求功能码|0x80），后 4 字节原样回显请求的地址和数量，没有寄存器数据；第二个字节是地址高字节，不是异常码。仅凭此帧不能确定设备品牌或具体配置原因。"
 
-func aiErrorKind(err error) string {
-	if ex, ok := modbus.AsException(err); ok {
-		return fmt.Sprintf("EXCEPTION_%02X", byte(ex.Code))
-	}
-	if _, ok := modbus.AsNonstandard(err); ok {
-		return "NONSTANDARD_REQUEST_ECHO"
-	}
-	if errors.Is(err, modbus.ErrTimeout) && errors.Is(err, modbus.ErrMismatch) {
-		return "TIMEOUT_AFTER_MISMATCHED_FRAME"
-	}
-	for _, v := range []struct {
-		err  error
-		kind string
-	}{{modbus.ErrTimeout, "TIMEOUT"}, {modbus.ErrCRC, "CRC_ERROR"}, {modbus.ErrLRC, "LRC_ERROR"}, {modbus.ErrConnection, "CONNECTION_ERROR"}} {
-		if errors.Is(err, v.err) {
-			return v.kind
-		}
-	}
-	return "OTHER_ERROR"
-}
 func aiPacket(p modbus.Packet, raw bool) map[string]any {
 	v := map[string]any{"time": p.Time.Format(time.RFC3339Nano), "request_id": strconv.FormatUint(p.RequestID, 10), "direction": string(p.Dir), "protocol": string(p.Mode), "slave": p.Slave, "function": byte(p.Function), "address": p.Address, "quantity": p.Count, "status": string(p.Status)}
 	if p.RTT > 0 {

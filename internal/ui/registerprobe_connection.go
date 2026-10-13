@@ -8,15 +8,11 @@ import (
 	"time"
 
 	"modbus-ai-studio/internal/modbus"
+	"modbus-ai-studio/internal/probe"
 	"modbus-ai-studio/internal/transport"
 )
 
-type probeClient interface {
-	Mode() modbus.Mode
-	Do(context.Context, modbus.Request) (*modbus.Response, error)
-}
-
-var errProbeUnstable = errors.New("设备在读取该范围时反复断开连接，结果无法判断")
+var errProbeUnstable = probe.ErrUnstable
 
 // networkProbeClient 独占检测连接，自行重连；错误不交给主会话的连接保持逻辑。
 // 连接和客户端只由检测 goroutine 使用，取消回调只关闭当次请求的 socket。

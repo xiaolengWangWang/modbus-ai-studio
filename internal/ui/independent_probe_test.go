@@ -125,7 +125,7 @@ func TestIndependentPointProbeKeepsMainSessionAndContinuesPastDisconnects(t *tes
 			{Area: modbus.AreaHoldingRegisters, Offset: 9, Type: modbus.TypeUint16, Name: "后续段二"},
 		}))
 		d, segs, ok := pointProbeDef(ws.points, readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters})
-		if !ok || len(segs) != 2 || segs[0].n != 5 || segs[1].start != 8 || segs[1].n != 2 {
+		if !ok || len(segs) != 2 || segs[0].N != 5 || segs[1].Start != 8 || segs[1].N != 2 {
 			t.Fatalf("连续点应形成两段：%+v", segs)
 		}
 		ws.runRegisterProbeMode(nil, d, probePoints, segs)

@@ -57,7 +57,7 @@ func TestIllegalAddressDiagnosis(t *testing.T) {
 	if !strings.Contains(hint, "40996–41005") {
 		t.Errorf("诊断应说明读取范围：%q", hint)
 	}
-	res, err := probe(context.Background(), s.client, w.def, func(int) {})
+	res, err := probeLocate(context.Background(), s.client, w.def, func(int) {})
 	if err != nil || fmt.Sprint(res) != "[2 2 2 2 2 -1 -1 -1 -1 -1]" {
 		t.Errorf("探测结果 %v %v", res, err)
 	}

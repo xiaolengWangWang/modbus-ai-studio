@@ -24,6 +24,11 @@ type diagnosis struct {
 
 const foreignAdvice = diagnose.ForeignAdvice
 
+var (
+	errSummary  = diagnose.Summary
+	aiErrorKind = diagnose.Kind
+)
+
 // diagnose 分析读取窗口的错误：规则在 internal/diagnose，和 Web 版、modbus-cli 共用；这里把一键处理接到窗口上。
 func (ws *Workspace) diagnose(w *readWindow, err error) diagnosis {
 	s := ws.session

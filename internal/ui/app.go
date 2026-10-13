@@ -525,7 +525,7 @@ func (ws *Workspace) OnPacket(p modbus.Packet) {
 	ws.ring.push(p)
 	ws.traffic.push(p)
 	if l := ws.probeLog.Load(); l != nil {
-		l.frame(p)
+		l.Frame(p)
 	}
 	if id := ws.recID.Load(); id != 0 {
 		if r := currentRecorder(); r != nil {

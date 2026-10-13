@@ -70,7 +70,7 @@ func TestEachPointFindsPointsHiddenBySparseForwarding(t *testing.T) {
 			sent = append(sent, fmt.Sprintf("%d:%d", p.Address, p.Count))
 		}
 	}), 16)
-	segs[0].state = 0
+	segs[0].State = 0
 	var progress []int
 	checks, err := checkEachPoint(context.Background(), c, d, segs, func(n int) { progress = append(progress, n) })
 	if err != nil || len(checks) != 6 {
@@ -81,8 +81,8 @@ func TestEachPointFindsPointsHiddenBySparseForwarding(t *testing.T) {
 	}
 	for _, ck := range checks {
 		forwarded := ck.Offset == 0 || ck.Offset == 8
-		if ck.batch != 1 || len(ck.words) != 2 || forwarded != (ck.single == 1) || !forwarded && ck.single != -4 {
-			t.Errorf("点 %d：整段 %d %v，单独 %d", ck.Offset, ck.batch, ck.words, ck.single)
+		if ck.Batch != 1 || len(ck.Words) != 2 || forwarded != (ck.Single == 1) || !forwarded && ck.Single != -4 {
+			t.Errorf("点 %d：整段 %d %v，单独 %d", ck.Offset, ck.Batch, ck.Words, ck.Single)
 		}
 	}
 	text, summary, bad := eachPointText(d, checks, segs)
@@ -179,7 +179,7 @@ func TestMultiRegisterPointJudgedByItsOwnRequest(t *testing.T) {
 	faults := simulator.Faults{Forwarded: []simulator.AddrRange{{Start: 1, Count: 1}}}
 	d, segs, _ := pointProbeDef(floatPoints(0), readDef{Slave: 1, Function: modbus.FuncReadHoldingRegisters})
 	checks, err := checkEachPoint(context.Background(), registerProbeClient(t, modbus.ModeTCP, faults, nil, 4), d, segs, func(int) {})
-	if err != nil || len(checks) != 1 || checks[0].single != 1 {
+	if err != nil || len(checks) != 1 || checks[0].Single != 1 {
 		t.Fatalf("双字请求读通，点就记为可读：%+v %v", checks, err)
 	}
 	words, err := probeUnits(context.Background(), registerProbeClient(t, modbus.ModeTCP, faults, nil, 4), d, probeSingle, nil, func(int) {})
