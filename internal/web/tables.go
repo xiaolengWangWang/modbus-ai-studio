@@ -255,9 +255,17 @@ func (s *Server) poll(ctx context.Context, t *table) {
 	paused := t.paused
 	t.mu.Unlock()
 	c := s.dev.current()
-	if paused || c == nil {
+	probing := s.probing()
+	if paused || probing || c == nil {
+		status := "offline" // 连接的原因在顶部状态和日志里
+		switch {
+		case paused:
+			status = "paused"
+		case probing:
+			status = "probing"
+		}
 		t.mu.Lock()
-		t.status, t.err = map[bool]string{true: "paused", false: "offline"}[paused], "" // 连接的原因在顶部状态和日志里
+		t.status, t.err = status, ""
 		t.mu.Unlock()
 		s.changed()
 		return
@@ -265,8 +273,8 @@ func (s *Server) poll(ctx context.Context, t *table) {
 	req := modbus.Request{Slave: byte(t.cfg.Slave), Function: t.fn, Address: t.start, Quantity: uint16(t.cfg.Count)}
 	begin := time.Now()
 	resp, err := c.Do(ctx, req)
-	if ctx.Err() != nil {
-		return
+	if ctx.Err() != nil || errors.Is(err, modbus.ErrConnection) && s.probing() {
+		return // 检测开始时让出了连接，在途的读取断开，不算读取失败
 	}
 	if errors.Is(err, modbus.ErrConnection) {
 		s.dev.linkDown(c, err)
@@ -452,6 +460,7 @@ type stateView struct {
 	Tables  []tableView `json:"tables"`
 	Logs    []logView   `json:"logs"`
 	Record  recordView  `json:"record"`
+	Probe   *probeBrief `json:"probe,omitempty"` // 最近一次检测寄存器的进度或结论
 }
 
 func (s *Server) state() stateView {
@@ -464,6 +473,13 @@ func (s *Server) state() stateView {
 	}
 	if r := s.opts.Recorder; r != nil {
 		v.Record = recordView{Enabled: true, File: baseName(r.Path()), Dropped: r.Dropped.Load()}
+	}
+	s.mu.Lock()
+	j := s.probe
+	s.mu.Unlock()
+	if j != nil {
+		b := j.brief()
+		v.Probe = &b
 	}
 	return v
 }

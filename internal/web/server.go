@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"modbus-ai-studio/internal/probe"
 	"modbus-ai-studio/internal/recorder"
 )
 
@@ -50,6 +51,11 @@ type Server struct {
 	mu      sync.Mutex
 	tables  []*table
 	tableID int
+	probe   *probeJob // 最近一次检测寄存器（进行中或已结束）
+	probeID int
+
+	probeStart sync.Mutex                // 开始检测的过程一次只走一个
+	probeLog   atomic.Pointer[probe.Log] // 正在检测时收发的报文记进去，导出报告用
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -107,6 +113,10 @@ func (s *Server) Handler() http.Handler {
 	api("POST /api/slave", s.handleSetSlave)
 	api("POST /api/write", s.handleWrite)
 	api("POST /api/detect", s.handleDetect)
+	api("POST /api/probe", s.handleProbe)
+	api("GET /api/probe", s.handleProbeResult)
+	api("POST /api/probe/stop", s.handleProbeStop)
+	api("GET /api/probe/report", s.handleProbeReport)
 	api("GET /api/serial-ports", s.handleSerialPorts)
 	api("GET /api/records", s.handleRecords)
 	api("GET /api/records/{name}", s.handleDownload)

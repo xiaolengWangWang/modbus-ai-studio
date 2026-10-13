@@ -246,7 +246,7 @@ func probeClient(ctx context.Context, m modbus.Mode, log *probe.Log) (probe.Clie
 		c := connect(ctx, 0, log.Frame)
 		return c, func() { c.Close() }
 	}
-	first, err := transport.DialTCP(ctx, *target, *timeout)
+	first, err := transport.DialTCP(ctx, *target, dialTimeout())
 	if err != nil {
 		fail("连接失败：%v", err)
 	}
@@ -258,7 +258,7 @@ func probeClient(ctx context.Context, m modbus.Mode, log *probe.Log) (probe.Clie
 			first = nil
 			return t, nil
 		}
-		return transport.DialTCP(ctx, *target, *timeout)
+		return transport.DialTCP(ctx, *target, dialTimeout())
 	}}
 	if !*jsonOut {
 		// Modbus TCP 超时后会主动换新连接，一般马上就连上；重连超过 1 秒才提示

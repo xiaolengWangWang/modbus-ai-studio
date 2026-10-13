@@ -67,6 +67,8 @@
       <button id="import-points" title="CSV 或 xlsx：本程序的点表，或物联网平台导出的设备属性表">导入点表</button>
       <input type="file" id="import-file" accept=".csv,.xlsx" hidden>
       <button id="set-slave" class="ghost" hidden>改站号</button>
+      <button id="probe" class="ghost" title="找出一段地址或点表里哪些读得通、哪些是非法地址、哪些不响应">检测寄存器</button>
+      <button id="probe-status" class="probe-status" hidden></button>
       <span class="muted small">点可写的行（保持寄存器、线圈）可以写入</span>
     </div>
     <div id="tables" class="tables"></div>
@@ -191,6 +193,59 @@
     <div class="buttons">
       <button value="cancel" formnovalidate>取消</button>
       <button value="save" class="primary">应用</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="probe-dialog">
+  <form method="dialog" id="probe-form">
+    <h3 id="probe-title">检测寄存器</h3>
+    <div id="probe-setup">
+      <div class="fields">
+        <label class="wide">检测方式
+          <select name="how">
+            <option value="auto">自动定位（批量读，异常段逐个定位）</option>
+            <option value="single">逐个寄存器</option>
+            <option value="quick">快速排查（批量读与单独读差异）</option>
+            <option value="points">按点表分段</option>
+            <option value="each">逐点独立验证（整段读与逐点单独读对照）</option>
+          </select>
+        </label>
+        <label>Slave ID <input name="slave" type="number" min="1" max="255" value="1" required></label>
+        <label>功能码
+          <select name="function">
+            <option value="3">03 读保持寄存器（4x）</option>
+            <option value="4">04 读输入寄存器（3x）</option>
+            <option value="1">01 读线圈（0x）</option>
+            <option value="2">02 读离散输入（1x）</option>
+          </select>
+        </label>
+        <label class="range-only">起始地址 <input name="address" value="40001" autocomplete="off" title="支持 0、40001、4x0001、0x0010 等写法"></label>
+        <label class="range-only">数量 <input name="count" type="number" min="1" max="65536" value="100"></label>
+      </div>
+      <p class="muted small" id="probe-explain"></p>
+    </div>
+    <div id="probe-run" hidden>
+      <progress id="probe-bar" max="1" value="0"></progress>
+      <div class="small" id="probe-progress"></div>
+      <div class="muted small" id="probe-note"></div>
+    </div>
+    <div id="probe-result" hidden>
+      <div class="result">
+        <div class="verdict" id="probe-verdict"></div>
+        <pre class="probe-text" id="probe-text"></pre>
+      </div>
+      <div class="probe-fails" id="probe-fails"></div>
+      <label class="small muted" id="probe-note-wrap">报告备注（实际设备地址等，可不填） <input id="probe-report-note" autocomplete="off" placeholder="例如 经 DTU 转发，设备 172.16.16.102:503"></label>
+    </div>
+    <p class="error" id="probe-error"></p>
+    <div class="buttons">
+      <button value="close" formnovalidate id="probe-close">关闭</button>
+      <button value="report" id="probe-report" hidden>下载检测报告</button>
+      <button value="use" id="probe-use" hidden>按可读范围新建读取表</button>
+      <button value="again" id="probe-again" hidden>再检测</button>
+      <button value="stop" id="probe-stop" hidden>停止</button>
+      <button value="start" class="primary" id="probe-start">开始检测</button>
     </div>
   </form>
 </dialog>

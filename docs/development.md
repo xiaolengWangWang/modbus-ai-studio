@@ -94,7 +94,7 @@ go test -race -count=3 ./...        # 并发与稳定性
 - 要看真实 OpenGL 渲染，用调试构建：`go build -tags capture -o /tmp/cap ./cmd/modbus-ai && CAPTURE_DIR=/tmp /tmp/cap`。它按 `internal/ui/capture.go` 的剧本操作界面（打开示例、读取定义、写入、字节序、历史报文、报文筛选、960 / 1024 宽布局，以及 AI 报告、发送内容、设置、故障 / 日志来源、导出对话框、紧凑 AI 布局、报文无匹配提示、窄读取窗口、诊断滚动和 AI 重试失败保留报告、证据详情与完整 JSON、窄设置页、检测结果和暂停读数字节序调整 / 生效），每步存一张截图后退出，共 32 张；终端没有屏幕录制权限也能用。运行时应隔离用户数据目录；AI 使用本地合成响应，截图不是实际 DeepSeek 诊断结果。
 - 真实接口回归仅在显式启用时运行：设置 `MODBUS_AI_LIVE_TEST=1` 后执行 `go test -tags deepseek_live ./internal/ui -run '^TestDeepSeekLiveDiagnosticWorkflow$' -v -count=1 -timeout 4m`。它读取环境变量或已有加密密钥，不修改设置，仅向官方接口发送三个合成场景，产生实际 API 用量。可设置 `MODBUS_AI_LIVE_REPORT_DIR` 保存合成诊断报告；常规测试不编译此文件。
 - 持续集成（`.github/workflows/test.yml`）在发布的每种架构上测：Windows x64、macOS Intel（`macos-15-intel`）、macOS Apple Silicon、Linux x64 跑 `go vet` 和全部测试，Windows 以外加 `-race`；Linux x64 和 Linux ARM64（`ubuntu-24.04-arm`）再用 `CGO_ENABLED=0` 测 Web 版和 modbus-cli 用到的全部包（发布时就这样编）。只在推分支和 Pull Request 时运行，发版推 tag 不重跑。
-- `cmd/modbus-cli` 的测试把测试程序自己当成 modbus-cli 再运行，对内置模拟器读写线圈和寄存器、识别协议、扫描站号、发自定义请求，检查 JSON 输出和退出码。
+- `cmd/modbus-cli` 的测试把测试程序自己当成 modbus-cli 再运行，对内置模拟器读写线圈和寄存器、识别协议、扫描站号、发自定义请求、按点表读写、检测寄存器（含报告文件），检查 JSON 输出和退出码。`internal/web` 的测试同样对内置模拟器检测寄存器，检查读取表暂停与恢复、停止和报告 zip。寄存器检测的算法在 `internal/probe`，桌面版、Web 版、modbus-cli 共用。
 
 ## 打包与发版
 

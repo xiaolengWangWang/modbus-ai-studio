@@ -90,6 +90,7 @@ const (
 	stateConnecting   = "connecting"
 	stateConnected    = "connected"
 	stateReconnecting = "reconnecting"
+	stateProbing      = "probing" // 检测寄存器时网络设备让出常规连接，检测完马上重连
 )
 
 // reconnectEvery 是断线后重连的间隔，测试时调小。
@@ -233,6 +234,7 @@ func (d *device) dial(ctx context.Context) (c *modbus.Client, local, remote stri
 		}
 		d.evidence.Observe(p)
 		d.s.packets.add(p)
+		d.s.probeFrame(p)
 	})
 	return modbus.NewClient(t, opts), local, remote, nil
 }
@@ -254,7 +256,7 @@ func (d *device) linkDown(c *modbus.Client, cause error) {
 	d.mu.Unlock()
 	c.Close()
 	d.log(session, recorder.EventDisconnect, detail, 0)
-	go d.reconnect(ctx)
+	go d.reconnect(ctx, reconnectEvery)
 }
 
 // dialText 是连接失败的原因：TCP 连接被拒绝、超时说成中文；串口的错误 transport 已经说明白了。
@@ -265,13 +267,15 @@ func dialText(mode modbus.Mode, err error) string {
 	return transport.DialErrText(err)
 }
 
-func (d *device) reconnect(parent context.Context) {
+// reconnect 先等 wait，之后每 reconnectEvery 重连一次，直到成功、用户断开或换了连接。
+func (d *device) reconnect(parent context.Context, wait time.Duration) {
 	for {
 		select {
 		case <-parent.Done():
 			return
-		case <-time.After(reconnectEvery):
+		case <-time.After(wait):
 		}
+		wait = reconnectEvery
 		d.mu.Lock()
 		if d.state != stateReconnecting {
 			d.mu.Unlock()
@@ -303,8 +307,9 @@ func (d *device) reconnect(parent context.Context) {
 	}
 }
 
-// disconnect 断开连接、停止重连和内置模拟器，结束这次记录会话。
+// disconnect 断开连接、停止重连和内置模拟器，结束这次记录会话；正在检测寄存器就停止检测。
 func (d *device) disconnect() {
+	d.s.stopProbe()
 	d.mu.Lock()
 	client, cancel, session, state := d.client, d.cancel, d.session, d.state
 	d.client, d.cancel, d.session, d.state, d.err, d.since = nil, nil, 0, stateDisconnected, "", time.Now()

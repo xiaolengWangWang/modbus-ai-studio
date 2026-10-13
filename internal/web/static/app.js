@@ -137,9 +137,10 @@ function render(st) {
   renderConn(st.conn);
   renderTables(st.tables);
   renderLogs(st.logs || []);
+  renderProbe(st.probe);
 }
 
-const CONN_TEXT = { connected: '已连接', connecting: '连接中…', reconnecting: '连接断开，正在重连', disconnected: '未连接' };
+const CONN_TEXT = { connected: '已连接', connecting: '连接中…', reconnecting: '连接断开，正在重连', disconnected: '未连接', probing: '检测寄存器中，常规连接暂时让给检测' };
 let connFilled = false;
 // 窄屏时连接设置是否收起：连上后自动收起，断开后自动展开；点顶部连接状态手动切换，直到连接状态再变化。
 let connFold = null;
@@ -266,6 +267,7 @@ const STAT = {
   error: (t) => `读取失败 · ${t.updated} · 失败 ${t.fails} / ${t.polls} 次`,
   offline: () => (state && state.conn.state === 'reconnecting' ? '等待重连' : '未连接'),
   paused: () => '已暂停',
+  probing: () => '检测寄存器中，暂停读取',
   waiting: () => '等待读取…',
 };
 
@@ -645,9 +647,191 @@ async function applySlave() {
   }
 }
 
+// ---- 检测寄存器 ----
+// 和桌面版、modbus-cli 同一套算法，在服务端后台跑；进度跟着状态推送，结束后取完整结果。
+
+const PROBE_EXPLAIN = {
+  auto: '先批量读，读通的段不再逐个读；读不通的段逐个定位到单个地址。最快，适合先摸清一段地址。',
+  single: '每个地址单独读一次，找出全部读不通的地址。请求数等于数量，范围大时要等一会儿。',
+  quick: '批量读整个范围，从返回全 0 的段里抽查单独读，看设备是不是给没数据的地址补 0，最多 16 次验证请求；读取表里有点表时按点读。',
+  points: '按读取表里的点表：地址相连的点一段读一次，读不通的段逐点再读，找出无效的点。',
+  each: '按读取表里的点表：每段整段读一次，再每个点单独读一次，找出整段有返回、单独却读不通的点。',
+};
+const PROBE_MAX = { 1: 2000, 2: 2000, 3: 125, 4: 125 };
+let probeWatch = 0;   // 对话框里正在看的检测
+let probeShown = 0;   // 已经显示过结果的检测
+let probeSeen = -1;   // 进度按钮已提示过的检测；-1 表示还没收到第一份状态
+let probeResult = null;
+
+function probeView(view) { // setup 填参数、run 进度、result 结果
+  $('probe-setup').hidden = view !== 'setup';
+  $('probe-run').hidden = view !== 'run';
+  $('probe-result').hidden = view !== 'result';
+  $('probe-start').hidden = view !== 'setup';
+  $('probe-stop').hidden = view !== 'run';
+  $('probe-stop').disabled = false;
+  $('probe-stop').textContent = '停止';
+  $('probe-again').hidden = view !== 'result';
+  $('probe-report').hidden = view !== 'result';
+  $('probe-use').hidden = view !== 'result' || !(probeResult && probeResult.readable);
+  $('probe-close').textContent = view === 'run' ? '后台检测' : '关闭';
+  $('probe-close').title = view === 'run' ? '关掉对话框，检测在服务端继续；读取区上方的按钮可以回来看进度' : '';
+}
+
+function openProbe() {
+  const p = state && state.probe;
+  $('probe-error').textContent = '';
+  if (p && (p.running || p.id > probeSeen)) { showProbe(p); return; }
+  setupProbe();
+  $('probe-dialog').showModal();
+}
+
+// showProbe 打开对话框看某次检测：在跑就看进度，结束了就看结果。
+function showProbe(p) {
+  probeWatch = p.id;
+  if (p.running) {
+    probeView('run');
+    renderProbeRun(p);
+  } else {
+    probeShown = 0;
+    loadProbeResult();
+  }
+  if (!$('probe-dialog').open) $('probe-dialog').showModal();
+}
+
+function setupProbe() {
+  const f = $('probe-form').elements;
+  const tables = state ? state.tables : [];
+  const pointTables = tables.some((t) => t.config.points && t.config.points.length);
+  const t = tables.find((x) => !(x.config.points && x.config.points.length)) || tables[0];
+  for (const o of f.how.options) if (o.value === 'points' || o.value === 'each') o.disabled = !pointTables;
+  const how = prefs.get('probeHow', '');
+  const allowed = [...f.how.options].some((o) => o.value === how && !o.disabled);
+  f.how.value = allowed ? how : pointTables ? 'points' : 'auto';
+  if (t) {
+    f.slave.value = t.config.slave || 1;
+    f.function.value = String(t.config.function);
+    f.address.value = (t.rows[0] && t.rows[0].ref) || t.config.address; // 点表读取表的起始地址存的是 0x0000，显示成 40001
+    f.count.value = t.config.count;
+  }
+  $('probe-title').textContent = '检测寄存器';
+  probeResult = null;
+  probeView('setup');
+  updateProbeFields();
+}
+
+function updateProbeFields() {
+  const f = $('probe-form').elements;
+  const byPoints = f.how.value === 'points' || f.how.value === 'each';
+  $('probe-form').querySelectorAll('.range-only').forEach((el) => { el.hidden = byPoints; });
+  $('probe-explain').textContent = PROBE_EXPLAIN[f.how.value] + ' 检测期间读取表暂停，网络设备让出常规连接，检测完马上恢复。';
+}
+
+async function startProbe() {
+  const f = $('probe-form').elements;
+  const body = { how: f.how.value, slave: +f.slave.value, function: +f.function.value, address: f.address.value.trim(), count: +f.count.value };
+  $('probe-error').textContent = '';
+  try {
+    const b = await api('POST', '/api/probe', body);
+    prefs.set('probeHow', body.how);
+    probeWatch = b.id;
+    probeResult = null;
+    probeView('run');
+    renderProbeRun(b);
+  } catch (e) {
+    $('probe-error').textContent = e.message;
+  }
+}
+
+// renderProbe 跟着状态推送更新：读取区上方的进度按钮，以及对话框里正在看的检测。
+function renderProbe(p) {
+  if (probeSeen < 0) probeSeen = p && !p.running ? p.id : 0; // 打开页面前做完的检测不再提示
+  const btn = $('probe-status');
+  const fresh = p && !p.running && p.id > probeSeen;
+  btn.hidden = !(p && (p.running || fresh));
+  if (p && p.running) btn.textContent = `检测中 ${p.total ? Math.floor((p.done * 100) / p.total) : 0}% · 查看`;
+  else if (fresh) btn.textContent = '检测完成 · 查看结果';
+  if (!p || p.id !== probeWatch || !$('probe-dialog').open) return;
+  if (p.running) renderProbeRun(p);
+  else if (probeShown !== p.id) loadProbeResult();
+}
+
+function renderProbeRun(p) {
+  $('probe-title').textContent = '检测寄存器 · ' + p.title;
+  $('probe-bar').max = p.total || 1;
+  $('probe-bar').value = p.done;
+  $('probe-progress').textContent = p.progress;
+  $('probe-note').textContent = p.note || '';
+}
+
+async function loadProbeResult() {
+  try {
+    const v = await api('GET', '/api/probe');
+    if (v.running) return; // 还在跑，等推送
+    probeShown = probeWatch = v.id;
+    probeSeen = Math.max(probeSeen, v.id);
+    probeResult = v;
+    $('probe-title').textContent = '检测结果 · ' + v.title;
+    const verdict = $('probe-verdict');
+    verdict.textContent = (v.error ? v.error + ' · ' : '') + v.summary;
+    verdict.className = 'verdict ' + (v.error || v.problems ? 'fail' : 'pass');
+    $('probe-text').textContent = `${v.text}\n\n${v.progress} · ${v.requests} 次请求`;
+    const rows = v.rows.slice(0, 300);
+    $('probe-fails').replaceChildren(
+      ...(rows.length ? [h('table', {}, h('thead', {}, h('tr', {}, v.columns.map((c) => h('th', {}, c)))),
+        h('tbody', {}, rows.map((r) => h('tr', {}, r.map((x) => h('td', {}, x))))))] : []),
+      ...(v.rows.length > rows.length ? [h('div', { class: 'muted' }, `只列出前 ${rows.length} 行，共 ${v.rows.length} 行；完整清单在检测报告里`)] : []));
+    $('probe-use').textContent = v.readable ? `按可读范围新建读取表（${v.readable.address} 起 ${Math.min(v.readable.count, PROBE_MAX[v.function])} 个）` : '';
+    probeView('result');
+    if (state) renderProbe(state.probe);
+  } catch (e) {
+    $('probe-error').textContent = e.message;
+  }
+}
+
+// downloadProbeReport 下载检测报告（Markdown、JSONL 明细、CSV 失败清单打成 zip），出错时在对话框里说明。
+async function downloadProbeReport() {
+  const note = $('probe-report-note').value.trim();
+  $('probe-error').textContent = '';
+  try {
+    const r = await fetch('/api/probe/report?note=' + encodeURIComponent(note));
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      try { msg = (await r.json()).error || msg; } catch { /* 不是 JSON */ }
+      throw new Error(msg);
+    }
+    const blob = await r.blob();
+    const cd = r.headers.get('Content-Disposition') || '';
+    const star = cd.match(/filename\*=utf-8''([^;]+)/i);
+    const plain = cd.match(/filename="([^"]+)"/);
+    const name = star ? decodeURIComponent(star[1]) : plain ? plain[1] : '检测报告.zip';
+    const a = h('a', { href: URL.createObjectURL(blob), download: name });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  } catch (e) {
+    $('probe-error').textContent = '下载检测报告失败：' + e.message;
+  }
+}
+
+// useReadable 按检测出的最长可读范围新建读取表（一次读不完时取前面一次能读的数量）。
+function useReadable() {
+  const v = probeResult;
+  if (!v || !v.readable) return;
+  $('probe-dialog').close();
+  openTableDialog(null);
+  const f = $('table-form').elements;
+  f.slave.value = v.slave;
+  f.function.value = String(v.function);
+  f.address.value = v.readable.address;
+  f.count.value = Math.min(v.readable.count, PROBE_MAX[v.function]);
+  updateTableFields();
+}
+
 // ---- 日志、记录文件 ----
 
-const KIND = { CONNECT: '连接', CONNECT_FAIL: '连接失败', DISCONNECT: '断开', RECONNECT: '重连', READ_FAIL: '读取失败', READ_OK: '读取恢复', WRITE: '写入', IMPORT: '导入点表', SLAVE: '改站号' };
+const KIND = { CONNECT: '连接', CONNECT_FAIL: '连接失败', DISCONNECT: '断开', RECONNECT: '重连', READ_FAIL: '读取失败', READ_OK: '读取恢复', WRITE: '写入', IMPORT: '导入点表', SLAVE: '改站号', PROBE: '检测寄存器' };
 let logKey = '';
 
 function renderLogs(logs) {
@@ -773,6 +957,33 @@ function bind() {
   };
   $('import-slave').onclick = (e) => { e.preventDefault(); $('import-dialog').close(); openSlaveDialog(); };
   $('set-slave').onclick = openSlaveDialog;
+  $('probe').onclick = openProbe;
+  $('probe-status').onclick = () => { if (state && state.probe) showProbe(state.probe); };
+  const pf = $('probe-form');
+  pf.elements.how.onchange = updateProbeFields;
+  pf.elements.function.onchange = () => {
+    const a = pf.elements.address;
+    if (Object.values(DEFAULT_ADDR).includes(a.value.trim())) a.value = DEFAULT_ADDR[pf.elements.function.value];
+  };
+  pf.addEventListener('submit', (e) => {
+    const v = e.submitter && e.submitter.value;
+    if (!v || v === 'close') return;
+    e.preventDefault();
+    if (v === 'start') startProbe();
+    else if (v === 'stop') {
+      $('probe-stop').disabled = true;
+      $('probe-stop').textContent = '正在停止…';
+      api('POST', '/api/probe/stop').catch((err) => { $('probe-error').textContent = err.message; });
+    } else if (v === 'report') downloadProbeReport();
+    else if (v === 'use') useReadable();
+    else if (v === 'again') {
+      $('probe-error').textContent = '';
+      probeResult = null;
+      $('probe-title').textContent = '检测寄存器';
+      probeView('setup');
+      updateProbeFields();
+    }
+  });
   const sf = $('slave-form');
   sf.elements.from.onchange = () => { if (+sf.elements.from.value) sf.elements.to.value = sf.elements.from.value; };
   sf.addEventListener('submit', (e) => {

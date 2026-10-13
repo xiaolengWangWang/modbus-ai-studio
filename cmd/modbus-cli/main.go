@@ -126,7 +126,7 @@ func connect(ctx context.Context, retries int, observe ...func(modbus.Packet)) *
 	case *port != "":
 		t, err = transport.OpenSerial(transport.SerialConfig{Port: *port, BaudRate: *baud, DataBits: *dataBit, Parity: *parity, StopBits: *stop})
 	case *target != "":
-		t, err = transport.DialTCP(ctx, *target, *timeout)
+		t, err = transport.DialTCP(ctx, *target, dialTimeout())
 	default:
 		fail("需要 -target 或 -port")
 	}
@@ -135,6 +135,10 @@ func connect(ctx context.Context, retries int, observe ...func(modbus.Packet)) *
 	}
 	return modbus.NewClient(t, opts)
 }
+
+// dialTimeout 是建 TCP 连接的超时：至少 3 秒。-timeout 是等响应的时间，scan 默认只有 200 ms，
+// 拿来建连接太短，设备或网络慢一点就连不上。
+func dialTimeout() time.Duration { return max(*timeout, 3*time.Second) }
 
 // observer 把收发的报文交给 observe，加 -trace 时还打印到标准错误；都没有时返回 nil。
 func observer(observe ...func(modbus.Packet)) modbus.Observer {

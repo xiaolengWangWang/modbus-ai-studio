@@ -127,16 +127,29 @@ func ParseAddress(s string) ([]AddressCandidate, error) {
 }
 
 // ReferenceSpan 返回地址范围，例如 40001–40020；只有一个地址时同 Reference。
+// 结尾要用 6 位写法时开头也用 6 位（400001–420000），免得写成 40001–420000 看不出是同一种写法。
 func ReferenceSpan(area Area, offset uint16, n int) string {
-	a := Reference(area, offset)
 	if n <= 1 {
-		return a
+		return Reference(area, offset)
 	}
-	return a + "–" + Reference(area, offset+uint16(n-1))
+	end := offset + uint16(n-1)
+	if end > 9998 {
+		return reference6(area, offset) + "–" + reference6(area, end)
+	}
+	return Reference(area, offset) + "–" + Reference(area, end)
 }
 
 // Reference 返回 40001 风格的地址（9999 以上用 6 位）。
 func Reference(area Area, offset uint16) string {
+	if int(offset) > 9998 {
+		return reference6(area, offset)
+	}
+	return referenceIn(area, offset, false)
+}
+
+func reference6(area Area, offset uint16) string { return referenceIn(area, offset, true) }
+
+func referenceIn(area Area, offset uint16, six bool) string {
 	base5, base6 := 40001, 400001
 	switch area {
 	case AreaCoils:
@@ -146,10 +159,10 @@ func Reference(area Area, offset uint16) string {
 	case AreaInputRegisters:
 		base5, base6 = 30001, 300001
 	}
-	if int(offset) <= 9998 {
-		return strconv.Itoa(base5 + int(offset))
+	if six {
+		return strconv.Itoa(base6 + int(offset))
 	}
-	return strconv.Itoa(base6 + int(offset))
+	return strconv.Itoa(base5 + int(offset))
 }
 
 // DescribeAddress 返回地址的全部写法，例如“Offset 346 · HEX 0x015A · 1-Based 347 · 40347”。

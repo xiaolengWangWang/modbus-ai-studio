@@ -40,6 +40,8 @@ Windows 使用当前用户 DPAPI 加密保存密钥。默认不发送寄存器�
   modbus-cli -points 点表.xlsx points    列出点表里的点（和“导入点表”认同样的文件）
   modbus-cli [选项] -points 点表 get [点名…]     按点名读工程值，带单位和枚举含义
   modbus-cli [选项] -points 点表 set 点名 值      按点表写一个点，检查可写和范围，回读判断是否生效
+  modbus-cli [选项] probe [auto|single|quick] <地址> <数量>   检测寄存器，和“检测寄存器”同一套算法
+  modbus-cli [选项] -points 点表 probe points|each           按点表分段 / 逐点独立验证；-report 报告.md 另存检测报告
   modbus-cli manual                      完整说明：全部选项、JSON 字段、退出码、示例
   常用选项：-target IP:端口、-port COM3 -baud 9600 -parity N、-mode rtu-over-tcp、-slave 站号、-timeout 3s、-trace
   例：modbus-cli -target 192.168.1.100:502 -json -type float32 -order CDAB read 40001 4

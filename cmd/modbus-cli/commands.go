@@ -333,7 +333,7 @@ func runDetect(ctx context.Context) {
 	if *target == "" {
 		fail("detect 需要 -target（识别 Modbus TCP 和 RTU over TCP）")
 	}
-	dial := func(ctx context.Context) (modbus.Transport, error) { return transport.DialTCP(ctx, *target, *timeout) }
+	dial := func(ctx context.Context) (modbus.Transport, error) { return transport.DialTCP(ctx, *target, dialTimeout()) }
 	opts := detect.Options{Timeout: *timeout, Slaves: []byte{byte(*slave)}} // 先试 -slave，再试常见的 1、255
 	for _, id := range []byte{1, 255} {
 		if id != byte(*slave) {
