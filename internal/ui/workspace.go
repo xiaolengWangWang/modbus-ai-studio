@@ -306,7 +306,13 @@ func (ws *Workspace) startPointImport(rc fyne.URIReadCloser) {
 		if size > 0 {
 			r = &progressReader{r: r, report: func(n int64) { show("正在读取点表：", 0.1*float64(min(n, size))/float64(size)) }}
 		}
-		data, err := io.ReadAll(r)
+		var data []byte
+		var err error
+		if size > maxPointFileBytes { // 先看大小，太大的不用读完才报错
+			err = fmt.Errorf("点表文件超过 64 MB，请拆分后导入")
+		} else {
+			data, err = io.ReadAll(r)
+		}
 		var imp pointImport
 		if err == nil && len(data) > maxPointFileBytes {
 			err = fmt.Errorf("点表文件超过 64 MB，请拆分后导入")

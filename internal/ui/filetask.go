@@ -107,6 +107,12 @@ func readLimited(ctx context.Context, rc io.ReadCloser, limit int64, what string
 	stop := context.AfterFunc(ctx, func() { _ = rc.Close() })
 	defer stop()
 	defer rc.Close()
+	// 本机文件先看大小：太大的不用读完 64 MB 才报错
+	if st, ok := rc.(interface{ Stat() (os.FileInfo, error) }); ok {
+		if fi, err := st.Stat(); err == nil && fi.Size() > limit {
+			return nil, fmt.Errorf("%s超过 %d MB，不是本程序能打开的文件", what, limit>>20)
+		}
+	}
 	data, err := io.ReadAll(io.LimitReader(rc, limit+1))
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
