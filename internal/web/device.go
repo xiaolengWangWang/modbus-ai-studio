@@ -112,7 +112,7 @@ type device struct {
 	session       int64
 	ctx           context.Context // 本次连接，断开时结束（含重连和模拟器）
 	cancel        context.CancelFunc
-	netErr        error // 最近一次连接错误的原始错误（客户端返回的错误只留了文字），用来判断断开方式
+	netErr        error             // 最近一次连接错误的原始错误（客户端返回的错误只留了文字），用来判断断开方式
 	evidence      diagnose.Evidence // 本次连接的通信证据：晚到响应的延迟、别的主站的响应，出错分析用
 }
 

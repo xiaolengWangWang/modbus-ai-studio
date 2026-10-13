@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"modbus-ai-studio/internal/modbus"
+	"modbus-ai-studio/internal/probe"
 	"modbus-ai-studio/internal/simulator"
 )
 
-func middleNetworkProbeClient(t *testing.T, faults simulator.Faults, size int) *networkProbeClient {
+func middleNetworkProbeClient(t *testing.T, faults simulator.Faults, size int) *probe.NetClient {
 	t.Helper()
 	srv := simulator.NewServer(modbus.ModeTCP, 1, simulator.NewStore(size))
 	srv.SetFaults(faults)
@@ -22,11 +23,8 @@ func middleNetworkProbeClient(t *testing.T, faults simulator.Faults, size int) *
 	}
 	go srv.Serve(ln)
 	t.Cleanup(func() { srv.Close() })
-	c := &networkProbeClient{
-		cfg:     connConfig{mode: modbus.ModeTCP, target: ln.Addr().String(), timeout: 50 * time.Millisecond},
-		waiting: func(bool) {},
-	}
-	t.Cleanup(c.close)
+	c := newNetworkProbeClient(connConfig{mode: modbus.ModeTCP, target: ln.Addr().String(), timeout: 50 * time.Millisecond}, nil, func(bool) {})
+	t.Cleanup(c.Close)
 	return c
 }
 

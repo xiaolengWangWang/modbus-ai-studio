@@ -81,8 +81,8 @@ func (l *linkState) observe(p modbus.Packet) bool {
 type lossEvent struct {
 	at     time.Time
 	kind   lossKind
-	close  transport.CloseKind     // TCP 是怎么断的：FIN、RST、重传超时……
-	req    modbus.Packet // 断开前最后一条请求；连上就断时为空
+	close  transport.CloseKind // TCP 是怎么断的：FIN、RST、重传超时……
+	req    modbus.Packet       // 断开前最后一条请求；连上就断时为空
 	gap    time.Duration
 	uptime time.Duration
 	err    string

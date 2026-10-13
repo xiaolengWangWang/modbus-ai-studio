@@ -459,7 +459,7 @@ func TestLatestSkipsIncompleteSource(t *testing.T) {
 	github := serve(complete)
 	defer github.Close()
 	for what, rel := range map[string]Release{
-		"还没上传安装包": {Tag: "v1.0.3", Body: sum + "  " + name},
+		"还没上传安装包":  {Tag: "v1.0.3", Body: sum + "  " + name},
 		"说明里没有校验值": {Tag: "v1.0.3", Assets: []Asset{{Name: name, URL: "http://gitee/p"}}},
 	} {
 		gitee := serve(rel)

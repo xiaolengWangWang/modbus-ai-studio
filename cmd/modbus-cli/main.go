@@ -34,6 +34,8 @@ var (
 	order      = flag.String("order", "", "字节序：AB、BA、ABCD、CDAB、BADC、DCBA，64 位还可写 ABCDEFGH、GHEFCDAB、BADCFEHG、HGFEDCBA\n（默认标准大端；64 位写 32 位的名字时按同样规则换算，CDAB 即 GHEFCDAB）")
 	scale      = flag.Float64("scale", 1, "工程值 = 原始值 × scale")
 	pointsFile = flag.String("points", "", "点表文件（CSV 或 xlsx，本程序的点表或平台导出的设备属性表），points、get、set 命令用")
+	reportFile = flag.String("report", "", "probe 检测完把报告写到这个 .md 文件，同目录另存同名的 JSONL 明细和 CSV 失败清单")
+	reportNote = flag.String("report-note", "", "写进检测报告的实际设备备注（例如经过 DTU 转发时设备真正的地址），只是备注，不用于连接")
 	jsonOut    = flag.Bool("json", false, "结果按 JSON 打印到标准输出（一个对象，ok 表示是否成功），方便脚本和 AI 解析")
 	trace      = flag.Bool("trace", false, "把收发报文打印到标准错误")
 	echo       = flag.Bool("echo", false, "丢弃 RS485 转换器回显的发送帧")
@@ -69,14 +71,21 @@ func main() {
 		runGet(ctx, rest)
 	case cmd == "set" && len(rest) == 2:
 		runSet(ctx, rest[0], rest[1])
+	case cmd == "probe":
+		runProbe(ctx, rest)
 	default:
-		if *jsonOut {
-			output(failure{Error: "命令或参数个数不对，运行 modbus-cli manual 查看用法"}, nil)
-		} else {
-			flag.Usage()
-		}
-		os.Exit(2)
+		badUsage()
 	}
+}
+
+// badUsage 报命令或参数个数写错，以退出码 2 结束。
+func badUsage() {
+	if *jsonOut {
+		output(failure{Error: "命令或参数个数不对，运行 modbus-cli manual 查看用法"}, nil)
+	} else {
+		flag.Usage()
+	}
+	os.Exit(2)
 }
 
 // modes 是 -mode 的写法，JSON 输出里的 mode 也用它。
@@ -105,14 +114,12 @@ func modeName(m modbus.Mode) string {
 	return string(m)
 }
 
-// connect 按选项连接。retries 是读请求超时后的重试次数，扫描从站时不重试。
-func connect(ctx context.Context, retries int) *modbus.Client {
+// connect 按选项连接。retries 是读请求超时后的重试次数，扫描从站、检测寄存器时不重试；observe 另外接收收发的报文。
+func connect(ctx context.Context, retries int, observe ...func(modbus.Packet)) *modbus.Client {
 	m := mode()
 	opts := modbus.DefaultOptions(m)
 	opts.Timeout, opts.DiscardEcho, opts.ReadRetries = *timeout, *echo, retries
-	if *trace {
-		opts.Observer = modbus.ObserverFunc(printPacket)
-	}
+	opts.Observer = observer(observe...)
 	var t modbus.Transport
 	var err error
 	switch {
@@ -127,6 +134,21 @@ func connect(ctx context.Context, retries int) *modbus.Client {
 		fail("连接失败：%v", err)
 	}
 	return modbus.NewClient(t, opts)
+}
+
+// observer 把收发的报文交给 observe，加 -trace 时还打印到标准错误；都没有时返回 nil。
+func observer(observe ...func(modbus.Packet)) modbus.Observer {
+	if *trace {
+		observe = append(observe, printPacket)
+	}
+	if len(observe) == 0 {
+		return nil
+	}
+	return modbus.ObserverFunc(func(p modbus.Packet) {
+		for _, f := range observe {
+			f(p)
+		}
+	})
 }
 
 // printPacket 用和 Modbus Poll 通信报文窗口相同的格式打印到标准错误：Tx:000001-01 03 …

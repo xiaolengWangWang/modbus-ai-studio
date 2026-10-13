@@ -69,13 +69,17 @@ func checkEachPoint(ctx context.Context, c probeClient, d readDef, segs []probeS
 	return probe.CheckEachPoint(ctx, c, probeDef(d), segs, progress)
 }
 
-func pointCheckStates(d readDef, checks []pointCheck) []int8 { return probe.PointCheckStates(probeDef(d), checks) }
+func pointCheckStates(d readDef, checks []pointCheck) []int8 {
+	return probe.PointCheckStates(probeDef(d), checks)
+}
 
 func quickCheckRange(ctx context.Context, c probeClient, d readDef, pts pointTable, budget int, progress func(int)) (*quickResult, error) {
 	return probe.QuickCheck(ctx, c, probeDef(d), pts, budget, progress)
 }
 
-func quickUnits(pts pointTable, d readDef) []probe.QuickUnit { return probe.QuickUnits(pts, probeDef(d)) }
+func quickUnits(pts pointTable, d readDef) []probe.QuickUnit {
+	return probe.QuickUnits(pts, probeDef(d))
+}
 
 func quickText(d readDef, q *quickResult, stopErr error) probeOutput {
 	return probe.QuickText(probeDef(d), q, stopErr)
@@ -83,7 +87,9 @@ func quickText(d readDef, q *quickResult, stopErr error) probeOutput {
 
 func quickStates(d readDef, q *quickResult) []int8 { return probe.QuickStates(probeDef(d), q) }
 
-func quickEvidence(d readDef, q *quickResult) map[string]any { return probe.QuickEvidence(probeDef(d), q) }
+func quickEvidence(d readDef, q *quickResult) map[string]any {
+	return probe.QuickEvidence(probeDef(d), q)
+}
 
 func probeOutputFor(d readDef, res []int8, stopErr error, segs ...probeSegment) (probeOutput, int, int) {
 	return probe.OutputFor(probeDef(d), res, stopErr, segs...)

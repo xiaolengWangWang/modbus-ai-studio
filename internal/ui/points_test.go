@@ -637,7 +637,9 @@ func TestChangePointOrderByScope(t *testing.T) {
 		w.mu.Unlock()
 		d.Function = modbus.FuncReadInputRegisters
 		ws.addWindow(d)
-		order := func(area modbus.Area, off uint16) modbus.ByteOrder { return ws.points[ptKey{Area: area, Offset: off}].Order }
+		order := func(area modbus.Area, off uint16) modbus.ByteOrder {
+			return ws.points[ptKey{Area: area, Offset: off}].Order
+		}
 		h, in := modbus.AreaHoldingRegisters, modbus.AreaInputRegisters
 		if n := ws.changePointOrder(orderOne, w, 10, modbus.OrderDCBA); n != 1 || order(h, 10) != modbus.OrderDCBA || order(h, 0) != modbus.OrderABCD {
 			t.Errorf("单点修改影响了其他点：%d, %v", n, ws.points)

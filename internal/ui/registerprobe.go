@@ -18,7 +18,6 @@ import (
 	"modbus-ai-studio/internal/probe"
 )
 
-
 func probeOffset(text string) (uint16, error) {
 	text = strings.TrimSpace(text)
 	base := 10
@@ -239,7 +238,7 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 	now := widget.NewLabel(fmt.Sprintf(unit, 0, total))
 	title := map[probeMode]string{probeAuto: "定位异常地址", probeSingle: "逐个寄存器", probePoints: "按点表分段", probeEachPoint: "逐点独立验证", probeQuick: "快速排查"}[mode]
 	// 检测记录：每条请求和等待期间收到的原始帧，导出报告用
-	run := &probeRun{Mode: mode, Def: probeDef(d), Timeout: cfg.timeout, Started: time.Now(), Log: newProbeLog()}
+	run := &probeRun{Mode: mode, Def: probeDef(d), Timeout: cfg.timeout, Started: time.Now(), Log: newProbeLog(), Recorded: currentRecorder() != nil}
 	if s != nil {
 		run.Target = modeName[s.mode] + " " + s.desc
 	} else {
@@ -304,12 +303,12 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 			})
 		}
 		var client probeClient
-		var network *networkProbeClient
+		var network *probe.NetClient
 		if cfg.mode.Serial() {
 			client = &sessionProbeClient{ws: ws, session: s, waiting: waiting}
 		} else {
-			network = &networkProbeClient{cfg: cfg, observer: ws, waiting: waiting}
-			defer network.close()
+			network = newNetworkProbeClient(cfg, ws, waiting)
+			defer network.Close()
 			client = network
 		}
 		client = loggedProbe{Client: client, Log: run.Log}
@@ -334,7 +333,7 @@ func (ws *Workspace) runRegisterProbeMode(w *readWindow, d readDef, mode probeMo
 			stopErr = context.Canceled
 		}
 		if network != nil {
-			network.close()
+			network.Close()
 		}
 		ws.probeLog.CompareAndSwap(run.Log, nil)
 		run.Finished, run.StopErr = time.Now(), stopErr

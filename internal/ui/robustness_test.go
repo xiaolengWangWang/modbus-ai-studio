@@ -188,4 +188,3 @@ func TestPointImportDoesNotBlockUIAndCancellationKeepsExistingPoints(t *testing.
 		}
 	})
 }
-

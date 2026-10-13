@@ -1,9 +1,5 @@
 package ui
 
-import (
-
-)
-
 // showQuickResult 显示快速排查的结果，可以接着做完整检测：有点表时逐点独立验证全部点，否则逐个寄存器读这个范围。
 func (ws *Workspace) showQuickResult(d readDef, q *quickResult, stopErr error, pr *probeRun) {
 	out := quickText(d, q, stopErr)

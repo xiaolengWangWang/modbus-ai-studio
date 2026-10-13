@@ -8,7 +8,6 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
-
 )
 
 func (ws *Workspace) showProbeResult(w *readWindow, d readDef, res []int8, stopErr error, segs ...probeSegment) {

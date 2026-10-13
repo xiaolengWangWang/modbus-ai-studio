@@ -147,7 +147,7 @@ func TestErrorsAndExitCodes(t *testing.T) {
 
 func TestManualAndVersion(t *testing.T) {
 	out, code := cli(t, "manual")
-	for _, want := range []string{"read  <地址> <数量>", "write <地址> <值>", "detect", "scan [起始 结束]", "raw <PDU 十六进制>", "-json", "-fc", "退出码", "给 AI 调用"} {
+	for _, want := range []string{"read  <地址> <数量>", "write <地址> <值>", "detect", "scan [起始 结束]", "raw <PDU 十六进制>", "probe [方式] <地址> <数量>", "probe points | each", "-report", "-json", "-fc", "退出码", "给 AI 调用"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("说明里缺少“%s”", want)
 		}

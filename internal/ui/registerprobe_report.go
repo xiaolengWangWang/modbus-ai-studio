@@ -10,7 +10,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
-
 )
 
 // exportReportDialog 先问实际设备备注（可空，只写进报告），再选保存位置，在后台写文件并核对。

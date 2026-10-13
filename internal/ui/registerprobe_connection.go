@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"time"
 
 	"modbus-ai-studio/internal/modbus"
@@ -14,96 +13,23 @@ import (
 
 var errProbeUnstable = probe.ErrUnstable
 
-// networkProbeClient 独占检测连接，自行重连；错误不交给主会话的连接保持逻辑。
-// 连接和客户端只由检测 goroutine 使用，取消回调只关闭当次请求的 socket。
-type networkProbeClient struct {
-	cfg      connConfig
-	observer modbus.Observer
-	waiting  func(bool)
-	conn     net.Conn
-	client   *modbus.Client
-}
-
-func (c *networkProbeClient) Mode() modbus.Mode { return c.cfg.mode }
-
-func (c *networkProbeClient) close() {
-	if c.conn != nil {
-		c.conn.Close()
-	}
-	c.conn, c.client = nil, nil
-}
-
-func (c *networkProbeClient) ready(ctx context.Context) error {
-	if c.client != nil {
-		return ctx.Err()
-	}
-	c.waiting(true)
-	defer c.waiting(false)
-	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	for {
-		t, err := transport.DialTCP(dialCtx, c.cfg.target, 3*time.Second)
-		if err == nil {
-			_, err = probeClosed(t, 100*time.Millisecond)
-		}
-		if dialCtx.Err() != nil {
-			if t != nil {
-				t.Close()
+// newNetworkProbeClient 是网络设备的独立检测连接（probe.NetClient）：独占连接，自行重连；
+// 每次连上先看设备是不是马上关闭连接（连接数已满、IP 白名单），是就当没连上。
+func newNetworkProbeClient(cfg connConfig, observer modbus.Observer, waiting func(bool)) *probe.NetClient {
+	return &probe.NetClient{
+		Options: modbus.Options{Mode: cfg.mode, Timeout: cfg.timeout, Observer: observer},
+		Dial: func(ctx context.Context) (modbus.Transport, error) {
+			t, err := transport.DialTCP(ctx, cfg.target, 3*time.Second)
+			if err == nil {
+				if _, err = probeClosed(t, 100*time.Millisecond); err != nil {
+					t.Close()
+					return nil, err
+				}
 			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return fmt.Errorf("检测连接重连超过 30 秒，已保留检测结果：%w", modbus.ErrConnection)
-		}
-		if err == nil {
-			c.conn = t
-			c.client = modbus.NewClient(t, modbus.Options{Mode: c.cfg.mode, Timeout: c.cfg.timeout, Observer: c.observer})
-			return nil
-		}
-		if t != nil {
-			t.Close()
-		}
-		timer := time.NewTimer(100 * time.Millisecond)
-		select {
-		case <-dialCtx.Done():
-			timer.Stop()
-		case <-timer.C:
-		}
+			return t, err
+		},
+		Waiting: waiting,
 	}
-}
-
-func (c *networkProbeClient) Do(ctx context.Context, req modbus.Request) (*modbus.Response, error) {
-	for attempt := 0; attempt < 2; attempt++ {
-		if err := c.ready(ctx); err != nil {
-			return nil, err
-		}
-		client := c.client
-		closed := make(chan struct{})
-		stop := context.AfterFunc(ctx, func() {
-			client.Close()
-			close(closed)
-		})
-		response, err := client.Do(ctx, req)
-		if !stop() {
-			<-closed
-		}
-		if ctx.Err() != nil {
-			c.close()
-			return nil, ctx.Err()
-		}
-		if c.Mode() == modbus.ModeTCP && errors.Is(err, modbus.ErrTimeout) {
-			// 设备可能仍在处理超时请求。关闭检测连接，下次请求重新建连，
-			// 避免慢点的旧请求积压让后面的正常点也被误判为未响应。
-			c.close()
-			return response, err
-		}
-		if !errors.Is(err, modbus.ErrConnection) {
-			return response, err
-		}
-		c.close()
-	}
-	// 同一个范围重连后仍断线：交给分段/逐点检测归类，继续后面的点。
-	return nil, errProbeUnstable
 }
 
 func (ws *Workspace) probeConfig() (connConfig, error) {

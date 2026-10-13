@@ -244,4 +244,3 @@ func TestSerialLoss(t *testing.T) {
 		}
 	})
 }
-

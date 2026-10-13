@@ -133,6 +133,7 @@ type Run struct {
 	StopErr           error
 	Log               *Log
 	Points            []point // 本次检测用到的点
+	Recorded          bool    // 收发同时记进了本机报文数据库（桌面版）
 }
 
 // Output 是一次检测的结果：界面显示的文字、首行摘要，以及导出的失败清单。

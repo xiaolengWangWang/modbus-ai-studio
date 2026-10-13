@@ -33,7 +33,6 @@ func objectName(id byte) string {
 
 var readCodeNames = map[byte]string{0x01: "基本（厂商、产品代码、版本）", 0x02: "常规", 0x03: "扩展", 0x04: "单个对象"}
 
-
 // describeExtra 解析结构化读写之外的功能码：07、08、11、12、17、20–24、43。
 func describeExtra(w *fieldWriter, p modbus.Packet, f modbus.FunctionCode, data []byte) {
 	u16 := func(b []byte) int { return int(binary.BigEndian.Uint16(b)) }

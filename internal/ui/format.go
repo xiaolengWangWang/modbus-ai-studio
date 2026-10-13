@@ -30,7 +30,6 @@ func frameText(mode modbus.Mode, raw []byte) string {
 	return body
 }
 
-
 func hexs(b []byte) string {
 	parts := make([]string, len(b))
 	for i, v := range b {

@@ -535,4 +535,3 @@ func (ws *Workspace) detectProtocol() {
 		})
 	}()
 }
-
