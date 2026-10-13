@@ -43,7 +43,21 @@ jobs:
           go test -count=1 $pkgs
       - name: 测试（界面测试用 Fyne 的软件渲染驱动，不需要显卡）
         if: runner.os != 'Windows' && !matrix.nocgo-only
-        run: go test -race -count=1 -timeout 15m ./...
+        shell: bash
+        run: |
+          # macOS 的界面截图存下来，查浅色主题输入框在软件渲染下没画出字的问题（connection_visibility_test.go）
+          if [ "$RUNNER_OS" = macOS ]; then
+            mkdir -p "$RUNNER_TEMP/snapshots"
+            export MODBUS_AI_SNAPSHOT="$RUNNER_TEMP/snapshots"
+          fi
+          go test -race -count=1 -timeout 15m ./...
+      - name: 上传 macOS 界面截图
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-snapshots-${{ runner.arch }}
+          path: ${{ runner.temp }}/snapshots
+          if-no-files-found: ignore
       - name: 测试（Windows），界面截图存下来检查中文字体和布局
         if: runner.os == 'Windows'
         run: |
