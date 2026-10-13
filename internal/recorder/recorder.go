@@ -469,7 +469,7 @@ type Anomaly struct {
 	TX     []byte        // 请求帧；晚到帧或没有记录到时为空
 }
 
-// Anomalies 返回会话最后 limit 条异常记录，按时间正序。1.3.0 之前的文件没有这张表，返回空。
+// Anomalies 返回会话最后 limit 条异常记录，按时间正序。1.4.0 之前的文件没有这张表，返回空。
 func (r *Recorder) Anomalies(session int64, limit int) ([]Anomaly, error) {
 	r.dbMu.RLock()
 	defer r.dbMu.RUnlock()

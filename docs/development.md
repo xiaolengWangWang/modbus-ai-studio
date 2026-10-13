@@ -119,7 +119,7 @@ Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\Modbus
    - 核对结果（也可单独运行 `verify`）：两边的说明都与本地一致；不带令牌从 Gitee 下载全部包，SHA-256 与 CI 产物一致；用程序自己的检查更新代码确认优先查到 Gitee 上的新版本，三个平台的安装包和校验值都对，GitHub 可作备用下载源；
    - 删掉 `dist/` 里旧版本的文件。
 
-安装包文件名不要改：程序检查更新时同时查 Gitee 和 GitHub，按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包。Web 版的包（`ModbusAIStudio-Web-x.y.z-Linux-x64.tar.gz`、`-Linux-arm64.tar.gz`）只随发布上传，检查更新不认它们，Web 版没有自动更新，换新版本时替换程序后重启。modbus-cli 的包用小写的 `modbus-cli-x.y.z-windows-x64.zip` 这类名字，结尾和安装包不同：旧版本的检查更新只看结尾，同结尾就会把 CLI 的包当成更新下载；1.3.0 起检查更新还要求文件名以 `ModbusAIStudio-` 加版本号开头。
+安装包文件名不要改：程序检查更新时同时查 Gitee 和 GitHub，按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包。Web 版的包（`ModbusAIStudio-Web-x.y.z-Linux-x64.tar.gz`、`-Linux-arm64.tar.gz`）只随发布上传，检查更新不认它们，Web 版没有自动更新，换新版本时替换程序后重启。modbus-cli 的包用小写的 `modbus-cli-x.y.z-windows-x64.zip` 这类名字，结尾和安装包不同：旧版本的检查更新只看结尾，同结尾就会把 CLI 的包当成更新下载；1.4.0 起检查更新还要求文件名以 `ModbusAIStudio-` 加版本号开头。
 
 凭据：GitHub 用 git 凭据管理器里推送用的令牌（或环境变量 `GH_TOKEN`）；Gitee 用 `~/.gitee_token` 里的私人令牌（勾选 projects，或环境变量 `GITEE_TOKEN`），推送走 https，由工具回答 git 的用户名和密码提问，令牌不出现在命令行里。
 

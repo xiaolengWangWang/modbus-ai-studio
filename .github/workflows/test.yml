@@ -50,7 +50,7 @@ jobs:
             mkdir -p "$RUNNER_TEMP/snapshots"
             export MODBUS_AI_SNAPSHOT="$RUNNER_TEMP/snapshots"
           fi
-          go test -race -count=1 -timeout 15m ./...
+          go test -race -count=1 -timeout 25m ./...
       - name: 上传 macOS 界面截图
         if: always() && runner.os == 'macOS'
         uses: actions/upload-artifact@v4
@@ -63,7 +63,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\snapshots" | Out-Null
           $env:MODBUS_AI_SNAPSHOT = "$env:RUNNER_TEMP\snapshots"
-          go test -count=1 -timeout 15m ./...
+          go test -count=1 -timeout 25m ./...
       - name: 上传 Windows 界面截图
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@v4

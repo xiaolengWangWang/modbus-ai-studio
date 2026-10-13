@@ -11,7 +11,7 @@
 | `sessions` | 一次设备连接的起止、协议、目标和窗口 | `id` 为整数主键；会话编号跨进程随机起点递增，不能作为时间使用 |
 | `packets` | 每次发送、接收和失败结果 | `id` 为文件内整数主键；`session_id` 引用 `sessions.id`，删除会话时级联删除 |
 | `events` | 连接、故障、恢复及诊断日志 | `id` 为文件内整数主键；`session_id` 同样引用会话 |
-| `anomalies` | 异常收发的原始报文，每行带同一请求的发送帧（1.3.0 起） | `id` 为文件内整数主键；`session_id` 同样引用会话 |
+| `anomalies` | 异常收发的原始报文，每行带同一请求的发送帧（1.4.0 起） | `id` 为文件内整数主键；`session_id` 同样引用会话 |
 
 跨文件继续写入的会话会复制其元数据到新文件。`packets.id`、`events.id`、`anomalies.id` 仅在各自文件内唯一；跨文件定位记录时需要同时保存文件路径。外键在写入连接上启用。
 
@@ -42,7 +42,7 @@
 | `address`、`count` | INTEGER NOT NULL | 请求起始地址（协议零基偏移）、数量 |
 | `raw` | BLOB，可为 NULL | 原始报文字节，或其 zlib 压缩结果；超时等无报文时为 NULL |
 | `raw_codec` | INTEGER NOT NULL，默认 0 | 0 原文，1 zlib |
-| `status` | TEXT NOT NULL | `SENT`、`SUCCESS`、`TIMEOUT`、`EXCEPTION`、`NONSTANDARD`、`CRC_ERROR`、`CONNECTION_ERROR`、`PARSE_ERROR`、`CANCELLED`、`LATE_RESPONSE`、`UNEXPECTED`。`NONSTANDARD`（1.3.0 起）是事务号、Unit ID 与请求一致，但既不是正常响应也不是标准异常的帧，例如功能码 89 原样回显读请求的地址和数量 |
+| `status` | TEXT NOT NULL | `SENT`、`SUCCESS`、`TIMEOUT`、`EXCEPTION`、`NONSTANDARD`、`CRC_ERROR`、`CONNECTION_ERROR`、`PARSE_ERROR`、`CANCELLED`、`LATE_RESPONSE`、`UNEXPECTED`。`NONSTANDARD`（1.4.0 起）是事务号、Unit ID 与请求一致，但既不是正常响应也不是标准异常的帧，例如功能码 89 原样回显读请求的地址和数量 |
 | `rtt_us` | INTEGER NOT NULL | 响应耗时，微秒；发送行通常为 0 |
 | `error` | TEXT，可为 NULL | 错误文字 |
 
@@ -76,7 +76,7 @@
 | `tx_raw` | BLOB，可为 NULL | 同一请求发出的原始请求帧；晚到帧（`LATE_RESPONSE`）不一定属于当时的请求，不配对，为 NULL；发送失败时为发送的帧 |
 | `rx_raw` | BLOB，可为 NULL | 异常那一行收到的原始字节；超时为 NULL |
 
-Modbus 帧不超过 260 字节，这张表的报文不压缩，管理工具可以直接查看。1.3.0 之前的文件没有这张表：按路径只读查看时当作没有异常记录，不修改文件；作为当前写入文件打开时自动建表，表里只有之后的异常。
+Modbus 帧不超过 260 字节，这张表的报文不压缩，管理工具可以直接查看。1.4.0 之前的文件没有这张表：按路径只读查看时当作没有异常记录，不修改文件；作为当前写入文件打开时自动建表，表里只有之后的异常。
 
 ```sql
 SELECT time, status, hex(tx_raw), hex(rx_raw), error

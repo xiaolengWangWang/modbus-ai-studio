@@ -85,7 +85,7 @@ func TestAbnormalPacketsStoredWithTheirRequestFrame(t *testing.T) {
 	}
 }
 
-// 1.3.0 之前的文件没有 anomalies 表：按路径只读查看时返回空，不报错，也不改文件。
+// 1.4.0 之前的文件没有 anomalies 表：按路径只读查看时返回空，不报错，也不改文件。
 func TestAnomaliesFromArchiveWithoutTable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
 	db, err := sql.Open(driverName, path)
