@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"modbus-ai-studio/internal/modbus"
+	"modbus-ai-studio/internal/points"
 	"modbus-ai-studio/internal/recorder"
 )
 
@@ -28,15 +29,36 @@ type TableConfig struct {
 	Points     []PointConfig `json:"points,omitempty"` // 点表：有时每行是一个点，类型各自不同
 }
 
-// PointConfig 是点表里的一个点。
+// PointConfig 是点表里的一个点，和桌面版的点表一样：类型可以是 BOOL、STRING 和各种数值类型（含 REAL、DINT 等别名）。
 type PointConfig struct {
-	Offset   uint16  `json:"offset"`
-	Name     string  `json:"name"`
-	Type     string  `json:"type"`
-	Order    string  `json:"order"`
-	Scale    float64 `json:"scale"`
-	Unit     string  `json:"unit"`
-	Writable bool    `json:"writable"`
+	Offset   uint16         `json:"offset"`
+	Name     string         `json:"name"`
+	Type     string         `json:"type"`
+	Order    string         `json:"order"`
+	Scale    float64        `json:"scale"`
+	Unit     string         `json:"unit"`
+	Writable bool           `json:"writable"`
+	Min      *float64       `json:"min,omitempty"`
+	Max      *float64       `json:"max,omitempty"`
+	Enum     map[int]string `json:"enum,omitempty"`   // 状态类点的取值含义，例如 0=停止
+	Len      int            `json:"length,omitempty"` // STRING 的字符数
+}
+
+// point 把配置换成点表的点，补全默认值并检查。
+func (pc PointConfig) point(area modbus.Area) (points.Point, error) {
+	t, ok := points.ParseType(pc.Type)
+	if !ok {
+		return points.Point{}, fmt.Errorf("不支持的数据类型 %q", pc.Type)
+	}
+	p := points.Point{Area: area, Offset: pc.Offset, Name: pc.Name, Type: t, Order: modbus.ByteOrder(pc.Order), Scale: pc.Scale,
+		Unit: pc.Unit, RW: pc.Writable, Min: pc.Min, Max: pc.Max, Enum: pc.Enum, Len: pc.Len}
+	return p, p.Normalize()
+}
+
+// configOf 是点在接口里的写法。
+func configOf(p points.Point) PointConfig {
+	return PointConfig{Offset: p.Offset, Name: p.Name, Type: string(p.Type), Order: string(p.Order), Scale: p.Scale, Unit: p.Unit,
+		Writable: p.RW, Min: p.Min, Max: p.Max, Enum: p.Enum, Len: p.Len}
 }
 
 // RowView 是读取表的一行。Type / Order / Scale 供页面预填写入。
@@ -54,18 +76,12 @@ type RowView struct {
 	Writable bool    `json:"writable"`
 }
 
-type point struct {
-	PointConfig
-	dt    modbus.DataType
-	order modbus.ByteOrder
-}
-
 type table struct {
 	id     int
 	cfg    TableConfig
 	fn     modbus.FunctionCode
 	start  uint16
-	points []point // 没有点表时按 Count 和类型均匀分行
+	points []points.Point // 寄存器表没有点表时按 Count 和类型均匀分行；线圈、离散输入表没有点表时逐个显示
 
 	mu       sync.Mutex
 	paused   bool
@@ -150,40 +166,41 @@ func newTable(cfg TableConfig) (*table, error) {
 	if cfg.Count < 1 || cfg.Count > 2000 || (modbus.Request{Slave: byte(cfg.Slave), Function: fn, Address: start, Quantity: uint16(cfg.Count)}).Validate() != nil {
 		return nil, fmt.Errorf("数量不对：线圈 / 离散输入一次最多 2000 个，寄存器最多 125 个，且不能超出 65535")
 	}
+	area := modbus.AreaOf(fn)
 	bits := fn == modbus.FuncReadCoils || fn == modbus.FuncReadDiscreteInputs
 	if bits {
-		cfg.Type, cfg.Order, cfg.Points = "", "", nil
-		t.cfg = cfg
-		return t, nil
-	}
-	dt, order, err := parseType(cfg.Type, cfg.Order)
-	if err != nil {
-		return nil, err
-	}
-	t.cfg.Type, t.cfg.Order = string(dt), string(order)
-	if len(cfg.Points) == 0 {
+		cfg.Type, cfg.Order = "", ""
+	} else if len(cfg.Points) == 0 {
+		dt, order, err := parseType(cfg.Type, cfg.Order)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Type, cfg.Order = string(dt), string(order)
 		w := dt.Registers()
 		if cfg.Count%w != 0 {
 			return nil, fmt.Errorf("%s 每个值占 %d 个寄存器，数量应为 %d 的倍数", dt, w, w)
 		}
 		for off := 0; off < cfg.Count; off += w {
-			t.points = append(t.points, point{PointConfig: PointConfig{Offset: start + uint16(off), Scale: cfg.Scale, Writable: fn == modbus.FuncReadHoldingRegisters}, dt: dt, order: order})
+			t.points = append(t.points, points.Point{Area: area, Offset: start + uint16(off), Type: dt, Order: order, Scale: cfg.Scale,
+				RW: fn == modbus.FuncReadHoldingRegisters})
 		}
+	}
+	t.cfg = cfg
+	if len(cfg.Points) == 0 {
 		return t, nil
 	}
-	for _, p := range cfg.Points {
-		pdt, po, err := parseType(p.Type, p.Order)
+	t.cfg.Points = nil
+	for _, pc := range cfg.Points {
+		p, err := pc.point(area)
 		if err != nil {
-			return nil, fmt.Errorf("点 %s：%w", p.Name, err)
+			return nil, fmt.Errorf("点 %s：%w", pc.Name, err)
 		}
-		if p.Offset < start || int(p.Offset)+pdt.Registers() > int(start)+cfg.Count {
+		if p.Offset < start || int(p.Offset)+p.Regs() > int(start)+cfg.Count {
 			return nil, fmt.Errorf("点 %s 不在读取范围内", p.Name)
 		}
-		if p.Scale == 0 {
-			p.Scale = 1
-		}
-		p.Writable = p.Writable && fn == modbus.FuncReadHoldingRegisters
-		t.points = append(t.points, point{PointConfig: p, dt: pdt, order: po})
+		p.RW = p.RW && (fn == modbus.FuncReadHoldingRegisters || fn == modbus.FuncReadCoils) && p.Type != points.TypeString
+		t.points = append(t.points, p)
+		t.cfg.Points = append(t.cfg.Points, configOf(p))
 	}
 	return t, nil
 }
@@ -309,66 +326,53 @@ func explain(err error) string {
 	return err.Error()
 }
 
+// decode 把一次读到的数据排成行。值的格式和桌面版一样（points.Point.Text）：带枚举含义，
+// 64 位整数不丢精度，STRING 解成文字，浮点数不合理时提示更可能的字节序。
 func (t *table) decode(resp *modbus.Response) []RowView {
 	area := modbus.AreaOf(t.fn)
+	bit := func(i int) string { return map[bool]string{true: "1", false: "0"}[resp.Bits[i]] }
 	if len(t.points) == 0 { // 线圈、离散输入
 		rows := make([]RowView, 0, len(resp.Bits))
-		for i, b := range resp.Bits {
+		for i := range resp.Bits {
 			off := t.start + uint16(i)
-			v := map[bool]string{true: "1", false: "0"}[b]
-			rows = append(rows, RowView{Ref: modbus.Reference(area, off), Offset: int(off), Regs: v, Value: v, Writable: t.fn == modbus.FuncReadCoils})
+			rows = append(rows, RowView{Ref: modbus.Reference(area, off), Offset: int(off), Regs: bit(i), Value: bit(i), Writable: t.fn == modbus.FuncReadCoils})
 		}
 		return rows
 	}
 	rows := make([]RowView, 0, len(t.points))
 	for _, p := range t.points {
 		i := int(p.Offset - t.start)
-		regs := resp.Registers[i : i+p.dt.Registers()]
-		hexRegs := make([]string, len(regs))
-		for j, r := range regs {
-			hexRegs[j] = fmt.Sprintf("%04X", r)
+		row := RowView{Ref: modbus.Reference(area, p.Offset), Offset: int(p.Offset), Name: p.Name, Unit: p.Unit,
+			Type: string(p.Type), Order: string(p.Order), Scale: p.Scale, Writable: p.RW}
+		var regs []uint16
+		if t.fn == modbus.FuncReadCoils || t.fn == modbus.FuncReadDiscreteInputs {
+			row.Regs, row.Type, row.Order = bit(i), "", ""
+			regs = []uint16{0}
+			if resp.Bits[i] {
+				regs[0] = 1
+			}
+		} else {
+			regs = resp.Registers[i : i+p.Regs()]
+			hexRegs := make([]string, len(regs))
+			for j, r := range regs {
+				hexRegs[j] = fmt.Sprintf("%04X", r)
+			}
+			row.Regs = strings.Join(hexRegs, " ")
 		}
-		value, hint := formatValue(p.dt, p.order, p.Scale, regs)
-		rows = append(rows, RowView{Ref: modbus.Reference(area, p.Offset), Offset: int(p.Offset), Name: p.Name, Regs: strings.Join(hexRegs, " "),
-			Value: value, Unit: p.Unit, Hint: hint, Type: string(p.dt), Order: string(p.order), Scale: p.Scale, Writable: p.Writable})
+		value, plausible, err := p.Text(regs)
+		switch {
+		case err != nil:
+			value, row.Hint = "—", err.Error()
+		case !plausible:
+			row.Hint = "数值不合理，字节序可能不对"
+			if sug, ok := modbus.SuggestByteOrder(p.Order, regs); ok && p.Type == modbus.TypeFloat32 {
+				row.Hint = "数值不合理，按 " + string(sug) + " 解码更可能正确"
+			}
+		}
+		row.Value = value
+		rows = append(rows, row)
 	}
 	return rows
-}
-
-// formatValue 显示工程值：整型不换算时精确显示（64 位不经过 float64），FLOAT32 按单精度显示，
-// 有倍率时按倍率的小数位数显示。FLOAT32 明显不合理时提示更可能的字节序。
-func formatValue(dt modbus.DataType, o modbus.ByteOrder, scale float64, regs []uint16) (value, hint string) {
-	sc := modbus.Scaling{Scale: scale}
-	if sc.Identity() && !dt.Float() {
-		if s, err := modbus.FormatInt(dt, o, regs); err == nil {
-			return s, ""
-		}
-	}
-	raw, err := modbus.DecodeRaw(dt, o, regs)
-	if err != nil {
-		return "—", err.Error()
-	}
-	if dt == modbus.TypeFloat32 {
-		if sug, ok := modbus.SuggestByteOrder(o, regs); ok {
-			hint = "数值不合理，按 " + string(sug) + " 解码更可能正确"
-		}
-	}
-	v := sc.Engineering(raw)
-	switch {
-	case dt == modbus.TypeFloat32 && sc.Identity():
-		return strconv.FormatFloat(v, 'g', -1, 32), hint
-	case dt == modbus.TypeFloat64 && sc.Identity():
-		return strconv.FormatFloat(v, 'g', -1, 64), hint
-	}
-	s := strconv.FormatFloat(scale, 'f', -1, 64)
-	decimals := 0
-	if i := strings.IndexByte(s, '.'); i >= 0 {
-		decimals = len(s) - i - 1
-	}
-	if dt.Float() {
-		decimals += 3
-	}
-	return strconv.FormatFloat(v, 'f', decimals, 64), hint
 }
 
 type tableView struct {

@@ -17,6 +17,7 @@ import (
 	"modbus-ai-studio/internal/control"
 	"modbus-ai-studio/internal/detect"
 	"modbus-ai-studio/internal/modbus"
+	"modbus-ai-studio/internal/points"
 	"modbus-ai-studio/internal/recorder"
 	"modbus-ai-studio/internal/simulator"
 	"modbus-ai-studio/internal/transport"
@@ -140,16 +141,7 @@ func (s *Server) handleUpdateTable(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	old.stop()
-	old.mu.Lock()
-	t.id, t.paused = old.id, old.paused
-	old.mu.Unlock()
-	s.mu.Lock()
-	if i := slices.Index(s.tables, old); i >= 0 {
-		s.tables[i] = t
-	}
-	s.mu.Unlock()
-	s.startTable(t)
+	s.replaceTable(old, t)
 	s.changed()
 	writeJSON(w, http.StatusOK, t.view())
 }
@@ -313,7 +305,10 @@ func (s *Server) handleWrite(w http.ResponseWriter, r *http.Request) {
 		if in.Coil {
 			return strconv.Itoa(int(regs[0]))
 		}
-		v, _ := formatValue(dt, order, scale, regs)
+		v, _, err := points.Point{Type: dt, Order: order, Scale: scale}.Text(regs) // 和读取表、桌面版同样的格式
+		if err != nil {
+			return "—"
+		}
 		return v
 	}
 	out := writeResult{Result: string(rep.Result), Text: resultText[rep.Result], Hint: rep.Hint, Rounded: rounded,

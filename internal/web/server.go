@@ -103,6 +103,8 @@ func (s *Server) Handler() http.Handler {
 	api("DELETE /api/tables/{id}", s.handleDeleteTable)
 	api("POST /api/tables/{id}/pause", s.handlePauseTable)
 	api("POST /api/pause-all", s.handlePauseAll)
+	api("POST /api/points", s.handleImportPoints)
+	api("POST /api/slave", s.handleSetSlave)
 	api("POST /api/write", s.handleWrite)
 	api("POST /api/detect", s.handleDetect)
 	api("GET /api/serial-ports", s.handleSerialPorts)

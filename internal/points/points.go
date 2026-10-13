@@ -136,6 +136,47 @@ var typeAliases = map[string]modbus.DataType{
 	"FLOAT32-IEEE": modbus.TypeFloat32, "FLOAT64-IEEE": modbus.TypeFloat64, // Telegraf 的写法
 }
 
+// ParseType 认点表里的类型名，含别名（REAL、DINT、WORD……），不分大小写；空字符串按 UINT16。
+func ParseType(s string) (modbus.DataType, bool) {
+	if s = strings.TrimSpace(s); s == "" {
+		return modbus.TypeUint16, true
+	}
+	t, ok := typeAliases[strings.ToUpper(s)]
+	return t, ok
+}
+
+// Normalize 补全并检查程序里构造的点（Web 版读取表里的点）：倍率为 0 时按 1，字节序为空时按标准大端，
+// 64 位类型的 32 位写法换算成 8 个字母；检查数据区和类型、字节序、STRING 长度、允许范围。文件里的点由 Parse 检查。
+func (p *Point) Normalize() error {
+	if p.Scale == 0 {
+		p.Scale = 1
+	}
+	if (p.Area == modbus.AreaCoils || p.Area == modbus.AreaDiscreteInputs) && (p.Type == TypeString || p.Type.Registers() != 1) {
+		return fmt.Errorf("%s 位区只能使用 BOOL 或 16 位整数类型", p.Area.Prefix())
+	}
+	p.Order = modbus.ByteOrder(strings.ToUpper(string(p.Order)))
+	switch {
+	case p.Order == "":
+		p.Order = modbus.OrderAB.For(p.Type)
+	case p.Type.Registers() == 4:
+		p.Order = p.Order.For(p.Type)
+	}
+	if p.Type == TypeString {
+		if p.Len < 1 || p.Len > MaxStringLen {
+			return fmt.Errorf("STRING 的长度应为 1–%d 个字符", MaxStringLen)
+		}
+		if p.Order != modbus.OrderAB && p.Order != modbus.OrderBA {
+			return errors.New("STRING 的字节序只能是 AB（高字节在前）或 BA（字节交换）")
+		}
+	} else if _, err := modbus.EncodeRaw(p.Type, p.Order, 0); err != nil {
+		return fmt.Errorf("%s 不能用字节序 %s", p.Type, p.Order)
+	}
+	if lo, hi, ok := p.Limits(); ok && lo > hi {
+		return fmt.Errorf("最小 %v 大于最大 %v", lo, hi)
+	}
+	return nil
+}
+
 // Import 是一次导入的结果。
 type Import struct {
 	Format   string // 文件格式，显示给用户

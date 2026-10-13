@@ -272,6 +272,7 @@ const STAT = {
 function renderTables(tables) {
   $('tables-empty').hidden = tables.length > 0;
   $('pause-all').hidden = !tables.length;
+  $('set-slave').hidden = !tables.length;
   $('pause-all').textContent = tables.some((t) => !t.paused) ? '全部暂停' : '全部继续';
   const box = $('tables');
   const seen = new Set();
@@ -527,14 +528,32 @@ function packetMatches(p) {
   return !q || squash(p.data || '').includes(q);
 }
 
+// 报文状态的说法和桌面版一样；晚到响应后面写明回的是哪条请求、晚了多久（服务端给的 error）。
+const STATUS = {
+  TIMEOUT: '超时', EXCEPTION: '异常', NONSTANDARD: '非标准响应', CRC_ERROR: 'CRC 错误，已丢弃', LATE_RESPONSE: '晚到响应，已丢弃',
+  UNEXPECTED: '不匹配，已丢弃', CANCELLED: '已取消', CONNECTION_ERROR: '连接错误', PARSE_ERROR: '格式错误，已丢弃',
+};
+
 function packetRow(p) {
   const tx = p.dir === 'TX';
+  const label = p.foreign ? '非本连接的响应，已丢弃' : STATUS[p.status] || p.status;
   return h('div', { class: 'pk' + (isBad(p) ? ' bad' : '') },
     h('span', { class: 't' }, p.time + '  '),
     h('span', { class: tx ? 'tx' : 'rx' }, `${tx ? 'Tx' : 'Rx'}:${String(p.req).padStart(6, '0')}`),
     '  ' + (p.data || '（无数据）'),
-    isBad(p) ? `  ← ${p.status}${p.error ? '：' + p.error : ''}` : '',
+    isBad(p) ? `  ← ${label}${p.error ? '（' + p.error + '）' : ''}` : '',
     !tx && p.rtt ? `  ${p.rtt.toFixed(1)} ms` : '');
+}
+
+// packetStats 在报文工具栏里数晚到响应和别的主站的响应：后者多说明串口服务器 / DTU 在几个主站之间转发。
+function packetStats() {
+  let late = 0;
+  let foreign = 0;
+  for (const p of packets) {
+    if (p.foreign) foreign++;
+    else if (p.status === 'LATE_RESPONSE') late++;
+  }
+  $('p-stats').textContent = [late && `晚到 ${late}`, foreign && `别的主站的响应 ${foreign}`].filter(Boolean).join(' · ');
 }
 
 function atBottom(box) { return box.scrollHeight - box.scrollTop - box.clientHeight < 40; }
@@ -552,6 +571,7 @@ function addPackets(list) {
   while (box.childElementCount > MAX_ROWS) box.firstElementChild.remove();
   if (follow) box.scrollTop = box.scrollHeight;
   $('packet-count').textContent = packets.length ? `(${packets.length})` : '';
+  packetStats();
 }
 
 function renderPackets() {
@@ -559,11 +579,71 @@ function renderPackets() {
   box.replaceChildren(...packets.filter(packetMatches).slice(-MAX_ROWS).map(packetRow));
   box.scrollTop = box.scrollHeight;
   $('packet-count').textContent = packets.length ? `(${packets.length})` : '';
+  packetStats();
+}
+
+// ---- 导入点表、改站号 ----
+
+// importPoints 读出文件发给服务端：按地址把相近的点合成读取表，替换现有的读取表。
+async function importPoints(file) {
+  if (file.size > 16 * 1024 * 1024) { setMsg('点表文件超过 16 MB，请拆分后导入', true); return; }
+  setMsg(`正在导入点表 ${file.name}…`);
+  try {
+    const url = await new Promise((ok, fail) => {
+      const r = new FileReader();
+      r.onload = () => ok(r.result);
+      r.onerror = () => fail(r.error);
+      r.readAsDataURL(file);
+    });
+    const r = await api('POST', '/api/points', { name: file.name, data: url.slice(url.indexOf(',') + 1) });
+    setMsg('');
+    const lines = [`从${r.format}导入了 ${r.points} 个点，建了 ${r.tables} 个读取表，读 Slave ${r.slave}。`];
+    if (r.left) lines.push(`还有 ${r.left} 段超出读取表上限，没有建表；把点表拆开分几次导入。`);
+    lines.push(`设备站号不是 ${r.slave} 时，点“改站号”一次改好全部读取表。`);
+    if (r.noOrder) lines.push('文件里没有字节序，32 / 64 位点先按 ABCD 解码；数值不对时读取表会提示改用哪种。');
+    if (r.skipped && r.skipped.length) {
+      lines.push(`跳过 ${r.skipped.length} 行：`, ...r.skipped.slice(0, 12));
+      if (r.skipped.length > 12) lines.push('……');
+    }
+    if (r.notes) lines.push(...r.notes);
+    $('import-result').replaceChildren(...lines.map((l) => h('div', {}, l)));
+    $('import-dialog').showModal();
+  } catch (e) {
+    setMsg('导入点表失败：' + e.message, true);
+  }
+}
+
+// openSlaveDialog 改站号：读取表用了几个站号时先选改哪一组，默认第一组；也可以改全部读取表。
+function openSlaveDialog() {
+  const tables = state ? state.tables : [];
+  if (!tables.length) return;
+  const count = new Map();
+  for (const t of tables) count.set(t.config.slave, (count.get(t.config.slave) || 0) + 1);
+  const f = $('slave-form');
+  const opts = [...count].sort((a, b) => a[0] - b[0]).map(([id, n]) => h('option', { value: id }, `Slave ${id} 的读取表（${n} 个）`));
+  if (count.size > 1) opts.push(h('option', { value: 0 }, `全部读取表（${tables.length} 个）`));
+  f.elements.from.replaceChildren(...opts);
+  f.elements.from.value = tables[0].config.slave;
+  f.elements.to.value = tables[0].config.slave;
+  $('slave-error').textContent = '';
+  $('slave-dialog').showModal();
+  f.elements.to.select();
+}
+
+async function applySlave() {
+  const f = $('slave-form');
+  if (!f.reportValidity()) return;
+  try {
+    await api('POST', '/api/slave', { from: +f.elements.from.value, to: +f.elements.to.value });
+    $('slave-dialog').close();
+  } catch (e) {
+    $('slave-error').textContent = e.message;
+  }
 }
 
 // ---- 日志、记录文件 ----
 
-const KIND = { CONNECT: '连接', CONNECT_FAIL: '连接失败', DISCONNECT: '断开', RECONNECT: '重连', READ_FAIL: '读取失败', READ_OK: '读取恢复', WRITE: '写入' };
+const KIND = { CONNECT: '连接', CONNECT_FAIL: '连接失败', DISCONNECT: '断开', RECONNECT: '重连', READ_FAIL: '读取失败', READ_OK: '读取恢复', WRITE: '写入', IMPORT: '导入点表', SLAVE: '改站号' };
 let logKey = '';
 
 function renderLogs(logs) {
@@ -678,6 +758,22 @@ function bind() {
   $('conn-chip').onclick = toggleConn;
   $('conn-chip').onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleConn(); } };
   $('add-table').onclick = () => openTableDialog(null);
+  $('import-points').onclick = () => {
+    if (state && state.tables.length) confirmStep($('import-points'), '再点一次：替换现有读取表', () => $('import-file').click());
+    else $('import-file').click();
+  };
+  $('import-file').onchange = () => {
+    const file = $('import-file').files[0];
+    $('import-file').value = ''; // 同一个文件改过后可以再导入
+    if (file) importPoints(file);
+  };
+  $('import-slave').onclick = (e) => { e.preventDefault(); $('import-dialog').close(); openSlaveDialog(); };
+  $('set-slave').onclick = openSlaveDialog;
+  const sf = $('slave-form');
+  sf.elements.from.onchange = () => { if (+sf.elements.from.value) sf.elements.to.value = sf.elements.from.value; };
+  sf.addEventListener('submit', (e) => {
+    if (e.submitter && e.submitter.value === 'save') { e.preventDefault(); applySlave(); }
+  });
 
   const tf = $('table-form');
   tf.elements.function.onchange = () => {

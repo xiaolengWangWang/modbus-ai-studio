@@ -190,7 +190,7 @@ func TestDemoReadWriteAndRecords(t *testing.T) {
 		r2, ok2 := rowByName(st, "温差设定")
 		return ok1 && ok2 && r1.Value != "" && r2.Value != ""
 	})
-	if r, _ := rowByName(st, "二次回水温度"); r.Value != "32" || r.Unit != "℃" || r.Ref != "40003" || r.Regs != "0000 4200" {
+	if r, _ := rowByName(st, "二次回水温度"); r.Value != "32.0" || r.Unit != "℃" || r.Ref != "40003" || r.Regs != "0000 4200" {
 		t.Fatalf("二次回水温度 %+v", r)
 	}
 	if r, _ := rowByName(st, "二次温差"); r.Value != "13.2" { // INT16 132 × 0.1
@@ -204,13 +204,13 @@ func TestDemoReadWriteAndRecords(t *testing.T) {
 	if code := e.call("POST", "/api/write", writeRequest{Slave: 1, Address: "346", Type: "FLOAT32", Order: "CDAB", Value: "16"}, &res); code != 200 || res.Result != "PASS" {
 		t.Fatalf("写入 %d：%+v", code, res)
 	}
-	if res.Target != "16" || len(res.Readbacks) != 3 || res.Readbacks[2].Value != "16" {
+	if res.Target != "16.0" || len(res.Readbacks) != 3 || res.Readbacks[2].Value != "16.0" { // 和桌面版同样的格式
 		t.Fatalf("写入回读 %+v", res)
 	}
 	if code := e.call("POST", "/api/write", writeRequest{Slave: 1, Address: "346", Type: "FLOAT32", Value: "x"}, nil); code != 400 {
 		t.Fatalf("非数字应拒绝，得到 %d", code)
 	}
-	e.wait("写入后读取表更新", func(st stateView) bool { r, _ := rowByName(st, "温差设定"); return r.Value == "16" })
+	e.wait("写入后读取表更新", func(st stateView) bool { r, _ := rowByName(st, "温差设定"); return r.Value == "16.0" })
 
 	var recs struct {
 		Enabled bool       `json:"enabled"`

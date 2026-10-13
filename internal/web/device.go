@@ -374,6 +374,7 @@ type packetView struct {
 	Status   string  `json:"status"`
 	RTT      float64 `json:"rtt"` // ms，仅结果行
 	Error    string  `json:"error,omitempty"`
+	Foreign  bool    `json:"foreign,omitempty"` // 事务号不是本连接发出的：串口服务器 / DTU 转来的别的主站的响应
 }
 
 // packetRing 保存最近的收发，页面打开时先取这些，之后靠推送。
@@ -394,6 +395,7 @@ func (r *packetRing) add(p modbus.Packet) {
 	}
 	if p.Err != nil {
 		v.Error = p.Err.Error()
+		v.Foreign = errors.As(p.Err, new(*modbus.ForeignError))
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
