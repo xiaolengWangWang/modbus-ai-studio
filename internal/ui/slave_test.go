@@ -135,8 +135,8 @@ func TestEvidenceUsesLateRequest(t *testing.T) {
 	ev.observe(rx)
 	rx.Err = &modbus.ForeignError{TxID: 0x1CA6}
 	ev.observe(rx)
-	if d := ev.delayOf(reqKey{1, modbus.FuncReadHoldingRegisters, 100}); d != 3000 {
-		t.Errorf("按回的那条请求记，只知道范围时取上限：%d ms", d)
+	if d := ev.delayOf(reqKey{1, modbus.FuncReadHoldingRegisters, 100}); d != 2500 {
+		t.Errorf("按回的那条请求记，只知道范围时取下限：%d ms", d)
 	}
 	if ev.delayOf(reqKey{9, modbus.FuncReadHoldingRegisters, 500}) != 0 || ev.delayOf(reqKey{2, modbus.FuncReadHoldingRegisters, 0}) != 0 {
 		t.Error("不应记到正在等的请求上；取消的请求不算超时")

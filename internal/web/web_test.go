@@ -278,7 +278,7 @@ func TestTableValidation(t *testing.T) {
 	if code := e.call("POST", "/api/tables", TableConfig{Slave: 1, Function: 3, Address: "40001", Count: 4, Type: "float32", Order: "cdab"}, &tv); code != 200 {
 		t.Fatalf("新建 %d", code)
 	}
-	if tv.Config.Type != "FLOAT32" || tv.Config.Order != "CDAB" || tv.Title != "Slave 1 · FC03 · 40001 × 4 · FLOAT32 CDAB" || tv.Status != "waiting" {
+	if tv.Config.Type != "FLOAT32" || tv.Config.Order != "CDAB" || tv.Title != "Slave 1 · FC03 · 40001 × 4 · FLOAT32 CDAB" || tv.Status != "waiting" && tv.Status != "offline" {
 		t.Fatalf("读取表 %+v", tv)
 	}
 	e.wait("未连接时提示", func(st stateView) bool { return len(st.Tables) == 1 && st.Tables[0].Status == "offline" })

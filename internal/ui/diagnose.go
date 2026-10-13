@@ -55,15 +55,16 @@ func (e *evidence) observe(p modbus.Packet) {
 	default:
 		e.late.Add(1)
 		// 晚到帧常在等下一条请求时才到，记录行上的请求不一定是它的，按客户端找回的那条请求记；
-		// 只知道范围时取上限，超时按它调大，下次一定收得到
-		if errors.As(p.Err, &le) && !le.Cancelled && le.Max > 0 {
+		// 在两次请求之间到达的只知道范围，取下限：至少用了这么久。上限可能接近整个扫描周期，按它建议会调得过大；
+		// 按下限调大后还超时，下一次晚到会再给出更大的建议
+		if errors.As(p.Err, &le) && !le.Cancelled && le.Elapsed > 0 {
 			r := le.Request
 			k := reqKey{r.Slave, r.Function, r.Address}
 			e.mu.Lock()
 			if e.lateDelay == nil {
 				e.lateDelay = map[reqKey]int64{}
 			}
-			e.lateDelay[k] = max(e.lateDelay[k], le.Max.Milliseconds())
+			e.lateDelay[k] = max(e.lateDelay[k], le.Elapsed.Milliseconds())
 			e.mu.Unlock()
 		}
 	}
