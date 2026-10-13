@@ -493,6 +493,7 @@ func TestCheckCLI(t *testing.T) {
 		"macOS 包里是 Linux 程序":         func(e []tarEntry) []tarEntry { e[0].body = elfHeader(t, elf.EM_AARCH64); return e },
 		"程序没有可执行位":                  func(e []tarEntry) []tarEntry { e[0].mode = 0o644; return e },
 		"说明被加密":                     func(e []tarEntry) []tarEntry { e[1].body = []byte("b\x14#e+\x00E-SafeNet\x00LOCK"); return e },
+		"说明被加密（标记不完整）":              func(e []tarEntry) []tarEntry { e[1].body = []byte("b\x14#e\x12\x00\xee\x01\x00\x00\x00\x01E-Safe\x89s\x95"); return e },
 		"说明里没有版本号":                  func(e []tarEntry) []tarEntry { e[1].body = []byte("modbus-cli\n"); return e },
 		"缺少说明":                      func(e []tarEntry) []tarEntry { return e[:1] },
 		"多了文件":                      func(e []tarEntry) []tarEntry { return append(e, tarEntry{e[0].name + ".bak", 0o644, []byte("x")}) },

@@ -55,7 +55,7 @@ import pathlib
 import sys
 
 text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8-sig")
-assert "E-SafeNet" not in text and "\0" not in text
+assert "E-Safe" not in text and "\0" not in text
 assert sys.argv[2] in text and "50 MB" in text
 assert "{{VERSION}}" not in text
 PY

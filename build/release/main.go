@@ -387,6 +387,7 @@ func readText(path string) ([]byte, error) {
 	return bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), err
 }
 
+// encrypted 看文件头有没有加密软件的标记。标记不一定是完整的 E-SafeNet，有的文件头里 E-Safe 后面紧跟二进制。
 func encrypted(b []byte) bool {
-	return bytes.Contains(b[:min(len(b), 64)], []byte("E-SafeNet"))
+	return bytes.Contains(b[:min(len(b), 64)], []byte("E-Safe"))
 }

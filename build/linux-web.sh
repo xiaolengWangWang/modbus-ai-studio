@@ -67,7 +67,7 @@ for ARCH in amd64 arm64; do
 
 防火墙
   从别的电脑访问时放行端口，例如 sudo ufw allow 8502/tcp 或 sudo firewall-cmd --add-port=8502/tcp --permanent。" >"$STAGE/README.txt"
-	if grep -q E-SafeNet "$STAGE/README.txt" || ! grep -q "$VERSION" "$STAGE/README.txt"; then
+	if grep -q E-Safe "$STAGE/README.txt" || ! grep -q "$VERSION" "$STAGE/README.txt"; then
 		echo "$STAGE/README.txt 不是明文说明（被加密软件加密了？），停止打包"; exit 1
 	fi
 

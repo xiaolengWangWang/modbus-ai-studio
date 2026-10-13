@@ -17,7 +17,7 @@ sha256() { if command -v shasum >/dev/null; then shasum -a 256 "$1"; else sha256
 
 MANUAL="$DIST/modbus-cli-$VERSION-manual.txt"
 go run -ldflags "$LDFLAGS" ./cmd/modbus-cli manual >"$MANUAL"
-if grep -q E-SafeNet "$MANUAL" || ! grep -q "modbus-cli $VERSION" "$MANUAL"; then
+if grep -q E-Safe "$MANUAL" || ! grep -q "modbus-cli $VERSION" "$MANUAL"; then
 	echo "$MANUAL 不是明文说明（被加密软件加密了？），停止打包"; exit 1
 fi
 
