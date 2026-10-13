@@ -51,6 +51,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/assets/icon"
+	"modbus-ai-studio/internal/diagnose"
 	"modbus-ai-studio/internal/modbus"
 	"modbus-ai-studio/internal/transport"
 	"modbus-ai-studio/platform"
@@ -126,7 +127,7 @@ type Workspace struct {
 	ring          packetRing // 最近的收发，出错时取出原始报文记进日志
 	status        *widget.Label
 	stats         stats
-	evidence      evidence
+	evidence      diagnose.Evidence
 	tools         []fyne.Window // 自定义请求等工具窗口，主窗口关闭时一起关闭
 	historyWin    fyne.Window   // 打开着的历史报文窗口，只开一个
 	requestWin    fyne.Window   // 打开着的自定义请求窗口，只开一个
@@ -520,7 +521,7 @@ func (ws *Workspace) OnPacket(p modbus.Packet) {
 	if p.Dir == modbus.DirRX && p.Status == modbus.StatusSuccess {
 		ws.stats.rtt.Store(int64(p.RTT))
 	}
-	ws.evidence.observe(p)
+	ws.evidence.Observe(p)
 	ws.ring.push(p)
 	ws.traffic.push(p)
 	if l := ws.probeLog.Load(); l != nil {
@@ -583,10 +584,10 @@ func (ws *Workspace) refreshStatus() {
 	}
 	text := fmt.Sprintf("%s · %s %s%s · 超时 %d ms · 轮询 %d · 有效响应 %d · 错误 %d", state,
 		modeName[ws.session.mode], ws.session.desc, ws.session.linkStatus(), ws.timeout.Milliseconds(), ws.stats.polls.Load(), ws.stats.ok.Load(), ws.stats.errs.Load())
-	if n := ws.evidence.late.Load(); n > 0 {
+	if n := ws.evidence.Late(); n > 0 {
 		text += fmt.Sprintf(" · 晚到 %d", n)
 	}
-	if n := ws.evidence.foreign.Load(); n > 0 {
+	if n := ws.evidence.Foreign(); n > 0 {
 		text += fmt.Sprintf(" · 别的主站的响应 %d", n)
 	}
 	if r := currentRecorder(); r != nil && r.Dropped.Load() > 0 {

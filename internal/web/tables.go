@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"modbus-ai-studio/internal/diagnose"
 	"modbus-ai-studio/internal/modbus"
 	"modbus-ai-studio/internal/points"
 	"modbus-ai-studio/internal/recorder"
@@ -88,6 +89,7 @@ type table struct {
 	cancel   context.CancelFunc
 	status   string // waiting、ok、error、paused、offline
 	err      string
+	hint     string // 出错时的可能原因和处理建议（internal/diagnose，和桌面版同一套规则）
 	rtt      float64
 	updated  time.Time
 	polls    int
@@ -269,19 +271,29 @@ func (s *Server) poll(ctx context.Context, t *table) {
 	if errors.Is(err, modbus.ErrConnection) {
 		s.dev.linkDown(c, err)
 	}
+	// 出错分析在锁表之前做：要读设备的连接参数（设备的锁）
+	errText, hint := "", ""
+	if err != nil {
+		errText = explain(err)
+		if !errors.Is(err, modbus.ErrConnection) { // 断开交给自动重连，顶部状态和日志里说原因
+			r := diagnose.Analyze(diagnose.Request{Slave: byte(t.cfg.Slave), Function: t.fn, Start: t.start, Qty: t.cfg.Count,
+				Scan: time.Duration(t.cfg.IntervalMs) * time.Millisecond}, s.dev.diagContext(), err)
+			errText, hint = r.Text, strings.TrimSpace(r.Hint+" "+webAdvice(r))
+		}
+	}
 	t.mu.Lock()
 	t.polls++
 	t.updated = time.Now()
 	var logKind, logDetail string
 	if err != nil {
 		t.fails++
-		t.status, t.err = "error", explain(err)
+		t.status, t.err, t.hint = "error", errText, hint
 		if t.err != t.lastFail {
 			t.lastFail = t.err
 			logKind, logDetail = recorder.EventReadFail, fmt.Sprintf("%s 读取失败：%s", t.label(), t.err)
 		}
 	} else {
-		t.status, t.err, t.rtt = "ok", "", float64(time.Since(begin).Microseconds())/1000
+		t.status, t.err, t.hint, t.rtt = "ok", "", "", float64(time.Since(begin).Microseconds())/1000
 		t.rows = t.decode(resp)
 		if t.lastFail != "" {
 			t.lastFail = ""
@@ -305,7 +317,30 @@ func (t *table) label() string {
 	return fmt.Sprintf("读取表 %d", t.id)
 }
 
-// explain 把错误说成现场能直接处理的话。
+// webAdvice 把一键处理换成网页上的说法：网页上大多没有对应的按钮，告诉用户怎么做。
+func webAdvice(r diagnose.Result) string {
+	switch r.Action {
+	case diagnose.SetTimeout:
+		return fmt.Sprintf("建议把连接设置里的超时改为 %d ms 后重新连接。", r.Timeout.Milliseconds())
+	case diagnose.UseFC03, diagnose.UseFC04:
+		return "建议编辑读取表，" + r.Label + "。"
+	case diagnose.HalveQty:
+		return "建议编辑读取表，把数量减半。"
+	case diagnose.DoubleScan:
+		return "建议编辑读取表，把读取间隔加倍。"
+	case diagnose.ProbeRange:
+		return "建议缩小读取范围逐段核对；桌面版的“检测寄存器”可以自动逐点核对。"
+	case diagnose.ScanSlaves:
+		return "桌面版的“扫描从站地址”或 modbus-cli scan 可以找出在应答的站号。"
+	case diagnose.DetectProtocol:
+		return "建议点“识别协议”。"
+	case diagnose.ScanSerial:
+		return "桌面版的“扫描串口参数”可以逐个试波特率和校验位。"
+	}
+	return ""
+}
+
+// explain 把错误说成现场能直接处理的话（写入、连接这类不按读取表分析的错误）。
 func explain(err error) string {
 	if ex, ok := modbus.AsException(err); ok {
 		return fmt.Sprintf("%v。建议：%s", ex, ex.Code.Tip())
@@ -383,6 +418,7 @@ type tableView struct {
 	Paused   bool        `json:"paused"`
 	Status   string      `json:"status"`
 	Error    string      `json:"error,omitempty"`
+	Hint     string      `json:"hint,omitempty"`
 	RTT      float64     `json:"rtt"`
 	Updated  string      `json:"updated"`
 	Polls    int         `json:"polls"`
@@ -394,7 +430,7 @@ func (t *table) view() tableView {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	v := tableView{ID: t.id, Config: t.cfg, Title: t.title(), Writable: t.fn == modbus.FuncReadCoils || t.fn == modbus.FuncReadHoldingRegisters,
-		Paused: t.paused, Status: t.status, Error: t.err, RTT: t.rtt, Polls: t.polls, Fails: t.fails, Rows: t.rows}
+		Paused: t.paused, Status: t.status, Error: t.err, Hint: t.hint, RTT: t.rtt, Polls: t.polls, Fails: t.fails, Rows: t.rows}
 	if !t.updated.IsZero() {
 		v.Updated = t.updated.Format("15:04:05")
 	}

@@ -370,7 +370,7 @@ func (ws *Workspace) lossDiagnosis() diagnosis {
 		switch {
 		case same < 2:
 			dg.Hint = fmt.Sprintf("发出 %s 后连接被断开。如果每次都这样，说明设备不接受这条请求。", reqDesc(e.req))
-		case ws.evidence.okAt.Load() == 0:
+		case !ws.evidence.OKSeen():
 			dg.Hint = "每次发出请求设备就断开，一次正常响应都没有：多半是协议格式不对（Modbus TCP 设备收到 RTU / ASCII 帧会直接断开连接），" +
 				"也可能 Unit ID 不对（有的网关对不认识的站号直接断开）。"
 			dg.Action, dg.Do = "识别协议", ws.detectProtocol

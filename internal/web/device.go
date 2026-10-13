@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"modbus-ai-studio/internal/diagnose"
 	"modbus-ai-studio/internal/modbus"
 	"modbus-ai-studio/internal/recorder"
 	"modbus-ai-studio/internal/simulator"
@@ -112,6 +113,14 @@ type device struct {
 	ctx           context.Context // 本次连接，断开时结束（含重连和模拟器）
 	cancel        context.CancelFunc
 	netErr        error // 最近一次连接错误的原始错误（客户端返回的错误只留了文字），用来判断断开方式
+	evidence      diagnose.Evidence // 本次连接的通信证据：晚到响应的延迟、别的主站的响应，出错分析用
+}
+
+// diagContext 是出错分析用的现场情况：协议、超时、是否内置模拟器，以及本次连接的通信证据。
+func (d *device) diagContext() diagnose.Context {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return diagnose.Context{Mode: d.mode, Timeout: time.Duration(d.cfg.TimeoutMs) * time.Millisecond, Simulator: d.cfg.Simulator, Evidence: &d.evidence}
 }
 
 // current 返回可用的客户端，未连接时为 nil。
@@ -139,6 +148,7 @@ func (d *device) connect(cfg ConnConfig) error {
 		return err
 	}
 	d.disconnect()
+	d.evidence.Reset()
 	ctx, cancel := context.WithCancel(d.s.ctx)
 	target := cfg.Target
 	if cfg.Simulator {
@@ -221,6 +231,7 @@ func (d *device) dial(ctx context.Context) (c *modbus.Client, local, remote stri
 		if r := d.rec(); r != nil && session != 0 {
 			r.Record(session, p)
 		}
+		d.evidence.Observe(p)
 		d.s.packets.add(p)
 	})
 	return modbus.NewClient(t, opts), local, remote, nil

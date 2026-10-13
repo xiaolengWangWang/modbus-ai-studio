@@ -120,9 +120,10 @@ func runRead(ctx context.Context, addr, count string) {
 	defer c.Close()
 	fc := area.ReadFunction()
 	start := time.Now()
-	resp, err := c.Do(ctx, modbus.Request{Slave: byte(*slave), Function: fc, Address: off, Quantity: uint16(n)})
+	rq := modbus.Request{Slave: byte(*slave), Function: fc, Address: off, Quantity: uint16(n)}
+	resp, err := c.Do(ctx, rq)
 	if err != nil {
-		explain(err)
+		explain(rq, err)
 	}
 	res := readResult{OK: true, Mode: modeName(c.Mode()), Slave: *slave, Function: int(fc), Start: modbus.Reference(area, off), Count: n,
 		ElapsedMS: time.Since(start).Milliseconds(), Values: []readValue{}}
@@ -276,7 +277,7 @@ func runWrite(ctx context.Context, addr, text string) {
 		fmt.Printf("请求     %s\n\n", res.Request)
 	}
 	if _, err := c.Do(ctx, req); err != nil {
-		explain(err)
+		explain(req, err)
 	}
 	if !*jsonOut {
 		fmt.Println("协议写入：SUCCESS")
@@ -456,7 +457,7 @@ func runRaw(ctx context.Context, text string) {
 	resp, err := c.DoRaw(ctx, byte(*slave), pdu)
 	res := rawResult{OK: err == nil, Slave: *slave, Request: hexs(pdu), Response: hexs(resp)}
 	if err != nil && resp == nil {
-		explain(err)
+		explain(modbus.Request{Slave: byte(*slave), Function: modbus.FunctionCode(pdu[0])}, err)
 	}
 	if err != nil {
 		res.Error = err.Error()

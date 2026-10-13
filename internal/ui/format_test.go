@@ -65,9 +65,6 @@ func TestValueFormats(t *testing.T) {
 	if _, err := parseHex("1 03"); err == nil {
 		t.Error("奇数位应报错")
 	}
-	if suggestTimeout(1100) != 2000 || suggestTimeout(100) != 500 {
-		t.Errorf("超时建议 %d %d", suggestTimeout(1100), suggestTimeout(100))
-	}
 	if errSummary(errors.New("x")) != "x" {
 		t.Error("errSummary")
 	}

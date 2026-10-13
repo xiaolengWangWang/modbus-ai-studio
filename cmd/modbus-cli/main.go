@@ -5,13 +5,13 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
+	"modbus-ai-studio/internal/diagnose"
 	"modbus-ai-studio/internal/modbus"
 	"modbus-ai-studio/internal/transport"
 )
@@ -192,13 +192,42 @@ func fail(format string, a ...any) {
 	os.Exit(1)
 }
 
-// explain 把通信错误换成带建议的说明后报错。
-func explain(err error) {
-	if ex, ok := modbus.AsException(err); ok {
-		fail("%v。建议：%s", ex, ex.Code.Tip())
+// explain 说明通信错误后报错，见 describe。
+func explain(req modbus.Request, err error) { fail("%s", describe(req, err)) }
+
+// describe 用和桌面版、Web 版同一套规则（internal/diagnose）说明通信错误：出了什么错、可能的原因、建议怎么做。
+func describe(req modbus.Request, err error) string {
+	r := diagnose.Analyze(diagnose.Request{Slave: req.Slave, Function: req.Function, Start: req.Address, Qty: req.Count()},
+		diagnose.Context{Mode: mode(), Timeout: *timeout}, err)
+	text := r.Text
+	if r.Hint != "" {
+		text += "。" + strings.TrimSuffix(r.Hint, "。")
 	}
-	if errors.Is(err, modbus.ErrTimeout) {
-		fail("%v：%v 内没有匹配的响应。检查 Slave ID、协议类型和接线；加 -trace 查看报文", err, *timeout)
+	if a := cliAdvice(r); a != "" {
+		text += "。建议：" + a
 	}
-	fail("%v", err)
+	return text
+}
+
+// cliAdvice 把一键处理换成命令行上的做法。
+func cliAdvice(r diagnose.Result) string {
+	switch r.Action {
+	case diagnose.SetTimeout:
+		return fmt.Sprintf("加 -timeout %dms 重试", r.Timeout.Milliseconds())
+	case diagnose.UseFC03:
+		return "改用 -fc 3 读保持寄存器"
+	case diagnose.UseFC04:
+		return "改用 -fc 4 读输入寄存器"
+	case diagnose.HalveQty:
+		return "把数量减半"
+	case diagnose.ProbeRange:
+		return "缩小范围逐段读，找出哪些地址读不通"
+	case diagnose.ScanSlaves:
+		return "运行 scan 找出在应答的站号"
+	case diagnose.DetectProtocol:
+		return "运行 detect 识别协议，或加 -trace 查看收发报文"
+	case diagnose.ScanSerial:
+		return "核对 -baud、-parity、-stop 和站号，加 -trace 查看收发报文"
+	}
+	return ""
 }

@@ -123,25 +123,3 @@ func TestTrafficLineLateAndForeign(t *testing.T) {
 		t.Errorf("报文解析应说明是转发来的：%s", rows)
 	}
 }
-
-// 晚到帧的应答延迟按它回的那条请求记，不按收到它时正在等的请求；一键调大超时据此给值。别的主站的响应不算晚到。
-func TestEvidenceUsesLateRequest(t *testing.T) {
-	var ev evidence
-	owner := modbus.Packet{Slave: 1, Function: modbus.FuncReadHoldingRegisters, Address: 100}
-	rx := modbus.Packet{Dir: modbus.DirRX, Status: modbus.StatusLate, Slave: 9, Function: modbus.FuncReadHoldingRegisters, Address: 500}
-	rx.Err = &modbus.LateError{Request: owner, Timeout: time.Second, Elapsed: 2500 * time.Millisecond, Max: 3 * time.Second}
-	ev.observe(rx)
-	rx.Err = &modbus.LateError{Request: modbus.Packet{Slave: 2, Function: modbus.FuncReadHoldingRegisters}, Cancelled: true, Timeout: time.Second, Elapsed: 9 * time.Second, Max: 9 * time.Second}
-	ev.observe(rx)
-	rx.Err = &modbus.ForeignError{TxID: 0x1CA6}
-	ev.observe(rx)
-	if d := ev.delayOf(reqKey{1, modbus.FuncReadHoldingRegisters, 100}); d != 2500 {
-		t.Errorf("按回的那条请求记，只知道范围时取下限：%d ms", d)
-	}
-	if ev.delayOf(reqKey{9, modbus.FuncReadHoldingRegisters, 500}) != 0 || ev.delayOf(reqKey{2, modbus.FuncReadHoldingRegisters, 0}) != 0 {
-		t.Error("不应记到正在等的请求上；取消的请求不算超时")
-	}
-	if ev.late.Load() != 2 || ev.foreign.Load() != 1 {
-		t.Errorf("晚到 %d、别的主站的响应 %d", ev.late.Load(), ev.foreign.Load())
-	}
-}

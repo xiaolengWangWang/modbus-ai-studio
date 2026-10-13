@@ -249,7 +249,7 @@ func (ws *Workspace) connect() {
 			ws.setInputsEnabled(false)
 			ws.traffic.clear()
 			ws.stats.reset()
-			ws.evidence.reset()
+			ws.evidence.Reset()
 			for _, w := range ws.windows {
 				w.reset()
 				w.start()

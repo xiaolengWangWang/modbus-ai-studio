@@ -199,6 +199,7 @@ main {
   font-size: 13px;
   border-bottom: 1px solid var(--line);
 }
+.card .error-line .hint-line { color: var(--text); margin-top: 3px; }
 .card .scroll { max-height: 520px; overflow: auto; }
 
 table.grid {

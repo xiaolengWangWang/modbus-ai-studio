@@ -171,14 +171,15 @@ func runGet(ctx context.Context, names []string) {
 	res := getResult{OK: true, Mode: modeName(c.Mode()), Slave: *slave}
 	got := map[points.Key]pointValue{}
 	for _, r := range points.Ranges(selected) {
-		resp, err := c.Do(ctx, modbus.Request{Slave: byte(*slave), Function: r.Area.ReadFunction(), Address: r.Start, Quantity: uint16(r.Count)})
+		rq := modbus.Request{Slave: byte(*slave), Function: r.Area.ReadFunction(), Address: r.Start, Quantity: uint16(r.Count)}
+		resp, err := c.Do(ctx, rq)
 		for _, p := range selected {
 			if p.Area != r.Area || p.Offset < r.Start || int(p.Offset)+p.Regs() > int(r.Start)+r.Count {
 				continue
 			}
 			v := pointValue{Name: p.Name, Address: modbus.Reference(p.Area, p.Offset), Unit: p.Unit}
 			if err != nil {
-				v.Error = errorText(err)
+				v.Error = describe(rq, err)
 				res.OK = false
 				got[points.Key{Area: p.Area, Offset: p.Offset}] = v
 				continue
@@ -234,14 +235,6 @@ func runGet(ctx context.Context, names []string) {
 	if !res.OK {
 		os.Exit(1)
 	}
-}
-
-// errorText 是通信错误的简短说明，异常响应带上建议。
-func errorText(err error) string {
-	if ex, ok := modbus.AsException(err); ok {
-		return fmt.Sprintf("%v。建议：%s", ex, ex.Code.Tip())
-	}
-	return err.Error()
 }
 
 // ---- set：按点名写 ----
@@ -311,7 +304,7 @@ func runSet(ctx context.Context, name, text string) {
 	res := setResult{OK: rep.Result == control.ResultPass, Name: p.Name, Address: modbus.Reference(p.Area, p.Offset), Unit: p.Unit,
 		Original: p.Format(rep.Original), Target: p.Format(rep.Target), Result: string(rep.Result), Hint: rep.Hint, Readbacks: []readbackValue{}}
 	if rep.WriteErr != nil {
-		res.Hint = strings.TrimPrefix(res.Hint+"；写入："+errorText(rep.WriteErr), "；")
+		res.Hint = strings.TrimPrefix(res.Hint+"；写入："+describe(control.WriteRequest(tg, regs), rep.WriteErr), "；")
 	}
 	for _, rb := range rep.Readbacks {
 		v := readbackValue{AtMS: rb.At.Milliseconds()}

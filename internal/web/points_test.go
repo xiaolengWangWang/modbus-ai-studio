@@ -1,6 +1,7 @@
 package web
 
 import (
+	"strings"
 	"testing"
 
 	"modbus-ai-studio/internal/modbus"
@@ -67,5 +68,30 @@ func TestForeignPacketFlag(t *testing.T) {
 	got := r.since(0)
 	if len(got) != 2 || !got[0].Foreign || got[1].Foreign {
 		t.Fatalf("只有别的主站的帧标 foreign：%+v", got)
+	}
+}
+
+// 读取表出错时，原因和建议和桌面版同一套规则（internal/diagnose）；网页上没有的一键处理改成文字建议。
+func TestTableErrorUsesSharedDiagnosis(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	if code := e.call("POST", "/api/demo", nil, nil); code != 200 {
+		t.Fatalf("示例 %d", code)
+	}
+	if code := e.call("POST", "/api/tables", TableConfig{Slave: 1, Function: 3, Address: "0x0FA0", Count: 2}, nil); code != 200 {
+		t.Fatalf("新建读取表 %d", code)
+	}
+	st := e.wait("越界的读取表出错", func(st stateView) bool {
+		for _, tv := range st.Tables {
+			if tv.Status == "error" {
+				return true
+			}
+		}
+		return false
+	})
+	for _, tv := range st.Tables {
+		if tv.Status == "error" && (!strings.Contains(tv.Error, "异常 02 非法数据地址") || !strings.Contains(tv.Hint, "检测寄存器")) {
+			t.Errorf("出错说明：%q，建议：%q", tv.Error, tv.Hint)
+		}
 	}
 }

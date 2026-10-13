@@ -337,7 +337,11 @@ function updateCard(c, t) {
   c.stat.className = 'stat ' + t.status;
   c.pause.textContent = t.paused ? '继续' : '暂停';
   c.err.hidden = !t.error;
-  c.err.textContent = t.error || '';
+  const errKey = (t.error || '') + '|' + (t.hint || ''); // 原因和建议跟桌面版同一套规则（服务端给）
+  if (c.errKey !== errKey) {
+    c.errKey = errKey;
+    c.err.replaceChildren(t.error || '', ...(t.hint ? [h('div', { class: 'small hint-line' }, t.hint)] : []));
+  }
   c.el.classList.toggle('stale', t.status !== 'ok');
   t.rows.forEach((r, i) => {
     const cells = c.rows[i];
