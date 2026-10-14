@@ -433,6 +433,7 @@ func checkGitHubAssets(got []ghAsset, want []asset) error {
 }
 
 // publishGitHub 建草稿、逐个上传安装包（网络慢时一次传完会超时）并按 GitHub 算出的摘要核对，全对了再发布为最新版。
+// 已经发布过时只把说明改成本地的：发版后改了 dist/release-x.y.z.md，重跑 publish 即可更新两边的说明。
 func (r *release) publishGitHub(ctx context.Context, gh *api, m manifest, notes string) error {
 	var list []ghRelease
 	if err := gh.call(ctx, "GET", "/releases?per_page=20", nil, &list); err != nil {
@@ -453,10 +454,11 @@ func (r *release) publishGitHub(ctx context.Context, gh *api, m manifest, notes 
 			return err
 		}
 		r.log.Printf("已建 GitHub 草稿 %s", r.tag)
-	case rel.Draft && rel.Body != notes:
+	case rel.Body != notes:
 		if err := gh.call(ctx, "PATCH", fmt.Sprintf("/releases/%d", rel.ID), map[string]any{"body": notes}, &rel); err != nil {
 			return err
 		}
+		r.log.Printf("已更新 GitHub 上 %s 的说明", r.tag)
 	}
 	if rel.Body != notes || rel.Prerelease {
 		return permanent("GitHub 上 %s 的说明和本地不同或标成了预发布，到网页上处理：%s", r.tag, rel.HTMLURL)
@@ -623,6 +625,7 @@ func (r *release) publishGitee(ctx context.Context, gt *api, m manifest, notes s
 		if err := gt.call(ctx, "PATCH", fmt.Sprintf("/releases/%d", rel.ID), body, &rel); err != nil {
 			return err
 		}
+		r.log.Printf("已更新 Gitee 上 %s 的说明", r.tag)
 	}
 	files, err := giteeFiles(ctx, gt, rel.ID)
 	if err != nil {
