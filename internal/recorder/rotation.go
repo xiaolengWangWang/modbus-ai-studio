@@ -71,20 +71,39 @@ func today() string { return now().Format("20060102") }
 // dayKey separates the date from the per-day number in daily file indexes.
 const dayKey = 1_000_000
 
-// fileIndex orders database files. Numbered files (packets-000001.db) use their
+// legacyExt 是 1.5.0 及以前桌面版报文库的扩展名。之后新建的文件用 .sqlite3；老用户的 packets.db、
+// packets-000001.db 照样列出、接着写，写满后的下一个编号文件用 .sqlite3（不改名搬迁：别的实例可能正开着）。
+const legacyExt = ".db"
+
+// fileIndex orders database files. Numbered files (packets-000001.sqlite3) use their
 // number; daily files (packets-20261010-001.sqlite3) use date*dayKey + number.
+// Outside daily mode the legacy .db names count too, numbered together with the new ones.
 // int64 keeps the date key intact on 32-bit ARM.
 func (r *Recorder) fileIndex(path string) (int64, bool) {
-	if !r.daily && path == r.root {
-		return 0, true
-	}
 	ext := filepath.Ext(r.root)
-	prefix := strings.TrimSuffix(filepath.Base(r.root), ext) + "-"
-	name := filepath.Base(path)
-	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ext) {
-		return 0, false
+	stem := strings.TrimSuffix(filepath.Base(r.root), ext)
+	exts := []string{ext}
+	if !r.daily && ext != legacyExt {
+		exts = append(exts, legacyExt)
 	}
-	middle := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ext)
+	name := filepath.Base(path)
+	for _, e := range exts {
+		base, ok := strings.CutSuffix(name, e)
+		if !ok {
+			continue
+		}
+		if !r.daily && base == stem {
+			return 0, true
+		}
+		if middle, ok := strings.CutPrefix(base, stem+"-"); ok {
+			return r.numberIndex(middle)
+		}
+	}
+	return 0, false
+}
+
+// numberIndex parses the part after "packets-": 000001, or 20261010-001 in daily mode.
+func (r *Recorder) numberIndex(middle string) (int64, bool) {
 	if !r.daily {
 		n, err := strconv.ParseInt(middle, 10, 64)
 		return n, err == nil && n > 0
@@ -125,8 +144,8 @@ func (r *Recorder) Files() ([]string, error) {
 }
 
 // reserveFile creates the next empty database file and returns its path:
-// packets-000002.db after packets-000001.db, or in daily mode the next number
-// for today, packets-20261010-002.sqlite3.
+// packets-000002.sqlite3 after packets-000001.sqlite3 (or a legacy packets-000001.db),
+// or in daily mode the next number for today, packets-20261010-002.sqlite3.
 func (r *Recorder) reserveFile() (string, error) {
 	files, err := r.Files()
 	if err != nil {

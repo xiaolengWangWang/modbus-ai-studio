@@ -98,10 +98,12 @@ TCP 类连接断开后会自动重连（间隔 1 / 2 / 5 / 10 s），重连期�
 
 | 系统 | 数据库位置 |
 | --- | --- |
-| Windows | `%AppData%\ModbusAIStudio\packets.db` |
-| Windows 兼容版 | 程序目录的 `data\ModbusAIStudio\packets.db` |
-| macOS | `~/Library/Application Support/ModbusAIStudio/packets.db` |
-| Linux | `~/.config/ModbusAIStudio/packets.db` |
+| Windows | `%AppData%\ModbusAIStudio\packets.sqlite3` |
+| Windows 兼容版 | 程序目录的 `data\ModbusAIStudio\packets.sqlite3` |
+| macOS | `~/Library/Application Support/ModbusAIStudio/packets.sqlite3` |
+| Linux | `~/.config/ModbusAIStudio/packets.sqlite3` |
+
+1.5.0 及以前的文件名是 `packets.db`、`packets-000001.db`：升级后照样列出、接着写，写满后新建的编号文件用 `.sqlite3`。两种扩展名都是标准 SQLite 3 文件。
 
 单个文件上限 50 MB，写满后自动创建编号文件，旧文件保留。主窗口“日志”页可看当前运行中的连接和读取故障；“调试 → 历史报文”可选择数据库文件查看以前的报文和日志，包括没有发出报文的连接失败。表结构和查询 SQL 见 [使用说明 · 报文记录与历史](guide.md#报文记录与历史)。
 
@@ -109,7 +111,7 @@ TCP 类连接断开后会自动重连（间隔 1 / 2 / 5 / 10 s），重连期�
 
 - **Windows 双击没反应或弹窗说显卡不支持 OpenGL**：远程桌面、虚拟机、老工控机、显卡驱动有问题时常见。下载兼容版 `ModbusAIStudio-x.y.z-Windows-x64-Compat.zip`，解压后运行。兼容版自带 Mesa 软件渲染，不依赖显卡，启动稍慢、CPU 占用稍高。普通版的运行日志在 `%AppData%\ModbusAIStudio\app.log`。
 - **Windows 7 / 8 / 8.1**：普通版不支持，用兼容版（64 位）。兼容版按 Win7 编译，但发布前只在 Windows 10 / 11 上实测过。
-- **兼容版的数据在哪**：程序目录的 `data` 文件夹（日志 `data\ModbusAIStudio\app.log`、报文 `data\ModbusAIStudio\packets.db`、设置），和普通版分开，整个文件夹可以拷到别的电脑。程序目录不能写（例如放在 `C:\Program Files` 下）时仍放在 `%AppData%`。
+- **兼容版的数据在哪**：程序目录的 `data` 文件夹（日志 `data\ModbusAIStudio\app.log`、报文 `data\ModbusAIStudio\packets.sqlite3`、设置），和普通版分开，整个文件夹可以拷到别的电脑。程序目录不能写（例如放在 `C:\Program Files` 下）时仍放在 `%AppData%`。
 - **兼容版想改回用显卡**：换用普通版即可；或者删掉兼容版目录里的 `opengl32.dll` 和 `libgallium_wgl.dll`（Win7 上不能删，普通版不支持 Win7）。
 - **macOS 提示无法打开**：安装包是 ad-hoc 签名，第一次打开要在“系统设置 → 隐私与安全性”里点“仍要打开”。
 - **macOS 想同时开两个进程**：一般用“文件 → 新建窗口”就够了；确实需要第二个进程时运行 `open -n "/Applications/Modbus AI Studio.app"`。

@@ -151,8 +151,9 @@ type Recorder struct {
 	sent      txFrames     // 最近的请求帧，异常行写入 anomalies 时配对
 }
 
-// DefaultPath 返回本机数据库位置：macOS 为 ~/Library/Application Support/ModbusAIStudio/packets.db，
-// Windows 为 %AppData%\ModbusAIStudio\packets.db。写满后使用同目录下的编号文件。
+// DefaultPath 返回本机数据库位置：macOS 为 ~/Library/Application Support/ModbusAIStudio/packets.sqlite3，
+// Windows 为 %AppData%\ModbusAIStudio\packets.sqlite3。写满后使用同目录下的编号文件。
+// 1.5.0 及以前是 packets.db：已有的照样接着写（见 legacyExt）。
 func DefaultPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -162,7 +163,7 @@ func DefaultPath() (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "packets.db"), nil
+	return filepath.Join(dir, "packets.sqlite3"), nil
 }
 
 // Open 打开（不存在时创建）数据库。WAL 模式，多个进程可以同时写。

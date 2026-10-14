@@ -375,3 +375,41 @@ func TestDatabaseRotatesAt50MBWithoutLosingHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// 1.5.0 及以前的 packets.db、packets-000001.db：新版本的主文件名是 packets.sqlite3，旧文件照样列出、
+// 接着写编号最大的那个，写满后的下一个编号文件用 .sqlite3。没有旧文件时从 packets.sqlite3 开始。
+func TestLegacyDBFilesContinue(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"packets.db", "packets-000001.db"} {
+		r, err := Open(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Close()
+	}
+	r, err := Open(filepath.Join(dir, "packets.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	files, err := r.Files()
+	if err != nil || len(files) != 2 || filepath.Base(files[0]) != "packets.db" || filepath.Base(files[1]) != "packets-000001.db" {
+		t.Fatalf("应列出两个旧文件：%v %v", files, err)
+	}
+	if filepath.Base(r.Path()) != "packets-000001.db" {
+		t.Errorf("应接着写编号最大的旧文件，实际 %s", r.Path())
+	}
+	next, err := r.reserveFile()
+	if err != nil || filepath.Base(next) != "packets-000002.sqlite3" {
+		t.Errorf("下一个编号文件应是 packets-000002.sqlite3：%s %v", next, err)
+	}
+
+	fresh, err := Open(filepath.Join(t.TempDir(), "packets.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fresh.Close()
+	if filepath.Base(fresh.Path()) != "packets.sqlite3" {
+		t.Errorf("没有旧文件时应从 packets.sqlite3 开始：%s", fresh.Path())
+	}
+}

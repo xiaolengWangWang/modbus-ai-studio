@@ -1,6 +1,6 @@
 # SQLite3 数据文件与表结构
 
-程序直接读写标准 SQLite3 文件，SQLite 引擎随 Go 程序使用，不构建或附带 `sqlite3.exe` 等命令行工具。桌面版现有文件名为 `packets.db`、`packets-000001.db`；按天记录时为 `packets-YYYYMMDD-001.sqlite3`。扩展名不同，文件格式相同。
+程序直接读写标准 SQLite3 文件，SQLite 引擎随 Go 程序使用，不构建或附带 `sqlite3.exe` 等命令行工具。桌面版文件名为 `packets.sqlite3`、`packets-000001.sqlite3`；按天记录（Web 版）时为 `packets-YYYYMMDD-001.sqlite3`。1.5.0 及以前桌面版用 `packets.db`、`packets-000001.db`，升级后照样列出、接着写，和新的编号文件排在一起；扩展名不同，文件格式相同。
 
 建表定义统一保存在 `internal/recorder/recorder.go` 的 `schema` 中。下面说明字段含义和查询方式，不维护另一份建表脚本。
 
