@@ -631,21 +631,65 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func TestCleanRemovesOlderVersionsOnly(t *testing.T) {
-	r := testRelease(t, "1.0.3")
-	for _, name := range []string{"ModbusAIStudio-1.0.2-Windows-x64.zip", "release-0.11.15.md", "release-1.0.3.md", "release-1.0.10-summary.md", "AppIcon.icns"} {
-		os.WriteFile(filepath.Join(r.dist, name), nil, 0o644)
+func TestCleanPreservesVersionedAssets(t *testing.T) {
+	root := t.TempDir()
+	r := &release{dist: filepath.Join(root, "dist", "v2.0.0"), version: "2.0.0", log: log.New(io.Discard, "", 0)}
+	for _, version := range []string{"1.5.0", "2.0.0"} {
+		dir := filepath.Join(root, "dist", "v"+version)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"ModbusAIStudio-" + version + "-Windows-x64.zip", "ModbusAIStudio-" + version + "-Windows-x64.zip.sha256", "release-" + version + ".md"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(version), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
-	os.MkdirAll(filepath.Join(r.dist, "ModbusAIStudio-1.0.2-Windows-x64"), 0o755)
+	for _, name := range []string{"ci-2.0.0", "gitee-2.0.0"} {
+		if err := os.Mkdir(filepath.Join(r.dist, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := r.clean(); err != nil {
 		t.Fatal(err)
 	}
-	entries, _ := os.ReadDir(r.dist)
-	var left []string
-	for _, e := range entries {
-		left = append(left, e.Name())
+	for _, version := range []string{"1.5.0", "2.0.0"} {
+		dir := filepath.Join(root, "dist", "v"+version)
+		for _, name := range []string{"ModbusAIStudio-" + version + "-Windows-x64.zip", "ModbusAIStudio-" + version + "-Windows-x64.zip.sha256", "release-" + version + ".md"} {
+			if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+				t.Fatalf("%s should remain: %v", name, err)
+			}
+		}
 	}
-	if want := []string{"AppIcon.icns", "release-1.0.10-summary.md", "release-1.0.3.md"}; !slices.Equal(left, want) {
-		t.Fatalf("剩下 %v，应为 %v", left, want)
+	for _, name := range []string{"ci-2.0.0", "gitee-2.0.0"} {
+		if _, err := os.Stat(filepath.Join(r.dist, name)); !os.IsNotExist(err) {
+			t.Fatalf("temporary directory %s should be removed: %v", name, err)
+		}
+	}
+}
+
+func TestReleaseDistUsesVersionDirectory(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "cmd", "modbus-ai")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "main.go"), []byte("package main\nvar version = \"2.0.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(previous) })
+	r, err := open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(r.root, "dist", "v2.0.0"); r.dist != want {
+		t.Fatalf("release.dist = %q, want %q", r.dist, want)
 	}
 }

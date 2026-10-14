@@ -1,14 +1,14 @@
 // release 在本机发版：等 GitHub Actions 测试和打包，下载并核对桌面版三个安装包和 Linux Web 版两个包，
 // 发布到 GitHub 和 Gitee，再核对发布结果。
-// 版本号取自 cmd/modbus-ai/main.go，发布说明取自 dist/release-<版本>-summary.md（第一行“# Modbus AI Studio <版本>”）。
+// 版本号取自 cmd/modbus-ai/main.go，发布说明取自 dist/v<版本>/release-<版本>-summary.md（第一行“# Modbus AI Studio <版本>”）。
 //
 //	go run ./build/release prepare  # 等测试通过、打包，下载并核对安装包，生成带 SHA-256 的发布说明
-//	go run ./build/release publish  # 打 tag，发布到 GitHub 和 Gitee，核对下载和检查更新，删掉旧版本的文件
+//	go run ./build/release publish  # 打 tag，发布到 GitHub 和 Gitee，核对下载和检查更新
 //	go run ./build/release verify   # 只核对已发布的结果
-//	go run ./build/release clean    # 删掉 dist/ 里旧版本的文件
+//	go run ./build/release clean    # 删掉当前版本的临时下载目录
 //
 // 每一步先查已有状态再动手，网络出错自动重试；仍失败时重跑同一条命令，做完的步骤会跳过。
-// 过程同时记在 dist/release-<版本>.log。
+// 过程同时记在 dist/v<版本>/release-<版本>.log。
 package main
 
 import (
@@ -89,7 +89,7 @@ func open() (*release, error) {
 	if v == "" {
 		return nil, errors.New("cmd/modbus-ai/main.go 里没找到 x.y.z 形式的版本号")
 	}
-	dist := filepath.Join(root, "dist")
+	dist := filepath.Join(root, "dist", "v"+v)
 	if err := os.MkdirAll(dist, 0o755); err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func versionOf(src []byte) string {
 	return ""
 }
 
-// file 是 dist/ 下这个版本的发布文件：release-<版本><suffix>。
+// file 是 dist/v<版本>/ 下这个版本的发布文件：release-<版本><suffix>。
 func (r *release) file(suffix string) string {
 	return filepath.Join(r.dist, "release-"+r.version+suffix)
 }
@@ -209,7 +209,7 @@ func (r *release) checkPushed(ctx context.Context, gh *api, head string) error {
 	return nil
 }
 
-// publish 打 tag，发布到 GitHub 和 Gitee，核对发布结果，最后删掉旧版本的文件。
+// publish 打 tag，发布到 GitHub 和 Gitee，核对发布结果，最后清理临时下载目录。
 func (r *release) publish(ctx context.Context) error {
 	m, notes, err := r.load()
 	if err != nil {
@@ -328,24 +328,12 @@ func (r *release) verify(ctx context.Context) error {
 	return os.RemoveAll(dir)
 }
 
-var versionInName = regexp.MustCompile(`\d+\.\d+\.\d+`)
-
-// clean 删掉 dist/ 里比当前版本旧的文件（安装包、解压目录、发布记录）。正在运行的程序删不掉，跳过。
+// clean 只清理当前版本的 CI 和 Gitee 临时下载目录，保留所有版本的安装包和发布记录。
 func (r *release) clean() error {
-	entries, err := os.ReadDir(r.dist)
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		v := versionInName.FindString(e.Name())
-		if v == "" || !update.Newer(r.version, v) {
-			continue
+	for _, name := range []string{"ci-" + r.version, "gitee-" + r.version} {
+		if err := os.RemoveAll(filepath.Join(r.dist, name)); err != nil {
+			return fmt.Errorf("清理 %s：%w", name, err)
 		}
-		if err := os.RemoveAll(filepath.Join(r.dist, e.Name())); err != nil {
-			r.log.Printf("没删掉 %s（程序正开着？）：%v", e.Name(), err)
-			continue
-		}
-		r.log.Printf("已删除 %s", e.Name())
 	}
 	return nil
 }

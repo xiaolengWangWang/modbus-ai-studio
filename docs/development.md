@@ -56,14 +56,14 @@ AI 界面由 `ai.go` 管理设置、来源、异步请求与取消；`ai_context
 
 `toolbar.go` 的分组换行与面板布局根据当前宽度预留工具栏高度，供主窗口、读取窗口、报文区和 AI 助手使用。读取窗口嵌套诊断区按实际宽度计算高度，顶部滚动区域显式保留完整内容范围，表格独立布局。`gui_test.go` 验证窄面板按钮、查找输入框、计数、AI 顶部操作以及空记录 / 无匹配 / 暂停提示；回归同时覆盖窄读取窗口、完整错误宽度、矮窗口滚动、实际连接过程和检测期间的状态恢复；原生截图另覆盖紧凑 AI 窗口、报文无匹配与读取诊断滚动。
 
-`dist/` 只留最新版本的安装包、校验值和发布记录：发版最后自动删掉旧版本的文件，也可单独运行 `go run ./build/release clean`。发版不用 `bin/` 里的脚本，`bin/` 只放编译输出和 `go-winres` 这类工具；源码、资源和测试按上表存放。
+`dist/vX.Y.Z/` 分版本保留安装包、校验值和发布记录；`go run ./build/release clean` 只清理当前版本的临时下载目录。发版不用 `bin/` 里的脚本，`bin/` 只放编译输出和 `go-winres` 这类工具；源码、资源和测试按上表存放。
 
 ## 常用命令
 
 ```sh
 go run ./cmd/modbus-ai              # 运行桌面应用（启动时为空；“读取 → 打开换热站示例”加载示例并连接内置模拟器）
-build/macos.sh                      # 打包 dist/ 下的 Intel 与 Apple Silicon .app 和 DMG（版本号取自 cmd/modbus-ai/main.go）
-build/windows.sh                    # 交叉编译 Windows x64 绿色版 zip（需要 brew install mingw-w64）
+build/macos.sh                      # 打包 dist/vX.Y.Z/ 下的 Intel 与 Apple Silicon .app 和 DMG（版本号取自 cmd/modbus-ai/main.go）
+build/windows.sh                    # 交叉编译 Windows x64 标准版与兼容版 zip（需要 brew install mingw-w64）
 build/linux-web.sh                  # 编 Linux Web 版 x64 / ARM64 的 tar.gz（不需要 cgo；装了加密软件的电脑上会因说明被加密而停止）
 go run ./cmd/modbus-web -listen 127.0.0.1:8502 -data /tmp/web   # 本机运行 Web 版，终端打印地址和访问口令
 
@@ -108,25 +108,25 @@ Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\Modbus
 版本号只写在 `cmd/modbus-ai/main.go` 的 `version` 一处，打包脚本、`package` 工作流和发版工具都从这里取。发版用 Go 写的 `build/release`，不用按版本复制脚本：
 
 1. 改 `version`，在 `platform/windows/README.txt`（打进 zip 的说明）的更新记录里加这一版，提交并推送。
-2. 写发布说明 `dist/release-x.y.z-summary.md`，第一行 `# Modbus AI Studio x.y.z`；不写 SHA-256 段落。
+2. 写发布说明 `dist/vx.y.z/release-x.y.z-summary.md`，第一行 `# Modbus AI Studio x.y.z`；不写 SHA-256 段落。
 3. `go run ./build/release prepare`：
    - 确认 GitHub 上的 main 就是本地 HEAD、版本号比已发布的新，`platform/windows/README.txt` 里有这一版的更新记录（`### x.y.z …` 标题）；
    - 等 `test` 工作流在五种架构上通过；这个提交还没打过包就触发 `package` 工作流，它在 GitHub Actions 上调用 `build/windows.sh`、`build/linux-web.sh`、`build/cli.sh` 和 `build/macos.sh`，再在五种架构上运行 `build/smoke.sh`，本机不需要 macOS 编译环境；macOS runner 排不上、任务被取消时自动重跑；
    - 下载两个产物，按 GitHub 记录的摘要核对，再逐个检查安装包：DMG 结尾有 koly 块；Windows zip 只有 `ModbusAIStudio.exe` 和 `README.txt`（兼容版另有 Mesa 的两个 DLL 和 `Mesa-LICENSE.txt`）、路径用 `/`，README 是没被加密的 UTF-8 BOM + CRLF 文本、带这一版的更新记录，exe 的文件版本、`GLFW_ICON` 图标和 per monitor v2 高 DPI 清单都在；兼容版的 exe 是 go-legacy-win7 编译的（有 `SystemFunction036`），exe 和 Mesa 都没有静态导入常见的 Win8 起才有的函数；Web 版 tar.gz 只有可执行的 `modbus-web` 和明文 `README.txt`，程序是对应架构（x86-64 / ARM64）的 Linux ELF，说明里有这一版的版本号；modbus-cli 的包只有程序和明文 `README.txt`，程序是包名里那个系统和 CPU 的（PE / Mach-O / ELF），tar.gz 里有可执行位，说明里有这一版的版本号；
-   - 生成 `dist/release-x.y.z.md`（说明末尾加 `## SHA-256` 段落，每行 `校验值  文件名`，自动更新按它校验下载的安装包）、各安装包的 `.sha256` 和记录 `release-x.y.z-assets.json`；Windows 版另解压到 `dist/ModbusAIStudio-x.y.z-Windows-x64/`，可以直接试用。
-4. 看一遍 `dist/release-x.y.z.md`，运行 `go run ./build/release publish`：
+   - 生成 `dist/vx.y.z/release-x.y.z.md`（说明末尾加 `## SHA-256` 段落，每行 `校验值  文件名`，自动更新按它校验下载的安装包）、各安装包的 `.sha256` 和记录 `release-x.y.z-assets.json`；Windows 版另解压到同一版本目录下的 `ModbusAIStudio-x.y.z-Windows-x64/`，可以直接试用。
+4. 看一遍 `dist/vx.y.z/release-x.y.z.md`，运行 `go run ./build/release publish`：
    - 在打包的提交上打 tag，推到 GitHub；建草稿，逐个上传全部 11 个包（网络慢时一次传完会超时），按 GitHub 算出的摘要核对后发布为最新版；
    - 把这个提交和 tag 推到 Gitee 镜像，建发行版，上传全部 11 个包；Gitee 没有草稿，传完之前检查更新会改用 GitHub 上的同一版本；
    - 核对结果（也可单独运行 `verify`）：两边的说明都与本地一致；不带令牌从 Gitee 下载全部包，SHA-256 与 CI 产物一致；用程序自己的检查更新代码确认优先查到 Gitee 上的新版本，四个桌面版安装包和校验值都对，GitHub 可作备用下载源；
-   - 删掉 `dist/` 里旧版本的文件。
+   - 清理当前版本目录的临时下载文件，保留各版本构建和发布记录。
 
 安装包文件名不要改：程序检查更新时同时查 Gitee 和 GitHub，按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包；兼容版（`-tags compat`）只认 `-Windows-x64-Compat.zip`，免得更新成 Win7 上起不来的普通版，普通版按结尾也不会取到兼容版。Web 版的包（`ModbusAIStudio-Web-x.y.z-Linux-x64.tar.gz`、`-Linux-arm64.tar.gz`）只随发布上传，检查更新不认它们，Web 版没有自动更新，换新版本时替换程序后重启。modbus-cli 的包用小写的 `modbus-cli-x.y.z-windows-x64.zip` 这类名字，结尾和安装包不同：旧版本的检查更新只看结尾，同结尾就会把 CLI 的包当成更新下载；1.4.0 起检查更新还要求文件名以 `ModbusAIStudio-` 加版本号开头。
 
 凭据：GitHub 用 git 凭据管理器里推送用的令牌（或环境变量 `GH_TOKEN`）；Gitee 用 `~/.gitee_token` 里的私人令牌（勾选 projects，或环境变量 `GITEE_TOKEN`），推送走 https，由工具回答 git 的用户名和密码提问，令牌不出现在命令行里。
 
-每一步先查已有状态再动手，网络出错自动重试；仍失败时重跑同一条命令，已完成的步骤会跳过。过程记在 `dist/release-x.y.z.log`。
+每一步先查已有状态再动手，网络出错自动重试；仍失败时重跑同一条命令，已完成的步骤会跳过。过程记在 `dist/vx.y.z/release-x.y.z.log`。
 
-发布前会先验证两侧凭据、本地安装包名称与 SHA-256、发布说明中的校验值，再执行推 tag 和远程发布。可以编辑发布正文，校验段必须与核对过的安装包一致。发布说明写短：几条一行的要点，下载说明放在 `## 下载` 下（程序的更新提示不显示它）。发布后要改说明，编辑 `dist/release-x.y.z.md` 再运行一次 `publish`，两边的说明都会更新并重新核对。
+发布前会先验证两侧凭据、本地安装包名称与 SHA-256、发布说明中的校验值，再执行推 tag 和远程发布。可以编辑发布正文，校验段必须与核对过的安装包一致。发布说明写短：几条一行的要点，下载说明放在 `## 下载` 下（程序的更新提示不显示它）。发布后要改说明，编辑 `dist/vx.y.z/release-x.y.z.md` 再运行一次 `publish`，两边的说明都会更新并重新核对。
 
 ## Linux Web 版
 
