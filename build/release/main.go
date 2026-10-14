@@ -35,6 +35,7 @@ type release struct {
 	root, dist string
 	version    string
 	tag        string
+	branch     string
 	log        *log.Logger
 }
 
@@ -89,6 +90,16 @@ func open() (*release, error) {
 	if v == "" {
 		return nil, errors.New("cmd/modbus-ai/main.go 里没找到 x.y.z 形式的版本号")
 	}
+	cmd := exec.Command("git", "branch", "--show-current")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("读取当前 Git 分支：%w", err)
+	}
+	branch := strings.TrimSpace(string(out))
+	if err := releaseBranchForVersion(branch, v); err != nil {
+		return nil, err
+	}
 	dist := filepath.Join(root, "dist", "v"+v)
 	if err := os.MkdirAll(dist, 0o755); err != nil {
 		return nil, err
@@ -97,7 +108,18 @@ func open() (*release, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &release{root, dist, v, "v" + v, log.New(io.MultiWriter(os.Stdout, f), "", log.Ldate|log.Ltime)}, nil
+	return &release{root: root, dist: dist, version: v, tag: "v" + v, branch: branch, log: log.New(io.MultiWriter(os.Stdout, f), "", log.Ldate|log.Ltime)}, nil
+}
+
+func releaseBranchForVersion(branch, version string) error {
+	if branch == "main" {
+		return nil
+	}
+	parts := strings.Split(version, ".")
+	if len(parts) == 3 && branch == "maintenance/v"+parts[0]+"."+parts[1] {
+		return nil
+	}
+	return fmt.Errorf("当前分支 %q 不能发布 %s：请切到 main 或 maintenance/v主版本.次版本", branch, version)
 }
 
 // readmeTemplate 是打进 Windows zip 的明文说明模板；prepare 会检查提交中的内容没有被加密软件改成密文。
@@ -145,7 +167,7 @@ func (r *release) prepare(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := retry(ctx, r.log, "核对 GitHub 上的 main", func() error { return r.checkPushed(ctx, gh, head) }); err != nil {
+	if err := retry(ctx, r.log, "核对 GitHub 上的 "+r.branch, func() error { return r.checkPushed(ctx, gh, head) }); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 90*time.Minute)
@@ -186,18 +208,18 @@ func (r *release) prepare(ctx context.Context) error {
 	return nil
 }
 
-// checkPushed 确认 GitHub 上的 main 就是本地 HEAD，且版本号比已发布的新。
+// checkPushed 确认 GitHub 上的当前分支就是本地 HEAD，且版本号比已发布的新。
 func (r *release) checkPushed(ctx context.Context, gh *api, head string) error {
 	var ref struct {
 		Object struct {
 			SHA string `json:"sha"`
 		} `json:"object"`
 	}
-	if err := gh.call(ctx, "GET", "/git/ref/heads/main", nil, &ref); err != nil {
+	if err := gh.call(ctx, "GET", "/git/ref/heads/"+r.branch, nil, &ref); err != nil {
 		return err
 	}
 	if ref.Object.SHA != head {
-		return permanent("GitHub 上的 main 是 %.8s，本地 HEAD 是 %.8s：先推送，或切到要发布的提交", ref.Object.SHA, head)
+		return permanent("GitHub 上的 %s 是 %.8s，本地 HEAD 是 %.8s：先推送，或切到要发布的提交", r.branch, ref.Object.SHA, head)
 	}
 	var latest ghRelease
 	if err := gh.call(ctx, "GET", "/releases/latest", nil, &latest); err != nil && !isStatus(err, 404) {

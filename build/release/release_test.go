@@ -774,6 +774,9 @@ func TestReleaseDistUsesVersionDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(source, "main.go"), []byte("package main\nvar version = \"2.0.0\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if out, err := exec.Command("git", "init", "-q", "-b", "main", root).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
 	previous, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -788,5 +791,83 @@ func TestReleaseDistUsesVersionDirectory(t *testing.T) {
 	}
 	if want := filepath.Join(r.root, "dist", "v2.0.0"); r.dist != want {
 		t.Fatalf("release.dist = %q, want %q", r.dist, want)
+	}
+}
+
+func TestReleaseBranchForVersion(t *testing.T) {
+	for _, tc := range []struct {
+		branch, version string
+		valid           bool
+	}{
+		{"main", "2.0.0", true},
+		{"maintenance/v2.0", "2.0.1", true},
+		{"maintenance/v1.5", "2.0.1", false},
+		{"feat/versioned-builds", "2.0.0", false},
+		{"", "2.0.0", false},
+	} {
+		if err := releaseBranchForVersion(tc.branch, tc.version); (err == nil) != tc.valid {
+			t.Errorf("branch %q version %q: error %v, valid %v", tc.branch, tc.version, err, tc.valid)
+		}
+	}
+}
+
+func TestCheckPushedUsesMaintenanceBranch(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	var seen string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if strings.HasPrefix(req.URL.Path, "/git/ref/heads/") {
+			seen = req.URL.Path
+			io.WriteString(w, `{"object":{"sha":"`+head+`"}}`)
+			return
+		}
+		if req.URL.Path == "/releases/latest" {
+			io.WriteString(w, `{"tag_name":"v1.9.9"}`)
+			return
+		}
+		http.NotFound(w, req)
+	}))
+	defer srv.Close()
+	r := testRelease(t, "2.0.1")
+	r.branch = "maintenance/v2.0"
+	if err := r.checkPushed(context.Background(), &api{base: srv.URL}, head); err != nil {
+		t.Fatal(err)
+	}
+	if seen != "/git/ref/heads/maintenance/v2.0" {
+		t.Fatalf("checked %q", seen)
+	}
+}
+
+func TestDispatchPackageUsesMaintenanceBranch(t *testing.T) {
+	var ref string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/actions/workflows/package.yml/dispatches" {
+			http.NotFound(w, req)
+			return
+		}
+		var body struct {
+			Ref string `json:"ref"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		ref = body.Ref
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	r := testRelease(t, "2.0.1")
+	r.branch = "maintenance/v2.0"
+	if err := r.dispatchPackage(context.Background(), &api{base: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	if ref != r.branch {
+		t.Fatalf("dispatched ref %q", ref)
+	}
+}
+
+func TestGiteeBranchRef(t *testing.T) {
+	r := testRelease(t, "2.0.1")
+	r.branch = "maintenance/v2.0"
+	if got := r.giteeBranchRef(); got != "refs/heads/maintenance/v2.0" {
+		t.Fatalf("Gitee branch ref = %q", got)
 	}
 }

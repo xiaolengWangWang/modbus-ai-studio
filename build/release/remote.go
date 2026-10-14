@@ -316,8 +316,7 @@ func (r *release) waitCI(ctx context.Context, gh *api, head string) (run, error)
 		}
 		if pkg == nil && !dispatched {
 			if err := retry(ctx, r.log, "触发打包", func() error {
-				return gh.call(ctx, "POST", "/actions/workflows/package.yml/dispatches",
-					map[string]any{"ref": "main", "inputs": map[string]string{"version": r.version}}, nil)
+				return r.dispatchPackage(ctx, gh)
 			}); err != nil {
 				return run{}, err
 			}
@@ -345,6 +344,11 @@ func (r *release) waitCI(ctx context.Context, gh *api, head string) (run, error)
 		case <-time.After(30 * time.Second):
 		}
 	}
+}
+
+func (r *release) dispatchPackage(ctx context.Context, gh *api) error {
+	return gh.call(ctx, "POST", "/actions/workflows/package.yml/dispatches",
+		map[string]any{"ref": r.branch, "inputs": map[string]string{"version": r.version}}, nil)
 }
 
 // downloadArtifacts 下载 package 工作流的两个产物，按 GitHub 记录的 SHA-256 摘要核对。
@@ -555,7 +559,7 @@ type giteeFile struct {
 	URL  string `json:"browser_download_url"`
 }
 
-// pushGitee 把打包的提交推到 Gitee 的 main，并推 tag。用 https + 私人令牌：
+// pushGitee 把打包的提交推到 Gitee 的同名分支，并推 tag。用 https + 私人令牌：
 // git 问用户名和密码时由本程序回答（askpass），令牌不进命令行；清空 credential.helper，不让凭据管理器插手。
 func (r *release) pushGitee(ctx context.Context, commit string) error {
 	exe, err := os.Executable()
@@ -563,9 +567,11 @@ func (r *release) pushGitee(ctx context.Context, commit string) error {
 		return err
 	}
 	_, err = r.git(ctx, []string{"GIT_ASKPASS=" + exe, askpassEnv + "=1"},
-		"-c", "credential.helper=", "push", giteeGit, commit+":refs/heads/main", "refs/tags/"+r.tag)
+		"-c", "credential.helper=", "push", giteeGit, commit+":"+r.giteeBranchRef(), "refs/tags/"+r.tag)
 	return err
 }
+
+func (r *release) giteeBranchRef() string { return "refs/heads/" + r.branch }
 
 // askpass 回答 git 推送 Gitee 时的提问：用户名是仓库所有者，密码是 Gitee 私人令牌。
 func askpass() {
