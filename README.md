@@ -21,17 +21,17 @@
 
 ## 下载
 
-[GitHub Releases](https://github.com/xiaolengWangWang/modbus-ai-studio/releases) 提供（国内访问慢时用 [Gitee 镜像](https://gitee.com/sun_xuanqi/modbus_ai_studio/releases)）：
+[GitHub Releases](https://github.com/xiaolengWangWang/modbus-ai-studio/releases) 提供 2.0.0 的以下版本（国内访问慢时用 [Gitee 镜像](https://gitee.com/sun_xuanqi/modbus_ai_studio/releases)）：
 
 | 文件 | 适用 |
 | --- | --- |
-| `ModbusAIStudio-x.y.z-Windows-x64.zip` | Windows 10 / 11 64 位。绿色版，解压后双击 `ModbusAIStudio.exe` |
-| `ModbusAIStudio-x.y.z-Windows-x64-Compat.zip` | Windows 兼容版：远程桌面、虚拟机、老工控机、显卡驱动有问题，或 Windows 7 / 8 / 8.1 64 位。自带软件渲染，不依赖显卡；数据放在程序目录的 `data` 文件夹 |
-| `ModbusAIStudio-x.y.z-macOS-AppleSilicon.dmg` | M 系列芯片的 Mac，macOS 12 及以上 |
-| `ModbusAIStudio-x.y.z-macOS-Intel.dmg` | Intel 芯片的 Mac，macOS 12 及以上 |
-| `ModbusAIStudio-Web-x.y.z-Linux-x64.tar.gz` | Linux x86-64 网关、服务器上的 Web 版。解压后运行 `./modbus-web`，用浏览器打开终端打印的地址 |
-| `ModbusAIStudio-Web-x.y.z-Linux-arm64.tar.gz` | Linux ARM64（树莓派 4 / 5、多数 ARM 网关）上的 Web 版 |
-| `modbus-cli-x.y.z-<系统>-<架构>.zip / .tar.gz` | 命令行工具 modbus-cli：windows-x64、macos-x64 / macos-arm64、linux-x64 / linux-arm64。加 `-json` 输出 JSON，方便脚本和 AI 调用，见 [命令行工具](docs/guide.md#命令行工具) |
+| `ModbusAIStudio-2.0.0-Windows-x64.zip` | Windows 10 / 11 64 位。绿色版，解压后双击 `ModbusAIStudio.exe` |
+| `ModbusAIStudio-2.0.0-Windows-x64-Compat.zip` | Windows 兼容版：远程桌面、虚拟机、老工控机、显卡驱动有问题，或 Windows 7 / 8 / 8.1 64 位。自带软件渲染，不依赖显卡；数据放在程序目录的 `data` 文件夹 |
+| `ModbusAIStudio-2.0.0-macOS-AppleSilicon.dmg` | M 系列芯片的 Mac，macOS 12 及以上 |
+| `ModbusAIStudio-2.0.0-macOS-Intel.dmg` | Intel 芯片的 Mac，macOS 12 及以上 |
+| `ModbusAIStudio-Web-2.0.0-Linux-x64.tar.gz` | Linux x86-64 网关、服务器上的 Web 版。解压后运行 `./modbus-web`，用浏览器打开终端打印的地址 |
+| `ModbusAIStudio-Web-2.0.0-Linux-arm64.tar.gz` | Linux ARM64（树莓派 4 / 5、多数 ARM 网关）上的 Web 版 |
+| `modbus-cli-2.0.0-<系统>-<架构>.zip / .tar.gz` | 命令行工具 modbus-cli：windows-x64、macos-x64 / macos-arm64、linux-x64 / linux-arm64。加 `-json` 输出 JSON，方便脚本和 AI 调用，见 [命令行工具](docs/guide.md#命令行工具) |
 
 Linux 桌面版没有安装包，可以 [从源码编译](docs/development.md#从源码编译)；网关、服务器上用 Web 版，见 [Linux Web 版](docs/guide.md#linux-web-版)。Windows 远程桌面、虚拟机里打不开时用兼容版；macOS 提示无法打开，见 [常见问题](docs/faq.md#安装与运行)。
 

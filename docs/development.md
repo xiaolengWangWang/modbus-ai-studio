@@ -105,12 +105,12 @@ go test -race -count=3 ./...        # 并发与稳定性
 
 Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\ModbusAIStudio\app.log`（兼容版在程序目录的 `data\ModbusAIStudio\app.log`：`platform.Setup` 把本进程的 `APPDATA`、`LOCALAPPDATA` 改到 `data`、`data\cache`，打开浏览器、资源管理器和更新后的新版本时用 `platform.ChildEnv` 换回原值；exe 旁边有 `opengl32.dll` 时设 `GALLIUM_DRIVER=llvmpipe`，否则新版 Mesa 先试 d3d12 驱动，缺 `dxil.dll` 时直接退出），每行带进程号，多个实例不会相互覆盖日志；图标资源可用 `go-winres extract` 检查 `GLFW_ICON` 和高 DPI 清单。主窗口默认 1040 × 680 逻辑尺寸，并按屏幕可用区域和 DPI 缩放适配；关闭按钮默认隐藏到托盘，采集继续，托盘菜单退出时关闭本实例全部连接并写完数据库缓冲。界面测试覆盖后台轮询、独立窗口关闭和退出清理，Windows 本机已验证两个进程同时运行及隐藏后保留进程。150% 缩放、16 像素图标和启动速度仍需在不同设备上验证；遇到问题时请附 `app.log`。
 
-版本号只写在 `cmd/modbus-ai/main.go` 的 `version` 一处，打包脚本、`package` 工作流和发版工具都从这里取。发版用 Go 写的 `build/release`，不用按版本复制脚本：
+版本号只写在 `cmd/modbus-ai/main.go` 的 `version` 一处，打包脚本、`package` 工作流和发版工具都从这里取。通用功能在 `main` 的核心代码开发；已发布固定版本的缺陷从对应 tag 建立 `maintenance/v主版本.次版本` 分支修复，补丁版本从该分支发布。发版用 Go 写的 `build/release`，不用按版本复制脚本：
 
 1. 改 `version`，在 `platform/windows/README.txt`（打进 zip 的说明）的更新记录里加这一版，提交并推送。
 2. 写发布说明 `dist/vx.y.z/release-x.y.z-summary.md`，第一行 `# Modbus AI Studio x.y.z`；不写 SHA-256 段落。
 3. `go run ./build/release prepare`：
-   - 确认 GitHub 上的 main 就是本地 HEAD、版本号比已发布的新，`platform/windows/README.txt` 里有这一版的更新记录（`### x.y.z …` 标题）；
+   - 确认 GitHub 上当前 `main` 或匹配版本的 `maintenance/v主版本.次版本` 分支就是本地 HEAD、版本号比已发布的新，`platform/windows/README.txt` 里有这一版的更新记录（`### x.y.z …` 标题）；
    - 等 `test` 工作流在五种架构上通过；这个提交还没打过包就触发 `package` 工作流，它在 GitHub Actions 上调用 `build/windows.sh`、`build/linux-web.sh`、`build/cli.sh` 和 `build/macos.sh`，再在五种架构上运行 `build/smoke.sh`，本机不需要 macOS 编译环境；macOS runner 排不上、任务被取消时自动重跑；
    - 下载两个产物，按 GitHub 记录的摘要核对，再逐个检查安装包：DMG 结尾有 koly 块；Windows zip 只有 `ModbusAIStudio.exe` 和 `README.txt`（兼容版另有 Mesa 的两个 DLL 和 `Mesa-LICENSE.txt`）、路径用 `/`，README 是没被加密的 UTF-8 BOM + CRLF 文本、带这一版的更新记录，exe 的文件版本、`GLFW_ICON` 图标和 per monitor v2 高 DPI 清单都在；兼容版的 exe 是 go-legacy-win7 编译的（有 `SystemFunction036`），exe 和 Mesa 都没有静态导入常见的 Win8 起才有的函数；Web 版 tar.gz 只有可执行的 `modbus-web` 和明文 `README.txt`，程序是对应架构（x86-64 / ARM64）的 Linux ELF，说明里有这一版的版本号；modbus-cli 的包只有程序和明文 `README.txt`，程序是包名里那个系统和 CPU 的（PE / Mach-O / ELF），tar.gz 里有可执行位，说明里有这一版的版本号；四份 macOS 和 Linux Web 差异 Markdown 必须分别匹配包名及版本、为明文且完整；
    - 生成 `dist/vx.y.z/release-x.y.z.md`（说明末尾加 `## SHA-256` 段落，每行 `校验值  文件名`，自动更新按它校验下载的安装包）、各安装包的 `.sha256` 和记录 `release-x.y.z-assets.json`；Windows 版另解压到同一版本目录下的 `ModbusAIStudio-x.y.z-Windows-x64/`，可以直接试用。
