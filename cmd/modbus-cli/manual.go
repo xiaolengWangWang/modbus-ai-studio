@@ -6,7 +6,7 @@ import (
 )
 
 const usage = `用法：modbus-cli [选项] <命令> [参数]（选项写在命令前面）
-  read <地址> <数量> · write <地址> <值> · detect · scan [起始 结束] · raw <PDU>
+  read <地址> <数量> · write <地址> <值> · detect · scan [起始 结束] [地址] · raw <PDU>
   probe [auto|single|quick] <地址> <数量> · -points 点表 probe points|each
   -points 点表 points · get [点名…] · set <点名> <值> · manual · version
 运行 modbus-cli manual 查看完整说明。
@@ -18,7 +18,7 @@ const usage = `用法：modbus-cli [选项] <命令> [参数]（选项写在命�
 const manualText = `Modbus AI Studio 命令行工具 modbus-cli {{version}}
 
 modbus-cli 是命令行的 Modbus 主站，和桌面版用同一套通信核心：读写寄存器和线圈（写入后自动回读核对）、
-识别协议、扫描从站、检测哪些寄存器读得通、发自定义请求。加 -json 后每条命令在标准输出打印一个 JSON 对象，脚本和 AI 可以直接解析。
+识别协议、搜索站号、检测哪些寄存器读得通、发自定义请求。加 -json 后每条命令在标准输出打印一个 JSON 对象，脚本和 AI 可以直接解析。
 不需要安装，解压后在终端里运行（Windows 是 modbus-cli.exe）；macOS 提示无法验证开发者时，运行 xattr -d com.apple.quarantine modbus-cli。
 
 用法
@@ -29,7 +29,10 @@ modbus-cli 是命令行的 Modbus 主站，和桌面版用同一套通信核心�
   read  <地址> <数量>    读数据。寄存器按 -type / -order / -scale 解成工程值，线圈和离散输入读出 0 / 1
   write <地址> <值>      写入并立即回读核对。寄存器按 -type / -order / -scale 编码，线圈写 0 或 1
   detect                识别 Modbus TCP 还是 RTU over TCP（需要 -target）
-  scan [起始 结束]       扫描应答的站号，默认 1–247；没指定 -timeout 时每个站号等 200 ms
+  scan [起始 结束] [地址]
+                        搜索应答的站号，默认 1–247：每个站号依次读 <地址>（可不写）、40001、30001、线圈 1，
+                        有一次应答就算找到（异常响应也算；网关回的异常 0A、0B 不算）。没指定 -timeout 时每次读取等 200 ms。
+                        设备上肯定有的地址写成 <地址>，不回非法地址的设备也能搜到。按 Ctrl+C 停止，保留已找到的站号
   raw <PDU 十六进制>     发任意请求 PDU（功能码 + 数据），打印响应 PDU，例如 raw 08 00 00 12 34
   probe [方式] <地址> <数量>
                         检测寄存器：找出这段地址里哪些读得通、哪些是非法地址（异常 02）、哪些不响应，
@@ -78,7 +81,7 @@ JSON 输出（-json）
              hint（数值不合理时建议的字节序）
     write    address、function、value（实际写入的值）、rounded、registers、request（请求帧）、readback、verified
     detect   mode、slave、by_exception、attempts（每次尝试的 mode、slave、result）
-    scan     from、to、found（每项 slave、rtt_ms、note）
+    scan     from、to、probes（每个站号依次试的读取）、stopped（按了 Ctrl+C）、found（每项 slave、probe、rtt_ms、note）
     raw      slave、request、response（都是 PDU 的十六进制）
     points   file、format、count、points（每项 name、address、type、order、scale、unit、writable、min、max、enum）、skipped
     get      mode、slave、elapsed_ms、values（每项 name、address、value、unit、registers、hint、error）
@@ -104,6 +107,7 @@ JSON 输出（-json）
   modbus-cli -target 192.168.1.100:502 -fc 5 write 0 1
   modbus-cli -target 192.168.1.100:502 detect
   modbus-cli -port COM3 -baud 9600 scan 1 32
+  modbus-cli -target 192.168.1.100:502 scan 1 247 40101
   modbus-cli -target 192.168.1.100:502 -slave 3 raw 08 00 00 12 34
   modbus-cli -target 192.168.1.100:502 probe 40001 200
   modbus-cli -target 192.168.1.100:502 -timeout 3s -json probe single 40001 50

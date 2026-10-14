@@ -13,33 +13,11 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
+	"modbus-ai-studio/internal/eta"
 	"modbus-ai-studio/internal/modbus"
+	"modbus-ai-studio/internal/slavescan"
 	"modbus-ai-studio/internal/transport"
 )
-
-// slaveHit 是扫描到的一个从站；err 为 nil 表示正常响应，否则是异常响应（同样说明设备在线）。
-type slaveHit struct {
-	id  int
-	err error
-	rtt time.Duration
-}
-
-// scanSlaves 向 from–to 逐个发 FC03 读 40001 一个寄存器。连接断开时停止并返回错误。
-func scanSlaves(ctx context.Context, c *modbus.Client, from, to int, timeout time.Duration, progress func(id int, hits []slaveHit)) ([]slaveHit, error) {
-	var hits []slaveHit
-	for id := from; id <= to && ctx.Err() == nil; id++ {
-		start := time.Now()
-		_, err := c.Do(ctx, modbus.Request{Slave: byte(id), Function: modbus.FuncReadHoldingRegisters, Quantity: 1, Timeout: timeout})
-		_, isEx := modbus.AsException(err)
-		if _, echo := modbus.AsNonstandard(err); err == nil || isEx || echo { // 非标准回显也说明这个站号有设备作答
-			hits = append(hits, slaveHit{id, err, time.Since(start)})
-		} else if errors.Is(err, modbus.ErrConnection) {
-			return hits, err
-		}
-		progress(id, hits)
-	}
-	return hits, nil
-}
 
 var scanBauds = []int{9600, 19200, 38400, 57600, 115200, 4800, 2400, 1200}
 
@@ -104,44 +82,84 @@ func (ws *Workspace) firstSlave() int {
 	return 1
 }
 
-// scanSlavesDialog 扫描总线上有哪些从站地址在应答，找不到设备地址时用。
+// scanSlavesDialog 搜索总线上在应答的站号，找不到设备地址时用。算法在 internal/slavescan，Web 版、modbus-cli 共用：
+// 每个站号依次读用户给的地址、40001、30001、线圈 1，有一次应答就算找到。
 func (ws *Workspace) scanSlavesDialog() {
 	s := ws.session
 	if s == nil {
-		dialog.ShowError(errors.New("先连接，再扫描从站地址"), ws.win)
+		dialog.ShowError(errors.New("先连接，再搜索站号"), ws.win)
 		return
 	}
 	from, to, tmo := intEntry(1), intEntry(247), intEntry(200)
+	addr := widget.NewEntry()
+	addr.SetPlaceHolder("可不填，例如 40101")
+	// 读取窗口的地址设备上多半有，默认先读它。线圈的写法解析不回线圈，没改时直接用窗口的定义
+	var known slavescan.Probe
+	knownText := ""
+	if len(ws.windows) > 0 {
+		d := ws.windows[0].def
+		known = slavescan.Probe{Function: d.Function, Address: d.Start}
+		knownText = strings.TrimSuffix(known.String(), fmt.Sprintf("（FC%02d）", byte(d.Function))) // 40101、线圈 5
+		addr.SetText(knownText)
+	}
+	addrItem := widget.NewFormItem("先读这个地址", addr)
+	addrItem.HintText = "设备上肯定有的点；之后再读 40001、30001、线圈 1"
 	items := []*widget.FormItem{widget.NewFormItem("起始 Slave", from), widget.NewFormItem("结束 Slave", to),
-		widget.NewFormItem("每个地址等待（ms）", tmo)}
-	dialog.ShowForm("扫描从站地址", "开始", "取消", items, func(ok bool) {
-		f, t, ms := atoi(from), atoi(to), atoi(tmo)
-		switch {
-		case !ok:
-			return
-		case f < 1 || t > 255 || f > t:
-			dialog.ShowError(errors.New("Slave 范围应在 1–255 之间，起始不大于结束"), ws.win)
-			return
-		case ms < 20 || ms > 10000:
-			dialog.ShowError(errors.New("等待时间应为 20–10000 ms"), ws.win)
+		widget.NewFormItem("每次读取等待（ms）", tmo), addrItem}
+	dialog.ShowForm("搜索站号", "开始", "取消", items, func(ok bool) {
+		if !ok {
 			return
 		}
-		ws.runSlaveScan(s, f, t, time.Duration(ms)*time.Millisecond)
+		f, t, timeout := atoi(from), atoi(to), time.Duration(atoi(tmo))*time.Millisecond
+		if err := slavescan.Validate(f, t, timeout); err != nil {
+			dialog.ShowError(err, ws.win)
+			return
+		}
+		var extra []slavescan.Probe
+		switch a := strings.TrimSpace(addr.Text); {
+		case a == "":
+		case knownText != "" && a == knownText:
+			extra = append(extra, known)
+		default:
+			p, err := slavescan.ParseProbe(a)
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("地址 %s：%w", a, err), ws.win)
+				return
+			}
+			extra = append(extra, p)
+		}
+		ws.runSlaveScan(s, f, t, timeout, slavescan.Probes(extra...))
 	}, ws.win)
 }
 
-func (ws *Workspace) runSlaveScan(s *session, from, to int, tmo time.Duration) {
+func (ws *Workspace) runSlaveScan(s *session, from, to int, tmo time.Duration, probes []slavescan.Probe) {
 	ctx, cancel := context.WithCancel(s.ctx)
 	prog := widget.NewProgressBar()
 	prog.Min, prog.Max = float64(from-1), float64(to)
 	found := widget.NewLabel("找到：—")
-	dlg := dialog.NewCustom("扫描从站地址", "停止", container.NewVBox(
-		widget.NewLabel(fmt.Sprintf("FC03 读 40001，Slave %d–%d，每个最多等 %d ms", from, to, tmo.Milliseconds())), prog, found), ws.win)
+	var names []string
+	for _, p := range probes {
+		names = append(names, p.String())
+	}
+	intro := widget.NewLabel(fmt.Sprintf("Slave %d–%d，每个站号依次读 %s，有一次应答就算找到；每次最多等 %d ms，都不应答时最多要 %s",
+		from, to, strings.Join(names, "、"), tmo.Milliseconds(), eta.Rough(slavescan.Worst(from, to, tmo, len(probes)))))
+	intro.Wrapping = fyne.TextWrapWord
+	dlg := dialog.NewCustom("搜索站号", "停止", container.NewVBox(intro, prog, found), ws.win)
+	dlg.Resize(fyne.NewSize(480, 0))
 	dlg.SetOnClosed(cancel)
 	dlg.Show()
-	started := time.Now()
+	// 搜索期间读取窗口不发请求：要搜站号时窗口用的站号多半不对，每次读取都要等到超时，
+	// 搜索的请求会排在它们后面，应答时间也算长。先等在途的读取结束（pollGate）
+	ws.scanRunning = true
+	for _, w := range ws.windows {
+		w.refreshState()
+	}
+	found.SetText("等读取窗口正在发的请求结束（窗口用的站号不对时要等到超时）…")
 	go func() {
-		hits, err := scanSlaves(ctx, s.client, from, to, tmo, func(id int, hits []slaveHit) {
+		ws.pollGate.Lock()
+		defer ws.pollGate.Unlock()
+		started := time.Now()
+		hits, err := slavescan.Scan(ctx, s.client, from, to, tmo, probes, func(id int, hits []slavescan.Hit) {
 			uiDo(func() {
 				prog.SetValue(float64(id))
 				found.SetText("找到：" + hitIDs(hits) + "\n" + progressText(float64(id-from+1)/float64(to-from+1), started))
@@ -150,6 +168,10 @@ func (ws *Workspace) runSlaveScan(s *session, from, to int, tmo time.Duration) {
 		stopped := ctx.Err() != nil
 		cancel()
 		uiDo(func() {
+			ws.scanRunning = false
+			for _, w := range ws.windows {
+				w.refreshState()
+			}
 			dlg.Hide()
 			if !ws.closed {
 				ws.showSlaveScanResult(hits, err, stopped)
@@ -158,49 +180,64 @@ func (ws *Workspace) runSlaveScan(s *session, from, to int, tmo time.Duration) {
 	}()
 }
 
-func hitIDs(hits []slaveHit) string {
+func hitIDs(hits []slavescan.Hit) string {
 	if len(hits) == 0 {
 		return "—"
 	}
 	var ids []string
 	for _, h := range hits {
-		ids = append(ids, strconv.Itoa(h.id))
+		ids = append(ids, strconv.Itoa(h.ID))
 	}
 	return strings.Join(ids, "、")
 }
 
-func (ws *Workspace) showSlaveScanResult(hits []slaveHit, err error, stopped bool) {
+// showSlaveScanResult 列出找到的站号；有读取窗口时可以一键让全部读取窗口改用找到的站号。
+func (ws *Workspace) showSlaveScanResult(hits []slavescan.Hit, err error, stopped bool) {
 	var lines []string
 	for _, h := range hits {
-		r := "正常响应 · " + formatRTT(h.rtt)
-		if h.err != nil {
-			r = errSummary(h.err) + "（设备在线，只是 40001 不可读）"
-		}
-		lines = append(lines, fmt.Sprintf("Slave %d：%s", h.id, r))
+		lines = append(lines, fmt.Sprintf("Slave %d：%s · %s", h.ID, h.Note(), formatRTT(h.RTT)))
 	}
 	switch {
 	case err != nil:
-		lines = append(lines, "扫描中断："+err.Error())
+		lines = append(lines, "搜索中断："+err.Error())
 	case stopped:
-		lines = append(lines, "已停止。")
+		lines = append(lines, "已停止，上面是已经搜到的站号。")
 	case len(hits) == 0:
-		lines = append(lines, "没有设备应答。检查接线、串口参数和协议，或把每个地址的等待时间加大。")
+		lines = append(lines, "没有设备应答。检查接线、串口参数和协议，或把每次读取的等待时间加大。")
 	}
 	body := widget.NewLabel(strings.Join(lines, "\n"))
 	body.Wrapping = fyne.TextWrapWord
-	// 只找到一个设备、而读取窗口用的是别的地址时，一键改过去
-	if len(hits) == 1 && len(ws.windows) > 0 && ws.firstSlave() != hits[0].id {
-		id := hits[0].id
-		dlg := dialog.NewCustomConfirm("扫描结果", fmt.Sprintf("读取窗口改用 Slave %d", id), "关闭", body, func(ok bool) {
-			if ok {
-				ws.setSlave(0, byte(id))
+	var others []string // 和读取窗口现在用的不同的站号
+	if len(ws.windows) > 0 {
+		for _, h := range hits {
+			if h.ID != ws.firstSlave() {
+				others = append(others, fmt.Sprintf("Slave %d", h.ID))
 			}
-		}, ws.win)
+		}
+	}
+	if len(others) == 0 {
+		dlg := dialog.NewCustom("搜索结果", "关闭", body, ws.win)
 		dlg.Resize(fyne.NewSize(480, 0))
 		dlg.Show()
 		return
 	}
-	dlg := dialog.NewCustom("扫描结果", "关闭", body, ws.win)
+	pick := widget.NewSelect(others, nil)
+	pick.SetSelectedIndex(0)
+	content := container.NewVBox(body, container.NewBorder(nil, nil, widget.NewLabel("读取窗口改用"), nil, pick))
+	if len(others) == 1 {
+		content = container.NewVBox(body) // 只有一个可选时按钮上直接写站号
+	}
+	confirm := "读取窗口改用 " + others[0]
+	if len(others) > 1 {
+		confirm = "改用所选站号"
+	}
+	dlg := dialog.NewCustomConfirm("搜索结果", confirm, "关闭", content, func(ok bool) {
+		var id int
+		if ok && pick.Selected != "" {
+			fmt.Sscanf(pick.Selected, "Slave %d", &id)
+			ws.setSlave(0, byte(id))
+		}
+	}, ws.win)
 	dlg.Resize(fyne.NewSize(480, 0))
 	dlg.Show()
 }
@@ -287,7 +324,7 @@ func (ws *Workspace) runSerialScan(mode modbus.Mode, port string, slave byte, tm
 					ws.connect()
 				}
 			case !stopped:
-				dialog.ShowInformation("扫描串口参数", fmt.Sprintf("所有组合都没有应答。检查 Slave ID %d、A/B 接线和终端电阻；也可能设备地址不是 %d，连接后用“扫描从站地址”；也可能协议不对（RTU / ASCII）。", slave, slave), ws.win)
+				dialog.ShowInformation("扫描串口参数", fmt.Sprintf("所有组合都没有应答。检查 Slave ID %d、A/B 接线和终端电阻；也可能设备地址不是 %d，连接后用“搜索站号”；也可能协议不对（RTU / ASCII）。", slave, slave), ws.win)
 			}
 		})
 	}()

@@ -571,6 +571,8 @@ func (w *readWindow) updateState(err error, hasData bool) {
 		state, importance = "等待重连", widget.DangerImportance
 	case w.ws.probeRunning:
 		state, importance = "检测中", widget.WarningImportance
+	case w.ws.scanRunning:
+		state, importance = "搜索站号中", widget.WarningImportance
 	case w.paused:
 		state, importance = "已暂停", widget.WarningImportance
 	case err != nil:
@@ -665,7 +667,9 @@ func (w *readWindow) run(ctx context.Context, c *modbus.Client, d readDef, gen i
 	defer t.Stop()
 	req := modbus.Request{Slave: d.Slave, Function: d.Function, Address: d.Start, Quantity: uint16(d.Qty)}
 	for {
+		w.ws.pollGate.RLock() // 搜索站号时在这里等
 		resp, err := c.Do(ctx, req)
+		w.ws.pollGate.RUnlock()
 		if ctx.Err() != nil {
 			return
 		}

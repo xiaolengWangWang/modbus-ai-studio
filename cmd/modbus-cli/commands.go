@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"encoding/hex"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,7 +14,9 @@ import (
 
 	"modbus-ai-studio/internal/control"
 	"modbus-ai-studio/internal/detect"
+	"modbus-ai-studio/internal/eta"
 	"modbus-ai-studio/internal/modbus"
+	"modbus-ai-studio/internal/slavescan"
 	"modbus-ai-studio/internal/transport"
 )
 
@@ -381,60 +383,95 @@ func runDetect(ctx context.Context) {
 
 type scanHit struct {
 	Slave int     `json:"slave"`
+	Probe string  `json:"probe"` // 哪次读取得到的应答，例如 40001（FC03）
 	RTTMS float64 `json:"rtt_ms"`
-	Note  string  `json:"note,omitempty"`
+	Note  string  `json:"note"`
 }
 
 type scanResult struct {
-	OK    bool      `json:"ok"`
-	From  int       `json:"from"`
-	To    int       `json:"to"`
-	Found []scanHit `json:"found"`
+	OK      bool      `json:"ok"`
+	From    int       `json:"from"`
+	To      int       `json:"to"`
+	Probes  []string  `json:"probes"`            // 每个站号依次试的读取
+	Stopped bool      `json:"stopped,omitempty"` // 按了 Ctrl+C，只搜了一部分
+	Found   []scanHit `json:"found"`
 }
 
-// runScan 向 from–to 逐个站号发 FC03 读 40001 一个寄存器，列出应答的站号。异常响应也说明设备在线。
+// runScan 搜索应答的站号，和桌面版、Web 版“搜索站号”同一套算法（internal/slavescan）：每个站号依次读
+// 用户给的地址、40001、30001、线圈 1，有一次应答就算找到。异常响应也说明设备在线；网关回的异常 0A、0B 不算。
 func runScan(ctx context.Context, args []string) {
 	from, to := 1, 247
-	if len(args) == 2 {
+	if len(args) >= 2 {
 		var e1, e2 error
 		from, e1 = strconv.Atoi(args[0])
 		to, e2 = strconv.Atoi(args[1])
-		if e1 != nil || e2 != nil || from < 1 || to > 255 || from > to {
+		if e1 != nil || e2 != nil {
 			fail("站号范围应在 1–255 之间，起始不大于结束")
 		}
+	}
+	var extra []slavescan.Probe
+	if len(args) == 3 {
+		p, err := slavescan.ParseProbe(args[2])
+		if err != nil {
+			fail("地址 %s：%v", args[2], err)
+		}
+		extra = append(extra, p)
 	}
 	explicit := false
 	flag.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "timeout" })
 	if !explicit {
 		*timeout = 200 * time.Millisecond
 	}
+	if err := slavescan.Validate(from, to, *timeout); err != nil {
+		fail("%v", err)
+	}
+	probes := slavescan.Probes(extra...)
+	res := scanResult{OK: true, From: from, To: to, Found: []scanHit{}}
+	for _, p := range probes {
+		res.Probes = append(res.Probes, p.String())
+	}
 	c := connect(ctx, 0)
 	defer c.Close()
-	res := scanResult{OK: true, From: from, To: to, Found: []scanHit{}}
-	for id := from; id <= to; id++ {
-		start := time.Now()
-		_, err := c.Do(ctx, modbus.Request{Slave: byte(id), Function: modbus.FuncReadHoldingRegisters, Quantity: 1})
-		hit := scanHit{Slave: id, RTTMS: float64(time.Since(start).Microseconds()) / 1000}
-		switch _, isEx := modbus.AsException(err); {
-		case err == nil:
-		case isEx:
-			hit.Note = "异常响应：设备在线，只是 40001 不可读（" + err.Error() + "）"
-		case errors.Is(err, modbus.ErrConnection):
-			fail("扫到 Slave %d 时连接断开：%v", id, err)
-		default:
-			continue
+	if !*jsonOut {
+		fmt.Fprintf(os.Stderr, "每个站号依次读 %s，有一次应答就算找到；都不应答时最多要 %s，Ctrl+C 停止\n",
+			strings.Join(res.Probes, "、"), eta.Rough(slavescan.Worst(from, to, *timeout, len(probes))))
+	}
+
+	// Ctrl+C 停止搜索，保留已找到的站号
+	ctx, stopSignals := signal.NotifyContext(ctx, os.Interrupt)
+	started, last, shown := time.Now(), time.Now(), 0
+	hits, err := slavescan.Scan(ctx, c, from, to, *timeout, probes, func(id int, hits []slavescan.Hit) {
+		if *jsonOut {
+			return
 		}
-		res.Found = append(res.Found, hit)
-		if !*jsonOut {
-			fmt.Println(strings.TrimSpace(fmt.Sprintf("Slave %-3d 应答 %.1f ms %s", hit.Slave, hit.RTTMS, hit.Note)))
+		for _, h := range hits[shown:] {
+			fmt.Printf("Slave %-3d 应答 %.1f ms · %s\n", h.ID, millis(h.RTT), h.Note())
 		}
+		shown = len(hits)
+		if time.Since(last) >= 2*time.Second && id < to {
+			last = time.Now()
+			fmt.Fprintf(os.Stderr, "已搜到 Slave %d / %d · %s\n", id, to, eta.Text(float64(id-from+1)/float64(to-from+1), started))
+		}
+	})
+	res.Stopped = ctx.Err() != nil
+	stopSignals()
+	if err != nil {
+		fail("搜索中途连接断开：%v", err)
+	}
+	for _, h := range hits {
+		res.Found = append(res.Found, scanHit{Slave: h.ID, Probe: h.Probe.String(), RTTMS: millis(h.RTT), Note: h.Note()})
 	}
 	output(res, func() {
-		if len(res.Found) == 0 {
-			fmt.Printf("Slave %d–%d 都没有应答。检查接线、串口参数和协议，或用 -timeout 加大每个站号的等待时间。\n", from, to)
+		switch {
+		case res.Stopped:
+			fmt.Println("已停止，上面是已经搜到的站号。")
+		case len(res.Found) == 0:
+			fmt.Printf("Slave %d–%d 都没有应答。检查接线、串口参数和协议，或用 -timeout 加大每次读取的等待时间。\n", from, to)
 		}
 	})
 }
+
+func millis(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 
 // ---- raw ----
 

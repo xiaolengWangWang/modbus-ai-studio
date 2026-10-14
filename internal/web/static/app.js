@@ -138,6 +138,7 @@ function render(st) {
   renderTables(st.tables);
   renderLogs(st.logs || []);
   renderProbe(st.probe);
+  renderScan(st.scan);
 }
 
 const CONN_TEXT = { connected: '已连接', connecting: '连接中…', reconnecting: '连接断开，正在重连', disconnected: '未连接', probing: '检测寄存器中，常规连接暂时让给检测' };
@@ -268,6 +269,7 @@ const STAT = {
   offline: () => (state && state.conn.state === 'reconnecting' ? '等待重连' : '未连接'),
   paused: () => '已暂停',
   probing: () => '检测寄存器中，暂停读取',
+  scanning: () => '搜索站号中，暂停读取',
   waiting: () => '等待读取…',
 };
 
@@ -829,9 +831,95 @@ function useReadable() {
   updateTableFields();
 }
 
+// ---- 搜索站号 ----
+// 和桌面版、modbus-cli 同一套算法，在服务端后台跑；进度和找到的站号跟着状态推送。
+
+let scanWatch = 0; // 对话框里正在看的搜索；0 表示在填参数
+let scanKey = '';  // 找到的站号列表上次画的样子，没变就不重画，免得按钮在点击时被换掉
+
+function scanView(view) { // setup 填参数、run 进度、result 结果
+  $('scan-setup').hidden = view !== 'setup';
+  $('scan-run').hidden = view === 'setup';
+  $('scan-start').hidden = view !== 'setup';
+  $('scan-stop').hidden = view !== 'run';
+  $('scan-again').hidden = view !== 'result';
+  $('scan-close').textContent = view === 'run' ? '后台搜索' : '关闭';
+  $('scan-close').title = view === 'run' ? '关掉对话框，搜索在服务端继续；“搜索站号”按钮可以回来看进度' : '';
+  if (view !== 'run') { $('scan-stop').disabled = false; $('scan-stop').textContent = '停止'; }
+  if (view === 'setup') { $('scan-found').replaceChildren(); scanKey = ''; }
+}
+
+function openScan() {
+  const sc = state && state.scan;
+  $('scan-error').textContent = '';
+  $('scan-msg').textContent = '';
+  if (sc && sc.running) { scanWatch = sc.id; renderScanIn(sc); } else setupScan();
+  if (!$('scan-dialog').open) $('scan-dialog').showModal();
+}
+
+function setupScan() {
+  scanWatch = 0;
+  const f = $('scan-form').elements;
+  // 先读第一个读取表的起始地址：设备上多半有。线圈的写法和寄存器分不开，不填
+  const t = state && state.tables[0];
+  if (t && t.config.function !== 1 && t.rows[0] && !f.address.value) f.address.value = t.rows[0].ref;
+  $('scan-title').textContent = '搜索站号';
+  scanView('setup');
+}
+
+async function startScan() {
+  const f = $('scan-form').elements;
+  const body = { from: +f.from.value, to: +f.to.value, timeoutMs: +f.timeoutMs.value, address: f.address.value.trim() };
+  $('scan-error').textContent = '';
+  $('scan-msg').textContent = '';
+  try {
+    const v = await api('POST', '/api/slavescan', body);
+    scanWatch = v.id;
+    renderScanIn(v);
+  } catch (e) {
+    $('scan-error').textContent = e.message;
+  }
+}
+
+// renderScan 跟着状态推送更新：工具栏按钮显示进度，对话框里显示正在看的搜索。
+function renderScan(sc) {
+  $('scan').textContent = sc && sc.running ? `搜索中 ${Math.floor((sc.done * 100) / (sc.total || 1))}% · 查看` : '搜索站号';
+  if (sc && sc.id === scanWatch && $('scan-dialog').open) renderScanIn(sc);
+}
+
+function renderScanIn(sc) {
+  scanView(sc.running ? 'run' : 'result');
+  $('scan-title').textContent = `搜索站号 · Slave ${sc.from}–${sc.to}`;
+  $('scan-bar').max = sc.total || 1;
+  $('scan-bar').value = sc.done;
+  $('scan-progress').textContent = [sc.error || (sc.stopped ? '已停止，下面是已经搜到的站号' : ''), sc.progress,
+    '每个站号依次读 ' + sc.probes.join('、')].filter(Boolean).join(' · ');
+  const cur = state && state.tables.length ? state.tables[0].config.slave : 0;
+  const key = [sc.id, sc.running, cur, ...sc.found.map((x) => x.slave)].join('|');
+  if (key === scanKey) return;
+  scanKey = key;
+  const rows = sc.found.map((x) => h('div', { class: 'scan-hit' },
+    h('b', {}, `Slave ${x.slave}`),
+    h('span', { class: 'muted small' }, `${x.note} · ${x.rttMs.toFixed(1)} ms`),
+    cur && x.slave !== cur ? h('button', { type: 'button', class: 'ghost', onclick: () => useSlave(x.slave) }, `读取表改用 Slave ${x.slave}`) : ''));
+  if (!rows.length && !sc.running) rows.push(h('div', { class: 'muted' }, '没有设备应答。检查接线、串口参数和协议，或把每次读取的等待时间加大。'));
+  $('scan-found').replaceChildren(...rows);
+}
+
+// useSlave 让全部读取表改用搜到的站号。
+async function useSlave(slave) {
+  $('scan-error').textContent = '';
+  try {
+    const r = await api('POST', '/api/slave', { from: 0, to: slave });
+    $('scan-msg').textContent = `${r.changed} 个读取表已改用 Slave ${slave}`;
+  } catch (e) {
+    $('scan-error').textContent = e.message;
+  }
+}
+
 // ---- 日志、记录文件 ----
 
-const KIND = { CONNECT: '连接', CONNECT_FAIL: '连接失败', DISCONNECT: '断开', RECONNECT: '重连', READ_FAIL: '读取失败', READ_OK: '读取恢复', WRITE: '写入', IMPORT: '导入点表', SLAVE: '改站号', PROBE: '检测寄存器' };
+const KIND = { CONNECT: '连接', CONNECT_FAIL: '连接失败', DISCONNECT: '断开', RECONNECT: '重连', READ_FAIL: '读取失败', READ_OK: '读取恢复', WRITE: '写入', IMPORT: '导入点表', SLAVE: '改站号', PROBE: '检测寄存器', SCAN: '搜索站号' };
 let logKey = '';
 
 function renderLogs(logs) {
@@ -982,6 +1070,19 @@ function bind() {
       $('probe-title').textContent = '检测寄存器';
       probeView('setup');
       updateProbeFields();
+    }
+  });
+  $('scan').onclick = openScan;
+  $('scan-form').addEventListener('submit', (e) => {
+    const v = e.submitter && e.submitter.value;
+    if (!v || v === 'close') return;
+    e.preventDefault();
+    if (v === 'start') startScan();
+    else if (v === 'again') { $('scan-error').textContent = ''; $('scan-msg').textContent = ''; setupScan(); }
+    else if (v === 'stop') {
+      $('scan-stop').disabled = true;
+      $('scan-stop').textContent = '正在停止…';
+      api('POST', '/api/slavescan/stop').catch((err) => { $('scan-error').textContent = err.message; });
     }
   });
   const sf = $('slave-form');

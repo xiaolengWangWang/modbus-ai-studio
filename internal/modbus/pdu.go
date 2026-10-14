@@ -100,7 +100,8 @@ type Request struct {
 	Quantity uint16        // 读请求的数量；写请求由 Values / Bits 决定
 	Values   []uint16      // FC06、FC16 的寄存器值
 	Bits     []bool        // FC05、FC15 的线圈值
-	Timeout  time.Duration // 本次请求的响应超时，0 表示用客户端的超时；扫描从站时用较短的值
+	Timeout  time.Duration // 本次请求的响应超时，0 表示用客户端的超时；搜索站号时用较短的值
+	NoRetry  bool          // 读请求超时也不按 ReadRetries 重试：搜索站号时大部分站号本来就没有设备，重试只会多等一倍
 }
 
 // Count 返回请求涉及的寄存器或线圈个数。

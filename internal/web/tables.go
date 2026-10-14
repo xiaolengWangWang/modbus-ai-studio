@@ -255,14 +255,16 @@ func (s *Server) poll(ctx context.Context, t *table) {
 	paused := t.paused
 	t.mu.Unlock()
 	c := s.dev.current()
-	probing := s.probing()
-	if paused || probing || c == nil {
+	probing, scanning := s.probing(), s.scanning()
+	if paused || probing || scanning || c == nil {
 		status := "offline" // 连接的原因在顶部状态和日志里
 		switch {
 		case paused:
 			status = "paused"
 		case probing:
 			status = "probing"
+		case scanning:
+			status = "scanning"
 		}
 		t.mu.Lock()
 		t.status, t.err = status, ""
@@ -272,7 +274,9 @@ func (s *Server) poll(ctx context.Context, t *table) {
 	}
 	req := modbus.Request{Slave: byte(t.cfg.Slave), Function: t.fn, Address: t.start, Quantity: uint16(t.cfg.Count)}
 	begin := time.Now()
+	s.pollGate.RLock() // 搜索站号时在这里等
 	resp, err := c.Do(ctx, req)
+	s.pollGate.RUnlock()
 	if ctx.Err() != nil || errors.Is(err, modbus.ErrConnection) && s.probing() {
 		return // 检测开始时让出了连接，在途的读取断开，不算读取失败
 	}
@@ -339,7 +343,7 @@ func webAdvice(r diagnose.Result) string {
 	case diagnose.ProbeRange:
 		return "建议缩小读取范围逐段核对；桌面版的“检测寄存器”可以自动逐点核对。"
 	case diagnose.ScanSlaves:
-		return "桌面版的“扫描从站地址”或 modbus-cli scan 可以找出在应答的站号。"
+		return "点“搜索站号”可以找出在应答的站号。"
 	case diagnose.DetectProtocol:
 		return "建议点“识别协议”。"
 	case diagnose.ScanSerial:
@@ -461,6 +465,7 @@ type stateView struct {
 	Logs    []logView   `json:"logs"`
 	Record  recordView  `json:"record"`
 	Probe   *probeBrief `json:"probe,omitempty"` // 最近一次检测寄存器的进度或结论
+	Scan    *scanView   `json:"scan,omitempty"`  // 最近一次搜索站号的进度或结果
 }
 
 func (s *Server) state() stateView {
@@ -475,11 +480,15 @@ func (s *Server) state() stateView {
 		v.Record = recordView{Enabled: true, File: baseName(r.Path()), Dropped: r.Dropped.Load()}
 	}
 	s.mu.Lock()
-	j := s.probe
+	j, sj := s.probe, s.scan
 	s.mu.Unlock()
 	if j != nil {
 		b := j.brief()
 		v.Probe = &b
+	}
+	if sj != nil {
+		sv := sj.snapshot()
+		v.Scan = &sv
 	}
 	return v
 }

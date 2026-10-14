@@ -1,4 +1,4 @@
-// modbus-cli 是命令行 Modbus 主站：读写寄存器和线圈、识别协议、扫描从站、发自定义请求。
+// modbus-cli 是命令行 Modbus 主站：读写寄存器和线圈、识别协议、搜索站号、发自定义请求。
 // 加 -json 时每条命令在标准输出打印一个 JSON 对象，方便脚本和 AI 调用；modbus-cli manual 打印完整说明。
 package main
 
@@ -61,7 +61,7 @@ func main() {
 		runWrite(ctx, rest[0], rest[1])
 	case cmd == "detect" && len(rest) == 0:
 		runDetect(ctx)
-	case cmd == "scan" && (len(rest) == 0 || len(rest) == 2):
+	case cmd == "scan" && (len(rest) == 0 || len(rest) == 2 || len(rest) == 3):
 		runScan(ctx, rest)
 	case cmd == "raw" && len(rest) > 0:
 		runRaw(ctx, strings.Join(rest, ""))

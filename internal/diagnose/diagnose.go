@@ -36,7 +36,7 @@ const (
 	ProbeRange            // 检测这个范围、逐个探测可读地址
 	HalveQty              // 数量减半
 	DoubleScan            // 扫描周期加倍
-	ScanSlaves            // 扫描从站地址
+	ScanSlaves            // 搜索站号
 	DetectProtocol        // 识别协议
 	ScanSerial            // 扫描串口参数
 	Reconnect             // 重新连接
@@ -155,7 +155,7 @@ func timeout(req Request, c Context, ev *Evidence) Result {
 			"本程序的请求没等到自己的响应。这不是设备回得慢，调大超时也收不到。%s", ev.Foreign(), ForeignAdvice)
 	case ev.OKSeen():
 		r.Hint = fmt.Sprintf("同一连接上有正常响应，链路和协议没问题。检查 Slave %d 是否存在，或该地址段是否需要更长时间才应答。", req.Slave)
-		r.Action, r.Label = ScanSlaves, "扫描从站地址"
+		r.Action, r.Label = ScanSlaves, "搜索站号"
 	case c.Mode == modbus.ModeTCP:
 		r.Hint = "连接已建立但设备一直没有应答：① 设备可能是 RTU over TCP（串口服务器、透传模块常见）；② Unit ID 要填网关后面设备的站号。"
 		r.Action, r.Label = DetectProtocol, "识别协议"

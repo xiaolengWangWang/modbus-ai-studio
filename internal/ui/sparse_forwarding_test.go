@@ -254,7 +254,7 @@ func TestNonstandardEchoDiagnosis(t *testing.T) {
 		if w.actionBtn.Text != "检测这个范围" {
 			t.Errorf("应提供检测，而不是 %q", w.actionBtn.Text)
 		}
-		for _, wrong := range []string{"数量减半", "改用 FC04", "扫描从站", "非法数据值", "没有应答"} {
+		for _, wrong := range []string{"数量减半", "改用 FC04", "搜索站号", "非法数据值", "没有应答"} {
 			if strings.Contains(w.hintLbl.Text+w.actionBtn.Text, wrong) {
 				t.Errorf("诊断不应出现 %q：%s", wrong, w.hintLbl.Text)
 			}

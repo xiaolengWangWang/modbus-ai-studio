@@ -69,6 +69,7 @@
       <button id="set-slave" class="ghost" hidden>改站号</button>
       <button id="probe" class="ghost" title="找出一段地址或点表里哪些读得通、哪些是非法地址、哪些不响应">检测寄存器</button>
       <button id="probe-status" class="probe-status" hidden></button>
+      <button id="scan" class="ghost" title="找出总线上在应答的站号（Slave ID）">搜索站号</button>
       <span class="muted small">点可写的行（保持寄存器、线圈）可以写入</span>
     </div>
     <div id="tables" class="tables"></div>
@@ -246,6 +247,34 @@
       <button value="again" id="probe-again" hidden>再检测</button>
       <button value="stop" id="probe-stop" hidden>停止</button>
       <button value="start" class="primary" id="probe-start">开始检测</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="scan-dialog">
+  <form method="dialog" id="scan-form">
+    <h3 id="scan-title">搜索站号</h3>
+    <div id="scan-setup">
+      <div class="fields">
+        <label>起始 Slave <input name="from" type="number" min="1" max="255" value="1" required></label>
+        <label>结束 Slave <input name="to" type="number" min="1" max="255" value="247" required></label>
+        <label>每次读取等待（ms） <input name="timeoutMs" type="number" min="20" max="10000" value="200" required></label>
+        <label>先读这个地址 <input name="address" autocomplete="off" placeholder="可不填，例如 40101" title="设备上肯定有的点，支持 40001、30001、4x0001、0x0010 等写法"></label>
+      </div>
+      <p class="muted small">每个站号依次读上面的地址、40001、30001、线圈 1，有一次应答就算找到：异常响应也说明设备在线，网关回的异常 0A、0B 不算。有的设备读到不存在的地址时不回话，所以要换几种读取。搜索期间读取表暂停，搜完马上恢复。</p>
+    </div>
+    <div id="scan-run" hidden>
+      <progress id="scan-bar" max="1" value="0"></progress>
+      <div class="small" id="scan-progress"></div>
+    </div>
+    <div class="scan-found" id="scan-found"></div>
+    <p class="small" id="scan-msg"></p>
+    <p class="error" id="scan-error"></p>
+    <div class="buttons">
+      <button value="close" formnovalidate id="scan-close">关闭</button>
+      <button value="again" id="scan-again" hidden>再搜索</button>
+      <button value="stop" id="scan-stop" hidden>停止</button>
+      <button value="start" class="primary" id="scan-start">开始搜索</button>
     </div>
   </form>
 </dialog>

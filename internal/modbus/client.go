@@ -137,7 +137,7 @@ func (c *Client) Close() error { return c.t.Close() }
 // 写请求不重试，因为超时不代表设备没有执行（设计文档 5.7）。
 func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	attempts := 1
-	if req.Function.IsRead() {
+	if req.Function.IsRead() && !req.NoRetry {
 		attempts += c.opts.ReadRetries
 	}
 	var err error

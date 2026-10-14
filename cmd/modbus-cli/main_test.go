@@ -118,10 +118,19 @@ func TestDetectScanRaw(t *testing.T) {
 	if v, code := jsonCLI(t, "-target", addr, "detect"); code != 0 || v["mode"] != "tcp" || v["slave"] != float64(1) {
 		t.Errorf("识别协议：%d %v", code, v)
 	}
-	v, code := jsonCLI(t, "-target", addr, "scan", "1", "3")
+	v, code := jsonCLI(t, "-target", addr, "-timeout", "100ms", "scan", "1", "3")
 	found, _ := v["found"].([]any)
-	if code != 0 || len(found) != 1 || found[0].(map[string]any)["slave"] != float64(1) {
+	if code != 0 || len(found) != 1 || found[0].(map[string]any)["slave"] != float64(1) || found[0].(map[string]any)["probe"] != "40001（FC03）" {
 		t.Errorf("只有 Slave 1 应答：%d %v", code, v)
+	}
+	if probes, _ := v["probes"].([]any); len(probes) != 3 {
+		t.Errorf("每个站号应试 40001、30001、线圈 1：%v", v["probes"])
+	}
+	// 给了地址就先读它
+	v, code = jsonCLI(t, "-target", addr, "-timeout", "100ms", "scan", "1", "1", "40002")
+	found, _ = v["found"].([]any)
+	if code != 0 || len(found) != 1 || found[0].(map[string]any)["probe"] != "40002（FC03）" {
+		t.Errorf("应先读给的地址 40002：%d %v", code, v)
 	}
 	if v, code := jsonCLI(t, "-target", addr, "raw", "03 00 00 00 01"); code != 0 || !strings.HasPrefix(v["response"].(string), "03 02 ") {
 		t.Errorf("自定义请求：%d %v", code, v)
@@ -147,7 +156,7 @@ func TestErrorsAndExitCodes(t *testing.T) {
 
 func TestManualAndVersion(t *testing.T) {
 	out, code := cli(t, "manual")
-	for _, want := range []string{"read  <地址> <数量>", "write <地址> <值>", "detect", "scan [起始 结束]", "raw <PDU 十六进制>", "probe [方式] <地址> <数量>", "probe points | each", "-report", "-json", "-fc", "退出码", "给 AI 调用"} {
+	for _, want := range []string{"read  <地址> <数量>", "write <地址> <值>", "detect", "scan [起始 结束] [地址]", "raw <PDU 十六进制>", "probe [方式] <地址> <数量>", "probe points | each", "-report", "-json", "-fc", "退出码", "给 AI 调用"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("说明里缺少“%s”", want)
 		}

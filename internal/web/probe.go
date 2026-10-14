@@ -179,8 +179,8 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 
 	s.probeStart.Lock()
 	defer s.probeStart.Unlock()
-	if s.probing() {
-		writeError(w, http.StatusConflict, "已经在检测，等它结束或先停止")
+	if s.busy() {
+		writeError(w, http.StatusConflict, "正在检测寄存器或搜索站号，等它结束或先停止")
 		return
 	}
 	client, release, err := s.dev.probeClient(s.probeFrame)
@@ -428,7 +428,7 @@ func (d *device) probeClient(observe func(modbus.Packet)) (probe.Client, func(),
 	timeout := time.Duration(d.cfg.TimeoutMs) * time.Millisecond
 	if mode.Serial() {
 		d.mu.Unlock()
-		return serialProbeClient{d}, func() {}, nil
+		return sharedClient{d}, func() {}, nil
 	}
 	main := d.client
 	d.client, d.state, d.since = nil, stateProbing, time.Now()
@@ -480,19 +480,19 @@ func (d *device) timeout() time.Duration {
 	return time.Duration(d.cfg.TimeoutMs) * time.Millisecond
 }
 
-// serialProbeClient 用串口的常规连接检测；读取表在检测期间暂停，不会和检测抢串口。
-type serialProbeClient struct{ d *device }
+// sharedClient 用常规连接发请求：串口检测、搜索站号都用它。读取表在这期间暂停，不会和它抢连接。
+type sharedClient struct{ d *device }
 
-func (c serialProbeClient) Mode() modbus.Mode {
+func (c sharedClient) Mode() modbus.Mode {
 	c.d.mu.Lock()
 	defer c.d.mu.Unlock()
 	return c.d.mode
 }
 
-func (c serialProbeClient) Do(ctx context.Context, req modbus.Request) (*modbus.Response, error) {
+func (c sharedClient) Do(ctx context.Context, req modbus.Request) (*modbus.Response, error) {
 	client := c.d.current()
 	if client == nil {
-		return nil, fmt.Errorf("串口已断开，请重新连接后检测：%w", modbus.ErrConnection)
+		return nil, fmt.Errorf("连接已断开，请重新连接后再试：%w", modbus.ErrConnection)
 	}
 	resp, err := client.Do(ctx, req)
 	if errors.Is(err, modbus.ErrConnection) && ctx.Err() == nil {

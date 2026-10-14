@@ -53,8 +53,12 @@ type Server struct {
 	tableID int
 	probe   *probeJob // 最近一次检测寄存器（进行中或已结束）
 	probeID int
+	scan    *scanJob // 最近一次搜索站号（进行中或已结束）
+	// pollGate 读取表每次读取拿读锁；搜索站号拿写锁：等在途的读取结束、不再发新的，免得搜索的请求排在它们后面
+	pollGate sync.RWMutex
+	scanID  int
 
-	probeStart sync.Mutex                // 开始检测的过程一次只走一个
+	probeStart sync.Mutex                // 开始检测或搜索站号的过程一次只走一个
 	probeLog   atomic.Pointer[probe.Log] // 正在检测时收发的报文记进去，导出报告用
 
 	ctx    context.Context
@@ -117,6 +121,8 @@ func (s *Server) Handler() http.Handler {
 	api("GET /api/probe", s.handleProbeResult)
 	api("POST /api/probe/stop", s.handleProbeStop)
 	api("GET /api/probe/report", s.handleProbeReport)
+	api("POST /api/slavescan", s.handleScan)
+	api("POST /api/slavescan/stop", s.handleScanStop)
 	api("GET /api/serial-ports", s.handleSerialPorts)
 	api("GET /api/records", s.handleRecords)
 	api("GET /api/records/{name}", s.handleDownload)

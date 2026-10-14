@@ -98,6 +98,10 @@ type Workspace struct {
 	connecting    bool
 	connErr       string // 上次连接失败的原因，重试时清空。
 	probeRunning  bool   // 检测及停止清理期间，同一工作区只允许一次检测
+	scanRunning   bool   // 正在搜索站号，读取窗口显示“搜索站号中”
+	// pollGate 读取窗口每次读取拿读锁；搜索站号拿写锁：等在途的读取结束、不再发新的，
+	// 不能直接取消在途的读取，设备照样会回，迟到的应答会撞上搜索的请求
+	pollGate sync.RWMutex
 	probeCancel   context.CancelFunc
 	importTask    *pointImportTask
 	workspaceBusy bool                     // 正在后台打开或保存工作区文件，同一时刻只做一件
@@ -362,6 +366,11 @@ func (ws *Workspace) layout() fyne.CanvasObject {
 				ws.registerProbeDialog()
 			}
 		}),
+		widget.NewButtonWithIcon("搜索站号", theme.SearchReplaceIcon(), func() {
+			if !ws.dialogOpen() {
+				ws.scanSlavesDialog()
+			}
+		}),
 		widget.NewButtonWithIcon("导入点表", theme.FolderOpenIcon(), func() {
 			if !ws.dialogOpen() {
 				ws.importPoints()
@@ -472,7 +481,7 @@ func (ws *Workspace) setMenu() {
 			item("AI 诊断助手…", ws.inspect.openAI),
 			key(item("自定义请求…", ws.openRequestTool), fyne.KeyR, false),
 			key(item("功能码 / 数据类型 / 字节序调试…", func() { ws.openTypeTool(ws.current()) }), fyne.KeyB, false),
-			item("扫描从站地址…", modal(ws.scanSlavesDialog)), item("读取诊断计数器…", modal(ws.diagCountersDialog)),
+			item("搜索站号…", modal(ws.scanSlavesDialog)), item("读取诊断计数器…", modal(ws.diagCountersDialog)),
 			item("检测寄存器…", modal(ws.registerProbeDialog)),
 			fyne.NewMenuItemSeparator(),
 			key(item("历史报文…", modal(ws.openHistory)), fyne.KeyH, true),
