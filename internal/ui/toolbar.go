@@ -148,13 +148,9 @@ func (centerTextLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
 }
 
 func (centerTextLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
-	var size fyne.Size
-	for _, o := range objects {
-		if o.Visible() {
-			size = size.Max(o.MinSize())
-		}
-	}
-	return size
+	// The empty-state label overlays a list. The list sets the panel minimum;
+	// the label wraps to the actual width when laid out.
+	return fyne.NewSize(0, 0)
 }
 
 func (l panelLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {

@@ -29,7 +29,7 @@ for ARCH in amd64 arm64; do
 
 	# 说明直接在这里生成：仓库里的文本模板会被加密软件改成密文。不用 heredoc：在装了加密软件的电脑上，
 	# heredoc 经过的临时文件同样会被加密，写出的说明是密文；printf 不经过临时文件。
-	printf '%s\n' "Modbus AI Studio Web 版 $VERSION（Linux $LABEL）
+	printf '%s\n' "Modbus AI Studio Web 版 ${VERSION}（Linux ${LABEL}）
 
 在网关或服务器上运行，用浏览器调试 Modbus 设备：连接（TCP / RTU over TCP / ASCII over TCP / 串口 RTU / ASCII）、
 读取表、写入并回读验证、协议识别、通信报文监视，收发报文按天记进 SQLite，可在页面上下载。
