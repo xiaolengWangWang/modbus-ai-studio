@@ -10,6 +10,15 @@ func glFailed(line []byte) bool {
 	return bytes.Contains(line, []byte("window creation error")) || bytes.Contains(line, []byte("failed to initialise GLFW"))
 }
 
-const glHelp = "界面启动失败：这台电脑的显卡不支持 OpenGL 2.1（远程桌面、虚拟机、老工控机常见）。\n\n" +
-	"解决办法：下载 Mesa3D 软件渲染版的 opengl32.dll（https://github.com/pal1000/mesa-dist-win ，x64 目录），" +
-	"放到 ModbusAIStudio.exe 同一目录，再重新打开。\n\n详细日志：%AppData%\\ModbusAIStudio\\app.log"
+// glHelp 是普通版界面起不来时的说明：换用自带软件渲染的兼容版。page 是下载页面，弹窗问用户要不要打开。
+func glHelp(logPath, page string) string {
+	return "界面启动失败：这台电脑的显卡不支持 OpenGL 2.1，或显卡驱动有问题（远程桌面、虚拟机、老工控机常见）。\n\n" +
+		"解决办法：下载兼容版（文件名以 -Windows-x64-Compat.zip 结尾），解压后运行里面的 ModbusAIStudio.exe。" +
+		"兼容版自带软件渲染，不依赖显卡，也能在 Windows 7 上运行。\n\n" +
+		"下载页面：" + page + "\n详细日志：" + logPath + "\n\n现在打开下载页面吗？"
+}
+
+// glHelpMesa 是已经用 Mesa 软件渲染还起不来时的说明。
+func glHelpMesa(logPath string) string {
+	return "界面启动失败：软件渲染（Mesa）也没能创建窗口。\n\n请把详细日志发给技术支持：" + logPath
+}

@@ -38,9 +38,10 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 |  | `internal/simulator/` | 模拟从站与故障注入 |
 |  | `internal/recorder/` | 报文记录：会话、收发、断开重连事件存进本机 SQLite |
 |  | `internal/update/` | 软件更新：查询 GitHub Releases、下载并校验 SHA-256、替换 Windows 程序文件或 macOS .app |
+|  | `internal/edition/` | `Compat` 常量：Windows 兼容版用 `-tags compat` 编译，检查更新只取兼容版、数据放在程序目录 |
 |  | `internal/ui/` | 桌面界面（各文件分工见 `internal/ui/app.go` 开头的说明） |
 |  | `tests/` | 基于模拟器的集成测试 |
-| 平台代码 | `platform/` | 各操作系统专用的 Go 代码：`windows.go`（按进程号追加启动日志、获取屏幕可用区域、显卡不支持 OpenGL 时弹窗），`other.go`（macOS、Linux）；`window.go` 按可用区域和 DPI 缩放限制窗口尺寸 |
+| 平台代码 | `platform/` | 各操作系统专用的 Go 代码：`windows.go`（按进程号追加启动日志、获取屏幕可用区域、显卡不支持 OpenGL 时弹窗引导下载兼容版、兼容版把数据放到程序目录、有 Mesa 时用 llvmpipe），`env.go`（改过的环境变量给子进程时换回原值），`font_windows.go`（中文字体按微软雅黑 UI、微软雅黑、等线、黑体、宋体依次找），`other.go`（macOS、Linux）；`window.go` 按可用区域和 DPI 缩放限制窗口尺寸 |
 |  | `platform/macos/` | `Info.plist` 模板 |
 |  | `platform/windows/` | Windows 绿色版说明模板 `README.txt`，打包时替换版本号、加 UTF-8 BOM 和 CRLF |
 | 文档 | `README.md`、`docs/` | 首页；`guide.md` 使用说明、`points.md` 点表格式、`faq.md` 常见问题、`development.md` 开发与发布 |
@@ -98,11 +99,11 @@ go test -race -count=3 ./...        # 并发与稳定性
 
 ## 打包与发版
 
-`build/macos.sh` 在 macOS 上打 Intel 和 Apple Silicon 两个 .app 和 DMG（ad-hoc 签名，最低 macOS 12）；`build/windows.sh` 在 Linux / macOS 上用 mingw-w64 交叉编译 Windows x64 绿色版 zip（静态链接，只依赖系统 DLL）；`build/linux-web.sh` 用 `CGO_ENABLED=0` 编 Linux Web 版 x64 和 ARM64，各打一个 tar.gz（`modbus-web` 加 `README.txt`，打包时写上可执行位）；`build/cli.sh` 用 `CGO_ENABLED=0` 交叉编译 modbus-cli 的 Windows x64、macOS Intel / Apple Silicon、Linux x64 / ARM64，各打一个包（程序加 `README.txt`，说明是 `modbus-cli manual` 的输出）。Actions 分别使用 Ubuntu 和 macOS runner，Web 版、modbus-cli 和 Windows 版都在 Ubuntu 上打。
+`build/macos.sh` 在 macOS 上打 Intel 和 Apple Silicon 两个 .app 和 DMG（ad-hoc 签名，最低 macOS 12）；`build/windows.sh` 在 Linux / macOS 上用 mingw-w64 交叉编译 Windows x64 绿色版，打两个 zip（静态链接，只依赖系统 DLL）：普通版；兼容版 `-Windows-x64-Compat.zip` 用 [go-legacy-win7](https://github.com/thongtech/go-legacy-win7) 工具链加 `-tags compat` 编译（能在 Win7 / 8 / 8.1 上运行），exe 旁边带 [mesa-dist-win](https://github.com/pal1000/mesa-dist-win) 的 `opengl32.dll`、`libgallium_wgl.dll`（llvmpipe 软件渲染，不依赖显卡）和 `Mesa-LICENSE.txt`，数据放在程序目录的 `data` 文件夹。两者的版本和 SHA-256 写在脚本开头，下载后缓存在 `~/.cache/modbus-ai-studio`，解开 Mesa 的 .7z 要 `7z`；`build/linux-web.sh` 用 `CGO_ENABLED=0` 编 Linux Web 版 x64 和 ARM64，各打一个 tar.gz（`modbus-web` 加 `README.txt`，打包时写上可执行位）；`build/cli.sh` 用 `CGO_ENABLED=0` 交叉编译 modbus-cli 的 Windows x64、macOS Intel / Apple Silicon、Linux x64 / ARM64，各打一个包（程序加 `README.txt`，说明是 `modbus-cli manual` 的输出）。Actions 分别使用 Ubuntu 和 macOS runner，Web 版、modbus-cli 和 Windows 版都在 Ubuntu 上打。
 
-打完包，`package` 工作流的 `smoke` 任务在 Windows x64、macOS Intel、macOS Apple Silicon、Linux x64、Linux ARM64 五种机器上各运行一次 `build/smoke.sh`：解开本机架构的 modbus-cli 包，对内置模拟器写入、回读；Linux 上启动 Web 版并打开页面；Windows、macOS 上确认桌面版程序是本机架构、`-version` 能运行（runner 没有显卡，不开窗口）。任何一种机器没通过，`package` 就算失败，发版停在 prepare。
+打完包，`package` 工作流的 `smoke` 任务在 Windows x64、macOS Intel、macOS Apple Silicon、Linux x64、Linux ARM64 五种机器上各运行一次 `build/smoke.sh`：解开本机架构的 modbus-cli 包，对内置模拟器写入、回读；Linux 上启动 Web 版并打开页面；Windows、macOS 上确认桌面版程序是本机架构、`-version` 能运行（runner 没有显卡，不开窗口）；Windows 兼容版用软件渲染，真的启动一次，等 `data\ModbusAIStudio\app.log` 写出窗口已显示、用的是 Mesa llvmpipe。任何一种机器没通过，`package` 就算失败，发版停在 prepare。
 
-Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\ModbusAIStudio\app.log`，每行带进程号，多个实例不会相互覆盖日志；图标资源可用 `go-winres extract` 检查 `GLFW_ICON` 和高 DPI 清单。主窗口默认 1040 × 680 逻辑尺寸，并按屏幕可用区域和 DPI 缩放适配；关闭按钮默认隐藏到托盘，采集继续，托盘菜单退出时关闭本实例全部连接并写完数据库缓冲。界面测试覆盖后台轮询、独立窗口关闭和退出清理，Windows 本机已验证两个进程同时运行及隐藏后保留进程。150% 缩放、16 像素图标和启动速度仍需在不同设备上验证；遇到问题时请附 `app.log`。
+Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\ModbusAIStudio\app.log`（兼容版在程序目录的 `data\ModbusAIStudio\app.log`：`platform.Setup` 把本进程的 `APPDATA`、`LOCALAPPDATA` 改到 `data`、`data\cache`，打开浏览器、资源管理器和更新后的新版本时用 `platform.ChildEnv` 换回原值；exe 旁边有 `opengl32.dll` 时设 `GALLIUM_DRIVER=llvmpipe`，否则新版 Mesa 先试 d3d12 驱动，缺 `dxil.dll` 时直接退出），每行带进程号，多个实例不会相互覆盖日志；图标资源可用 `go-winres extract` 检查 `GLFW_ICON` 和高 DPI 清单。主窗口默认 1040 × 680 逻辑尺寸，并按屏幕可用区域和 DPI 缩放适配；关闭按钮默认隐藏到托盘，采集继续，托盘菜单退出时关闭本实例全部连接并写完数据库缓冲。界面测试覆盖后台轮询、独立窗口关闭和退出清理，Windows 本机已验证两个进程同时运行及隐藏后保留进程。150% 缩放、16 像素图标和启动速度仍需在不同设备上验证；遇到问题时请附 `app.log`。
 
 版本号只写在 `cmd/modbus-ai/main.go` 的 `version` 一处，打包脚本、`package` 工作流和发版工具都从这里取。发版用 Go 写的 `build/release`，不用按版本复制脚本：
 
@@ -111,21 +112,21 @@ Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\Modbus
 3. `go run ./build/release prepare`：
    - 确认 GitHub 上的 main 就是本地 HEAD、版本号比已发布的新，`platform/windows/README.txt` 里有这一版的更新记录（`### x.y.z …` 标题）；
    - 等 `test` 工作流在五种架构上通过；这个提交还没打过包就触发 `package` 工作流，它在 GitHub Actions 上调用 `build/windows.sh`、`build/linux-web.sh`、`build/cli.sh` 和 `build/macos.sh`，再在五种架构上运行 `build/smoke.sh`，本机不需要 macOS 编译环境；macOS runner 排不上、任务被取消时自动重跑；
-   - 下载两个产物，按 GitHub 记录的摘要核对，再逐个检查安装包：DMG 结尾有 koly 块；Windows zip 只有 `ModbusAIStudio.exe` 和 `README.txt`、路径用 `/`，README 是没被加密的 UTF-8 BOM + CRLF 文本、带这一版的更新记录，exe 的文件版本、`GLFW_ICON` 图标和 per monitor v2 高 DPI 清单都在；Web 版 tar.gz 只有可执行的 `modbus-web` 和明文 `README.txt`，程序是对应架构（x86-64 / ARM64）的 Linux ELF，说明里有这一版的版本号；modbus-cli 的包只有程序和明文 `README.txt`，程序是包名里那个系统和 CPU 的（PE / Mach-O / ELF），tar.gz 里有可执行位，说明里有这一版的版本号；
+   - 下载两个产物，按 GitHub 记录的摘要核对，再逐个检查安装包：DMG 结尾有 koly 块；Windows zip 只有 `ModbusAIStudio.exe` 和 `README.txt`（兼容版另有 Mesa 的两个 DLL 和 `Mesa-LICENSE.txt`）、路径用 `/`，README 是没被加密的 UTF-8 BOM + CRLF 文本、带这一版的更新记录，exe 的文件版本、`GLFW_ICON` 图标和 per monitor v2 高 DPI 清单都在；兼容版的 exe 是 go-legacy-win7 编译的（有 `SystemFunction036`），exe 和 Mesa 都没有静态导入常见的 Win8 起才有的函数；Web 版 tar.gz 只有可执行的 `modbus-web` 和明文 `README.txt`，程序是对应架构（x86-64 / ARM64）的 Linux ELF，说明里有这一版的版本号；modbus-cli 的包只有程序和明文 `README.txt`，程序是包名里那个系统和 CPU 的（PE / Mach-O / ELF），tar.gz 里有可执行位，说明里有这一版的版本号；
    - 生成 `dist/release-x.y.z.md`（说明末尾加 `## SHA-256` 段落，每行 `校验值  文件名`，自动更新按它校验下载的安装包）、各安装包的 `.sha256` 和记录 `release-x.y.z-assets.json`；Windows 版另解压到 `dist/ModbusAIStudio-x.y.z-Windows-x64/`，可以直接试用。
 4. 看一遍 `dist/release-x.y.z.md`，运行 `go run ./build/release publish`：
-   - 在打包的提交上打 tag，推到 GitHub；建草稿，逐个上传全部 10 个包（网络慢时一次传完会超时），按 GitHub 算出的摘要核对后发布为最新版；
-   - 把这个提交和 tag 推到 Gitee 镜像，建发行版，上传全部 10 个包；Gitee 没有草稿，传完之前检查更新会改用 GitHub 上的同一版本；
-   - 核对结果（也可单独运行 `verify`）：两边的说明都与本地一致；不带令牌从 Gitee 下载全部包，SHA-256 与 CI 产物一致；用程序自己的检查更新代码确认优先查到 Gitee 上的新版本，三个平台的安装包和校验值都对，GitHub 可作备用下载源；
+   - 在打包的提交上打 tag，推到 GitHub；建草稿，逐个上传全部 11 个包（网络慢时一次传完会超时），按 GitHub 算出的摘要核对后发布为最新版；
+   - 把这个提交和 tag 推到 Gitee 镜像，建发行版，上传全部 11 个包；Gitee 没有草稿，传完之前检查更新会改用 GitHub 上的同一版本；
+   - 核对结果（也可单独运行 `verify`）：两边的说明都与本地一致；不带令牌从 Gitee 下载全部包，SHA-256 与 CI 产物一致；用程序自己的检查更新代码确认优先查到 Gitee 上的新版本，四个桌面版安装包和校验值都对，GitHub 可作备用下载源；
    - 删掉 `dist/` 里旧版本的文件。
 
-安装包文件名不要改：程序检查更新时同时查 Gitee 和 GitHub，按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包。Web 版的包（`ModbusAIStudio-Web-x.y.z-Linux-x64.tar.gz`、`-Linux-arm64.tar.gz`）只随发布上传，检查更新不认它们，Web 版没有自动更新，换新版本时替换程序后重启。modbus-cli 的包用小写的 `modbus-cli-x.y.z-windows-x64.zip` 这类名字，结尾和安装包不同：旧版本的检查更新只看结尾，同结尾就会把 CLI 的包当成更新下载；1.4.0 起检查更新还要求文件名以 `ModbusAIStudio-` 加版本号开头。
+安装包文件名不要改：程序检查更新时同时查 Gitee 和 GitHub，按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包；兼容版（`-tags compat`）只认 `-Windows-x64-Compat.zip`，免得更新成 Win7 上起不来的普通版，普通版按结尾也不会取到兼容版。Web 版的包（`ModbusAIStudio-Web-x.y.z-Linux-x64.tar.gz`、`-Linux-arm64.tar.gz`）只随发布上传，检查更新不认它们，Web 版没有自动更新，换新版本时替换程序后重启。modbus-cli 的包用小写的 `modbus-cli-x.y.z-windows-x64.zip` 这类名字，结尾和安装包不同：旧版本的检查更新只看结尾，同结尾就会把 CLI 的包当成更新下载；1.4.0 起检查更新还要求文件名以 `ModbusAIStudio-` 加版本号开头。
 
 凭据：GitHub 用 git 凭据管理器里推送用的令牌（或环境变量 `GH_TOKEN`）；Gitee 用 `~/.gitee_token` 里的私人令牌（勾选 projects，或环境变量 `GITEE_TOKEN`），推送走 https，由工具回答 git 的用户名和密码提问，令牌不出现在命令行里。
 
 每一步先查已有状态再动手，网络出错自动重试；仍失败时重跑同一条命令，已完成的步骤会跳过。过程记在 `dist/release-x.y.z.log`。
 
-发布前会先验证两侧凭据、本地安装包名称与 SHA-256、发布说明中的校验值，再执行推 tag 和远程发布。可以编辑发布正文，校验段必须与核对过的安装包一致。
+发布前会先验证两侧凭据、本地安装包名称与 SHA-256、发布说明中的校验值，再执行推 tag 和远程发布。可以编辑发布正文，校验段必须与核对过的安装包一致。发布说明写短：几条一行的要点，下载说明放在 `## 下载` 下（程序的更新提示不显示它）。发布后要改说明，编辑 `dist/release-x.y.z.md` 再运行一次 `publish`，两边的说明都会更新并重新核对。
 
 ## Linux Web 版
 

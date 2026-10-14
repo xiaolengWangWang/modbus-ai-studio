@@ -309,7 +309,7 @@ func (r *release) verify(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	r.log.Printf("检查更新核对通过：从 %s 查到 %s，三个平台的安装包和校验值一致，另一个下载源可备用", rel.Source, rel.Version())
+	r.log.Printf("检查更新核对通过：从 %s 查到 %s，四个桌面版安装包和校验值一致，另一个下载源可备用", rel.Source, rel.Version())
 	if err := writeJSON(r.file("-verification.json"), map[string]any{
 		"version":     r.version,
 		"commit":      m.Commit,
@@ -319,7 +319,7 @@ func (r *release) verify(ctx context.Context) error {
 		"checks": []string{
 			"GitHub 最新正式版是这个版本，说明一致，全部文件的 SHA-256 摘要与 CI 产物一致",
 			"Gitee 说明一致，全部安装包下载后的 SHA-256 与 CI 产物一致",
-			"检查更新优先查到 Gitee 上的这个版本，三个平台的安装包和校验值一致，GitHub 可备用",
+			"检查更新优先查到 Gitee 上的这个版本，四个桌面版安装包和校验值一致，GitHub 可备用",
 		},
 		"assets": m.Assets,
 	}); err != nil {

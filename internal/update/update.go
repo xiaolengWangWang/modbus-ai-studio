@@ -20,6 +20,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"modbus-ai-studio/internal/edition"
 )
 
 // 发布安装包的仓库：GitHub 和它在 Gitee 上的镜像，两边发布同样的安装包和说明。
@@ -239,9 +241,15 @@ func parseVersion(s string) (version, bool) {
 	return v, true
 }
 
+// CompatSuffix 是 Windows 兼容版安装包的结尾。普通版按“-Windows-x64.zip”找，不会取到兼容版；
+// 兼容版（Win7 工具链编译、带 Mesa）只取兼容版，免得更新成 Win7 上跑不起来的普通版。
+const CompatSuffix = "-Windows-x64-Compat.zip"
+
 // assetSuffix 是各平台安装包文件名的结尾，与 build/macos.sh、build/windows.sh 一致。
 func assetSuffix(goos, goarch string) string {
 	switch {
+	case goos == "windows" && goarch == "amd64" && edition.Compat:
+		return CompatSuffix
 	case goos == "windows" && goarch == "amd64":
 		return "-Windows-x64.zip"
 	case goos == "darwin" && goarch == "amd64":
@@ -254,7 +262,11 @@ func assetSuffix(goos, goarch string) string {
 
 // Asset 返回本平台的安装包。
 func (r Release) Asset(goos, goarch string) (Asset, bool) {
-	suffix := assetSuffix(goos, goarch)
+	return r.Find(assetSuffix(goos, goarch))
+}
+
+// Find 返回文件名是 ModbusAIStudio-x.y.z 加 suffix 的安装包。
+func (r Release) Find(suffix string) (Asset, bool) {
 	if suffix == "" {
 		return Asset{}, false
 	}

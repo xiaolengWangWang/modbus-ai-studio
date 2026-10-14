@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"strings"
 	"testing"
 
 	"fyne.io/fyne/v2"
@@ -23,5 +24,19 @@ func TestGLFailed(t *testing.T) {
 	fyne.LogError("failed to open file", errors.New("permission denied"))
 	if glFailed(buf.Bytes()) {
 		t.Errorf("普通错误不该弹窗：%q", buf.String())
+	}
+}
+
+// 普通版的说明指向兼容版和下载页面，已经用软件渲染时不再让用户去下兼容版；两种都给出实际的日志位置。
+func TestGLHelp(t *testing.T) {
+	text := glHelp(`D:\app\data\app.log`, "https://gitee.com/x/y/releases")
+	for _, want := range []string{"-Windows-x64-Compat.zip", "https://gitee.com/x/y/releases", `D:\app\data\app.log`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("说明里没有 %s：%s", want, text)
+		}
+	}
+	text = glHelpMesa(`D:\app\data\app.log`)
+	if !strings.Contains(text, `D:\app\data\app.log`) || strings.Contains(text, "Compat") {
+		t.Errorf("软件渲染失败的说明不对：%s", text)
 	}
 }

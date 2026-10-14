@@ -18,13 +18,13 @@ TCP 可直接按连接栏参数开始检测，不必先连接。检测使用独�
 “调试 → AI 诊断助手”或解析面板“AI解释”打开 DeepSeek：在“模型设置”填写 API Key、保存并测试连接，再预览发送内容后开始分析。
 读取故障行“AI分析”直接绑定该读取窗口；日志和历史日志也能分析。助手顶部显示对象与所选地址，报告分节显示，可复制或导出带冻结证据的 Markdown 文件。
 Windows 使用当前用户 DPAPI 加密保存密钥。默认不发送寄存器值和原始报文，勾选后才包含；AI 提供人工检查建议，不执行设备操作。
-请看中文是否为微软雅黑 UI、150% 缩放下窗口是否完整、
-标题栏和任务栏的小图标是否清晰。首次启动如果仍慢，请发送
-%AppData%\ModbusAIStudio\app.log（里面记录了各启动阶段耗时）。
-- 系统要求：Windows 10 / 11 64 位。不支持 Windows 7 / 8。
-- 需要显卡支持 OpenGL 2.1，不支持时程序会弹窗说明。处理办法：下载 Mesa3D 软件渲染版的
-  opengl32.dll（https://github.com/pal1000/mesa-dist-win 的 x64 目录），放到 exe 同一目录再运行。
-- 报文记录从 %AppData%\ModbusAIStudio\packets.db 开始，单个数据库文件上限 50 MB。
+启动慢或界面异常时，请发送 %AppData%\ModbusAIStudio\app.log（记录了各启动阶段耗时；兼容版在程序目录的 data\ModbusAIStudio\app.log）。
+- 普通版 ModbusAIStudio-{{VERSION}}-Windows-x64.zip：Windows 10 / 11 64 位，需要显卡支持 OpenGL 2.1。
+- 兼容版 ModbusAIStudio-{{VERSION}}-Windows-x64-Compat.zip（约 33 MB）：远程桌面、虚拟机、老工控机、显卡驱动有问题，
+  或 Windows 7 / 8 / 8.1 64 位时用它。自带 Mesa 软件渲染（opengl32.dll、libgallium_wgl.dll），不依赖显卡，
+  启动稍慢、CPU 占用稍高。数据和日志放在程序目录的 data 文件夹，整个文件夹可以拷走；程序目录不能写时仍放在 %AppData%。
+  普通版打不开界面时会弹窗提示下载兼容版；兼容版自动更新时只更新成兼容版。
+- 报文记录从 %AppData%\ModbusAIStudio\packets.db 开始（兼容版在 data\ModbusAIStudio\packets.db），单个数据库文件上限 50 MB。
   写满后自动创建 packets-000001.db 等编号文件，旧文件保留，不自动删除。
   “历史记录”可选择文件查看；所有 .db 文件也可用 SQLite 管理工具打开。
   异常收发另存在 anomalies 表，请求帧和收到的字节成对，历史记录的“异常报文”页查看。

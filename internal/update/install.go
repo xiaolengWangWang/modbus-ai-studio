@@ -136,12 +136,13 @@ func cleanupDir(dir string) {
 	}
 }
 
-// Restart 启动新安装的程序。调用方随后退出当前进程。
-func Restart(target string) error {
+// Restart 启动新安装的程序，env 是给它的环境变量（nil 表示和本进程相同）。调用方随后退出当前进程。
+func Restart(target string, env []string) error {
 	switch runtime.GOOS {
 	case "windows":
 		cmd := exec.Command(target)
 		cmd.Dir = filepath.Dir(target)
+		cmd.Env = env
 		return cmd.Start()
 	case "darwin":
 		return exec.Command("open", "-n", target).Start()

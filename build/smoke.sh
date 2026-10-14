@@ -3,7 +3,8 @@
 # （Windows x64、macOS Intel / Apple Silicon、Linux x64 / ARM64），确认每个包里的程序都能启动：
 #   modbus-cli   对内置模拟器读、写并回读
 #   Web 版       （Linux）启动并打开页面
-#   桌面版       （Windows、macOS）程序是本机架构，-version 能运行（CI 上没有显卡，不开窗口）
+#   桌面版       （Windows、macOS）程序是本机架构，-version 能运行（CI 上没有显卡，不开窗口）；
+#                Windows 兼容版用软件渲染，真的打开一次窗口
 # 用法：build/smoke.sh（包先放在 dist/；版本号取自 cmd/modbus-ai/main.go，也可用 VERSION=x.y.z 指定）
 set -eu
 cd "$(dirname "$0")/.."
@@ -91,6 +92,23 @@ windows)
 	unpack "$PKG" "$WORK"
 	expect "$VERSION" "$("$WORK/ModbusAIStudio-$VERSION-Windows-x64/ModbusAIStudio.exe" -version)"
 	echo "桌面版通过：$PKG"
+	# 兼容版用 Mesa 软件渲染，没有显卡也能开窗口：真的启动一次，等日志（在程序目录的 data 里）写出窗口已显示
+	PKG="$DIST/ModbusAIStudio-$VERSION-Windows-x64-Compat.zip"
+	[ -f "$PKG" ] || fail "没有 $PKG"
+	unpack "$PKG" "$WORK"
+	DIR="$WORK/ModbusAIStudio-$VERSION-Windows-x64-Compat"
+	expect "$VERSION" "$("$DIR/ModbusAIStudio.exe" -version)"
+	"$DIR/ModbusAIStudio.exe" &
+	PIDS="$PIDS $!"
+	LOG="$DIR/data/ModbusAIStudio/app.log"
+	i=0
+	until grep -q "window shown" "$LOG" 2>/dev/null; do
+		i=$((i + 1))
+		[ $i -lt 240 ] || fail "兼容版两分钟内没有打开窗口：$(cat "$LOG" 2>/dev/null)"
+		sleep 0.5
+	done
+	grep -q "startup render: Mesa llvmpipe" "$LOG" || fail "兼容版没有用 Mesa 软件渲染：$(cat "$LOG")"
+	echo "兼容版通过：$PKG（$(grep -o 'window shown: .*' "$LOG")）"
 	;;
 macos)
 	NAME=AppleSilicon WANT=arm64

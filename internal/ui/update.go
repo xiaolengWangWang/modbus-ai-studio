@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"runtime"
 	"sync/atomic"
@@ -16,6 +15,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"modbus-ai-studio/internal/update"
+	"modbus-ai-studio/platform"
 )
 
 // 软件更新：“帮助 → 检查更新”，以及启动后和运行期间的自动检查。
@@ -303,7 +303,7 @@ func (ws *Workspace) askRestart(version, target string) {
 			dialog.ShowInformation("更新完成", "下次打开程序时就是新版本。", ws.win)
 			return
 		}
-		if err := update.Restart(target); err != nil {
+		if err := update.Restart(target, platform.ChildEnv()); err != nil {
 			ws.showUpdateError("重启失败", fmt.Errorf("%w。新版本已经装好，请手动打开程序", err))
 			return
 		}
@@ -325,13 +325,12 @@ func (ws *Workspace) showUpdateError(title string, err error) {
 }
 
 // openReleasePage 打开下载页面：查到了发布就用那个下载源的页面，否则用排在第一的下载源（Gitee）。
+// 不用 Fyne 的 OpenURL：兼容版改过本进程的 APPDATA，浏览器要拿到原来的环境变量（见 platform.ChildEnv）。
 func (ws *Workspace) openReleasePage(page string) {
 	if page == "" {
 		page = update.PageURL()
 	}
-	if u, err := url.Parse(page); err == nil {
-		ws.app.OpenURL(u)
-	}
+	openFileFn(page)
 }
 
 // toggleAutoUpdate 切换“自动检查更新”，菜单项的勾选随之更新。

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -335,12 +336,51 @@ func TestUnpackWindows(t *testing.T) {
 			t.Errorf("%s：应报错", name)
 		}
 	}
+
+	// 兼容版另带 Mesa 的两个 DLL 和许可声明，少一个都不行；普通版不能带
+	ctop := "ModbusAIStudio-1.2.3-Windows-x64-Compat/"
+	compat := map[string]string{ctop + "ModbusAIStudio.exe": "MZ", ctop + "README.txt": goodReadme,
+		ctop + "opengl32.dll": "MZ", ctop + "libgallium_wgl.dll": "MZ", ctop + "Mesa-LICENSE.txt": "MIT"}
+	cpkg := filepath.Join(t.TempDir(), "ModbusAIStudio-1.2.3-Windows-x64-Compat.zip")
+	writeZip(t, cpkg, compat)
+	if err := unpackWindows(cpkg, "1.2.3", t.TempDir()); err != nil {
+		t.Fatalf("兼容版：%v", err)
+	}
+	delete(compat, ctop+"libgallium_wgl.dll")
+	writeZip(t, cpkg, compat)
+	if err := unpackWindows(cpkg, "1.2.3", t.TempDir()); err == nil {
+		t.Error("兼容版缺 libgallium_wgl.dll 时应报错")
+	}
+	writeZip(t, pkg, map[string]string{top + "ModbusAIStudio.exe": "MZ", top + "README.txt": goodReadme, top + "opengl32.dll": "MZ"})
+	if err := unpackWindows(pkg, "1.2.3", t.TempDir()); err == nil {
+		t.Error("普通版带了 opengl32.dll 应报错：放在 exe 旁边就会一直用软件渲染")
+	}
+}
+
+// 官方工具链编译的程序（这里用 go 命令本身；测试程序里有检查用的字符串，不能用）在 Win7 上起不来，兼容版的核对要拦下。
+func TestCheckWin7RejectsOfficialToolchain(t *testing.T) {
+	gobin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip(err)
+	}
+	b, err := os.ReadFile(gobin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "ModbusAIStudio.exe"), b, 0o755)
+	if err := checkWin7(dir); err == nil || !strings.Contains(err.Error(), "go-legacy-win7") {
+		t.Fatalf("应报出不是 go-legacy-win7 编译的：%v", err)
+	}
 }
 
 func TestExtractInstallers(t *testing.T) {
 	ci, dst := t.TempDir(), t.TempDir()
 	names := packages("1.2.3")
-	linux := map[string]string{names[0]: "win", names[3]: "web x64", names[4]: "web arm64"}
+	linux := map[string]string{names[0]: "win", names[3]: "win compat"}
+	for _, name := range webPackages("1.2.3") {
+		linux[name] = "web"
+	}
 	for _, name := range cliPackages("1.2.3") {
 		linux[name] = "cli"
 	}

@@ -41,10 +41,11 @@ type asset struct {
 	SHA256 string `json:"sha256"`
 }
 
-// installers 是桌面版三个安装包的文件名。结尾不能改：程序检查更新时按结尾找本机的安装包。
+// installers 是桌面版四个安装包的文件名：Windows 普通版、macOS 两个、Windows 兼容版。
+// 结尾不能改：程序检查更新时按结尾找本机的安装包。
 func installers(version string) []string {
 	p := "ModbusAIStudio-" + version
-	return []string{p + "-Windows-x64.zip", p + "-macOS-Intel.dmg", p + "-macOS-AppleSilicon.dmg"}
+	return []string{p + "-Windows-x64.zip", p + "-macOS-Intel.dmg", p + "-macOS-AppleSilicon.dmg", p + update.CompatSuffix}
 }
 
 // webPackages 是 Linux Web 版的两个包。检查更新不认它们（按结尾找不到），只随发布一起上传。
@@ -102,13 +103,21 @@ func localView(notes string, assets []asset) update.Release {
 	return rel
 }
 
-// checkUpdaterView 用检查更新的代码在发布里找桌面版三个平台的安装包和校验值，与核对过的安装包比较。
+// checkUpdaterView 用检查更新的代码在发布里找桌面版四个安装包和校验值，与核对过的安装包比较。
 // mirrors 为 true 时还要求另一个下载源上也有同一个文件。
 func checkUpdaterView(rel update.Release, assets []asset, mirrors bool) error {
-	for _, p := range [][2]string{{"windows", "amd64"}, {"darwin", "amd64"}, {"darwin", "arm64"}} {
-		a, ok := rel.Asset(p[0], p[1])
+	for _, p := range []struct {
+		what string
+		find func() (update.Asset, bool)
+	}{
+		{"Windows", func() (update.Asset, bool) { return rel.Asset("windows", "amd64") }},
+		{"Windows 兼容版", func() (update.Asset, bool) { return rel.Find(update.CompatSuffix) }},
+		{"macOS Intel", func() (update.Asset, bool) { return rel.Asset("darwin", "amd64") }},
+		{"macOS Apple Silicon", func() (update.Asset, bool) { return rel.Asset("darwin", "arm64") }},
+	} {
+		a, ok := p.find()
 		if !ok || a.URL == "" {
-			return fmt.Errorf("检查更新找不到 %s/%s 的安装包", p[0], p[1])
+			return fmt.Errorf("检查更新找不到 %s 的安装包", p.what)
 		}
 		i := slices.IndexFunc(assets, func(x asset) bool { return x.Name == a.Name })
 		sum, _ := rel.Checksum(a.Name)
@@ -497,13 +506,29 @@ func (r *release) checkWindows(pkg, work string) error {
 	if err := r.checkResources(filepath.Join(dir, "ModbusAIStudio.exe")); err != nil {
 		return err
 	}
+	if strings.HasSuffix(pkg, update.CompatSuffix) {
+		if err := checkWin7(dir); err != nil {
+			return err
+		}
+	}
 	if err := unpackWindows(pkg, r.version, strings.TrimSuffix(pkg, ".zip")); err != nil {
 		r.log.Printf("没能解压到 %s（程序正开着？），不影响发版：%v", strings.TrimSuffix(pkg, ".zip"), err)
 	}
 	return nil
 }
 
-// unpackWindows 把 Windows zip 解压到 dir。包里只能有顶层目录下的 exe 和 README.txt，路径用 /（自动更新按这个解压），
+// windowsFiles 是 Windows zip 顶层目录下该有的全部文件。兼容版另带 Mesa 软件渲染的两个 DLL 和它的许可声明。
+func windowsFiles(pkg string) []string {
+	files := []string{"ModbusAIStudio.exe", "README.txt"}
+	if strings.HasSuffix(pkg, update.CompatSuffix) {
+		files = append(files, mesaFiles...)
+	}
+	return files
+}
+
+var mesaFiles = []string{"opengl32.dll", "libgallium_wgl.dll", "Mesa-LICENSE.txt"}
+
+// unpackWindows 把 Windows zip 解压到 dir。包里只能有顶层目录下的 windowsFiles，路径用 /（自动更新按这个解压），
 // README 要能在记事本里正常显示。
 func unpackWindows(pkg, version, dir string) error {
 	zr, err := zip.OpenReader(pkg)
@@ -512,7 +537,11 @@ func unpackWindows(pkg, version, dir string) error {
 	}
 	defer zr.Close()
 	top := strings.TrimSuffix(filepath.Base(pkg), ".zip") + "/"
-	want := map[string]bool{top + "ModbusAIStudio.exe": false, top + "README.txt": false}
+	files := windowsFiles(pkg)
+	want := map[string]bool{}
+	for _, f := range files {
+		want[top+f] = false
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -521,7 +550,7 @@ func unpackWindows(pkg, version, dir string) error {
 			continue
 		}
 		if _, ok := want[f.Name]; !ok {
-			return fmt.Errorf("多了 %s，包里只该有 ModbusAIStudio.exe 和 README.txt", f.Name)
+			return fmt.Errorf("多了 %s，包里只该有 %s", f.Name, strings.Join(files, "、"))
 		}
 		want[f.Name] = true
 		if path.Base(f.Name) == "README.txt" {
@@ -545,6 +574,52 @@ func unpackWindows(pkg, version, dir string) error {
 	for name, ok := range want {
 		if !ok {
 			return fmt.Errorf("缺少 %s", name)
+		}
+	}
+	return nil
+}
+
+// newerThanWin7 是 Windows 8 及以后才有的常用系统函数和 DLL。兼容版的 exe 和 Mesa 静态导入了其中任何一个，
+// Win7 上就起不来。不是完整清单，只拦常见的。
+var newerThanWin7 = []string{
+	"GetSystemTimePreciseAsFileTime", "CreateFile2", "CopyFile2", "WaitOnAddress", "WakeByAddressSingle", "WakeByAddressAll",
+	"GetCurrentThreadStackLimits", "SetThreadInformation", "GetThreadInformation", "SetProcessInformation", "GetProcessInformation",
+	"SetThreadDescription", "GetThreadDescription", "InitializeSynchronizationBarrier", "EnterSynchronizationBarrier",
+	"PrefetchVirtualMemory", "DiscardVirtualMemory", "OfferVirtualMemory", "VirtualAlloc2", "MapViewOfFile3",
+	"GetOverlappedResultEx", "GetFirmwareType", "SetProcessMitigationPolicy", "GetProcessMitigationPolicy", "ProcessPrng",
+	"GetDpiForWindow", "GetDpiForSystem", "SetProcessDpiAwarenessContext", "AdjustWindowRectExForDpi", "GetSystemMetricsForDpi",
+	"EnableNonClientDpiScaling", "GetDpiForMonitor", "SetProcessDpiAwareness", "GetPointerType", "EnableMouseInPointer",
+	"shcore.dll", "bcryptprimitives.dll", "api-ms-win-core-synch-l1-2-0.dll",
+}
+
+// checkWin7 核对兼容版能在 Win7 上起来：exe 是 go-legacy-win7 编译的（官方 Go 1.21 起的运行时在 Win7 上起不来，
+// go-legacy-win7 会退回 RtlGenRandom，即 SystemFunction036），exe 和 Mesa 都没有静态导入 Win8 起才有的函数。
+func checkWin7(dir string) error {
+	exe := filepath.Join(dir, "ModbusAIStudio.exe")
+	b, err := os.ReadFile(exe)
+	if err != nil {
+		return err
+	}
+	if !bytes.Contains(b, []byte("SystemFunction036")) {
+		return errors.New("兼容版的 exe 不是用 go-legacy-win7 编译的，Win7 上起不来")
+	}
+	for _, name := range []string{"ModbusAIStudio.exe", "opengl32.dll", "libgallium_wgl.dll"} {
+		f, err := pe.Open(filepath.Join(dir, name))
+		if err != nil {
+			return fmt.Errorf("%s：%w", name, err)
+		}
+		syms, err := f.ImportedSymbols()
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("%s：%w", name, err)
+		}
+		for _, s := range syms {
+			fn, dll, _ := strings.Cut(s, ":")
+			for _, n := range newerThanWin7 {
+				if strings.EqualFold(fn, n) || strings.EqualFold(dll, n) {
+					return fmt.Errorf("%s 用到了 Win7 没有的 %s，兼容版在 Win7 上起不来", name, s)
+				}
+			}
 		}
 	}
 	return nil

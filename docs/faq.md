@@ -99,6 +99,7 @@ TCP 类连接断开后会自动重连（间隔 1 / 2 / 5 / 10 s），重连期�
 | 系统 | 数据库位置 |
 | --- | --- |
 | Windows | `%AppData%\ModbusAIStudio\packets.db` |
+| Windows 兼容版 | 程序目录的 `data\ModbusAIStudio\packets.db` |
 | macOS | `~/Library/Application Support/ModbusAIStudio/packets.db` |
 | Linux | `~/.config/ModbusAIStudio/packets.db` |
 
@@ -106,8 +107,10 @@ TCP 类连接断开后会自动重连（间隔 1 / 2 / 5 / 10 s），重连期�
 
 ## 安装与运行
 
-- **Windows 双击没反应或弹窗说显卡不支持 OpenGL**：远程桌面、虚拟机、老工控机常见。下载 [Mesa3D](https://github.com/pal1000/mesa-dist-win) 软件渲染版，把 x64 目录里的 `opengl32.dll` 放到 `ModbusAIStudio.exe` 同一目录再打开。运行日志在 `%AppData%\ModbusAIStudio\app.log`。
-- **Windows 7 / 8**：不支持，需要 Windows 10 / 11 64 位。
+- **Windows 双击没反应或弹窗说显卡不支持 OpenGL**：远程桌面、虚拟机、老工控机、显卡驱动有问题时常见。下载兼容版 `ModbusAIStudio-x.y.z-Windows-x64-Compat.zip`，解压后运行。兼容版自带 Mesa 软件渲染，不依赖显卡，启动稍慢、CPU 占用稍高。普通版的运行日志在 `%AppData%\ModbusAIStudio\app.log`。
+- **Windows 7 / 8 / 8.1**：普通版不支持，用兼容版（64 位）。兼容版按 Win7 编译，但发布前只在 Windows 10 / 11 上实测过。
+- **兼容版的数据在哪**：程序目录的 `data` 文件夹（日志 `data\ModbusAIStudio\app.log`、报文 `data\ModbusAIStudio\packets.db`、设置），和普通版分开，整个文件夹可以拷到别的电脑。程序目录不能写（例如放在 `C:\Program Files` 下）时仍放在 `%AppData%`。
+- **兼容版想改回用显卡**：换用普通版即可；或者删掉兼容版目录里的 `opengl32.dll` 和 `libgallium_wgl.dll`（Win7 上不能删，普通版不支持 Win7）。
 - **macOS 提示无法打开**：安装包是 ad-hoc 签名，第一次打开要在“系统设置 → 隐私与安全性”里点“仍要打开”。
 - **macOS 想同时开两个进程**：一般用“文件 → 新建窗口”就够了；确实需要第二个进程时运行 `open -n "/Applications/Modbus AI Studio.app"`。
 - **自动更新失败**：下载断开时程序会自动接着下几次，还不行就报错，下次再点“下载并安装”会从断开处继续。常见原因是连不上 GitHub（公司网络、代理）或程序目录没有写入权限（例如放在 `C:\Program Files` 下）。用更新对话框里的“打开下载页面”手动下载；Windows 版建议解压到自己的文件夹里使用。

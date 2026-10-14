@@ -20,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"modbus-ai-studio/internal/edition"
 )
 
 func TestNewer(t *testing.T) {
@@ -63,10 +65,17 @@ func TestReleaseAssetChecksumNotes(t *testing.T) {
 	r := Release{Tag: "v0.10.0", Body: body, Assets: []Asset{
 		{Name: "ModbusAIStudio-CLI-0.10.0-Windows-x64.zip"}, {Name: "modbus-cli-0.10.0-windows-x64.zip"}, // 排在前面也不能当成安装包
 		{Name: "ModbusAIStudio-0.10.0-macOS-AppleSilicon.dmg"}, {Name: "ModbusAIStudio-0.10.0-macOS-Intel.dmg"},
-		{Name: "ModbusAIStudio-0.10.0-Windows-x64.zip"},
+		{Name: "ModbusAIStudio-0.10.0-Windows-x64-Compat.zip"}, {Name: "ModbusAIStudio-0.10.0-Windows-x64.zip"},
 	}}
+	windows := "ModbusAIStudio-0.10.0-Windows-x64.zip" // 普通版和兼容版各取各的
+	if edition.Compat {
+		windows = "ModbusAIStudio-0.10.0-Windows-x64-Compat.zip"
+	}
+	if a, _ := r.Find(CompatSuffix); a.Name != "ModbusAIStudio-0.10.0-Windows-x64-Compat.zip" {
+		t.Errorf("按兼容版的结尾取到 %q", a.Name)
+	}
 	for _, c := range []struct{ goos, goarch, want string }{
-		{"windows", "amd64", "ModbusAIStudio-0.10.0-Windows-x64.zip"},
+		{"windows", "amd64", windows},
 		{"darwin", "amd64", "ModbusAIStudio-0.10.0-macOS-Intel.dmg"},
 		{"darwin", "arm64", "ModbusAIStudio-0.10.0-macOS-AppleSilicon.dmg"},
 		{"linux", "amd64", ""},
