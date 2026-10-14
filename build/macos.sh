@@ -45,7 +45,13 @@ for arch in amd64 arm64; do
 	rm -f "$dmg"
 	# ULMO（LZMA）比默认的 UDZO（zlib）小约三成，macOS 10.15 起能打开，部署目标是 12.0
 	hdiutil create -volname "$APP $VERSION" -srcfolder "$stage" -ov -format ULMO "$dmg" >/dev/null
+	parity="$dmg-differences.md"
+	sed -e "s/{{VERSION}}/$VERSION/g" -e "s/{{PACKAGE}}/$(basename "$dmg")/g" docs/platform-parity/macos.md >"$parity"
+	if grep -q E-Safe "$parity" || grep -F -q -e '{{' -e '}}' "$parity"; then
+		echo "$parity 不是完整的明文差异说明"; exit 1
+	fi
 	echo "  $app"
 	echo "  $dmg"
+	echo "  $parity"
 done
 shasum -a 256 "$DIST"/*.dmg

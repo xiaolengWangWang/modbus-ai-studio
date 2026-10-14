@@ -55,7 +55,9 @@ jobs:
             dist/v${{ inputs.version }}/ModbusAIStudio-*-Windows-x64-Compat.zip
             dist/v${{ inputs.version }}/ModbusAIStudio-*-macOS-Intel.dmg
             dist/v${{ inputs.version }}/ModbusAIStudio-*-macOS-AppleSilicon.dmg
+            dist/v${{ inputs.version }}/ModbusAIStudio-*-macOS-*.dmg-differences.md
             dist/v${{ inputs.version }}/ModbusAIStudio-Web-*-Linux-*.tar.gz
+            dist/v${{ inputs.version }}/ModbusAIStudio-Web-*-Linux-*.tar.gz-differences.md
             dist/v${{ inputs.version }}/modbus-cli-*.zip
             dist/v${{ inputs.version }}/modbus-cli-*.tar.gz
           if-no-files-found: error

@@ -46,7 +46,7 @@ go build -o bin/ ./cmd/...    # 得到 modbus-ai（桌面应用）、modbus-cli�
 |  | `platform/windows/` | Windows 绿色版说明模板 `README.txt`，打包时替换版本号、加 UTF-8 BOM 和 CRLF |
 | 文档 | `README.md`、`docs/` | 首页；`guide.md` 使用说明、`points.md` 点表格式、`faq.md` 常见问题、`development.md` 开发与发布 |
 | 打包编译 | `build/` | `macos.sh`（.app 和 DMG）、`windows.sh`（交叉编译绿色版 zip）、`linux-web.sh`（Linux Web 版 x64 / ARM64 的 tar.gz）、`cli.sh`（modbus-cli 五个平台的包）、`smoke.sh`（在本机架构上运行打好的包）、`release/`（本机发版工具，见 [打包与发版](#打包与发版)）、`icon/`（图标生成器） |
-|  | `.github/workflows/` | `test.yml` 在发布的每种架构上跑 vet 和测试；`package.yml` 打桌面版三个安装包、Linux Web 版两个包和 modbus-cli 五个包，再在五种架构上各运行一次（GitHub 规定的位置） |
+|  | `.github/workflows/` | `test.yml` 在发布的每种架构上跑 vet 和测试；`package.yml` 打 Windows 标准版与兼容版、macOS 两个包、Linux Web 两个包和 modbus-cli 五个包，再在五种架构上各运行一次（GitHub 规定的位置） |
 
 桌面版没有 Linux 安装包：同一份代码可以在 Linux 上编译运行（见 [从源码编译](#从源码编译)），持续集成里每次都测；Linux 网关和服务器上用 Web 版。编译输出在 `dist/`、`bin/`，不进仓库。
 
@@ -112,15 +112,17 @@ Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\Modbus
 3. `go run ./build/release prepare`：
    - 确认 GitHub 上的 main 就是本地 HEAD、版本号比已发布的新，`platform/windows/README.txt` 里有这一版的更新记录（`### x.y.z …` 标题）；
    - 等 `test` 工作流在五种架构上通过；这个提交还没打过包就触发 `package` 工作流，它在 GitHub Actions 上调用 `build/windows.sh`、`build/linux-web.sh`、`build/cli.sh` 和 `build/macos.sh`，再在五种架构上运行 `build/smoke.sh`，本机不需要 macOS 编译环境；macOS runner 排不上、任务被取消时自动重跑；
-   - 下载两个产物，按 GitHub 记录的摘要核对，再逐个检查安装包：DMG 结尾有 koly 块；Windows zip 只有 `ModbusAIStudio.exe` 和 `README.txt`（兼容版另有 Mesa 的两个 DLL 和 `Mesa-LICENSE.txt`）、路径用 `/`，README 是没被加密的 UTF-8 BOM + CRLF 文本、带这一版的更新记录，exe 的文件版本、`GLFW_ICON` 图标和 per monitor v2 高 DPI 清单都在；兼容版的 exe 是 go-legacy-win7 编译的（有 `SystemFunction036`），exe 和 Mesa 都没有静态导入常见的 Win8 起才有的函数；Web 版 tar.gz 只有可执行的 `modbus-web` 和明文 `README.txt`，程序是对应架构（x86-64 / ARM64）的 Linux ELF，说明里有这一版的版本号；modbus-cli 的包只有程序和明文 `README.txt`，程序是包名里那个系统和 CPU 的（PE / Mach-O / ELF），tar.gz 里有可执行位，说明里有这一版的版本号；
+   - 下载两个产物，按 GitHub 记录的摘要核对，再逐个检查安装包：DMG 结尾有 koly 块；Windows zip 只有 `ModbusAIStudio.exe` 和 `README.txt`（兼容版另有 Mesa 的两个 DLL 和 `Mesa-LICENSE.txt`）、路径用 `/`，README 是没被加密的 UTF-8 BOM + CRLF 文本、带这一版的更新记录，exe 的文件版本、`GLFW_ICON` 图标和 per monitor v2 高 DPI 清单都在；兼容版的 exe 是 go-legacy-win7 编译的（有 `SystemFunction036`），exe 和 Mesa 都没有静态导入常见的 Win8 起才有的函数；Web 版 tar.gz 只有可执行的 `modbus-web` 和明文 `README.txt`，程序是对应架构（x86-64 / ARM64）的 Linux ELF，说明里有这一版的版本号；modbus-cli 的包只有程序和明文 `README.txt`，程序是包名里那个系统和 CPU 的（PE / Mach-O / ELF），tar.gz 里有可执行位，说明里有这一版的版本号；四份 macOS 和 Linux Web 差异 Markdown 必须分别匹配包名及版本、为明文且完整；
    - 生成 `dist/vx.y.z/release-x.y.z.md`（说明末尾加 `## SHA-256` 段落，每行 `校验值  文件名`，自动更新按它校验下载的安装包）、各安装包的 `.sha256` 和记录 `release-x.y.z-assets.json`；Windows 版另解压到同一版本目录下的 `ModbusAIStudio-x.y.z-Windows-x64/`，可以直接试用。
 4. 看一遍 `dist/vx.y.z/release-x.y.z.md`，运行 `go run ./build/release publish`：
-   - 在打包的提交上打 tag，推到 GitHub；建草稿，逐个上传全部 11 个包（网络慢时一次传完会超时），按 GitHub 算出的摘要核对后发布为最新版；
-   - 把这个提交和 tag 推到 Gitee 镜像，建发行版，上传全部 11 个包；Gitee 没有草稿，传完之前检查更新会改用 GitHub 上的同一版本；
+   - 在打包的提交上打 tag，推到 GitHub；建草稿，逐个上传全部 11 个包及 4 份差异说明（网络慢时一次传完会超时），按 GitHub 算出的摘要核对后发布为最新版；
+   - 把这个提交和 tag 推到 Gitee 镜像，建发行版，上传全部 11 个包及 4 份差异说明；Gitee 没有草稿，传完之前检查更新会改用 GitHub 上的同一版本；
    - 核对结果（也可单独运行 `verify`）：两边的说明都与本地一致；不带令牌从 Gitee 下载全部包，SHA-256 与 CI 产物一致；用程序自己的检查更新代码确认优先查到 Gitee 上的新版本，四个桌面版安装包和校验值都对，GitHub 可作备用下载源；
    - 清理当前版本目录的临时下载文件，保留各版本构建和发布记录。
 
 安装包文件名不要改：程序检查更新时同时查 Gitee 和 GitHub，按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包；兼容版（`-tags compat`）只认 `-Windows-x64-Compat.zip`，免得更新成 Win7 上起不来的普通版，普通版按结尾也不会取到兼容版。Web 版的包（`ModbusAIStudio-Web-x.y.z-Linux-x64.tar.gz`、`-Linux-arm64.tar.gz`）只随发布上传，检查更新不认它们，Web 版没有自动更新，换新版本时替换程序后重启。modbus-cli 的包用小写的 `modbus-cli-x.y.z-windows-x64.zip` 这类名字，结尾和安装包不同：旧版本的检查更新只看结尾，同结尾就会把 CLI 的包当成更新下载；1.4.0 起检查更新还要求文件名以 `ModbusAIStudio-` 加版本号开头。
+
+macOS 与 Linux Web 的差异源文件在 `docs/platform-parity/`。每次优化对应平台时，核对 Windows 标准版与兼容版的功能，更新目标平台状态、缺失原因、`补齐` / `暂缓` / `不适用` 决定及验证依据。构建时为四个非 Windows 包各生成一份 `<包名>-differences.md`；发版工具检查明文、版本、包名、处理决定和 SHA-256，并随包一起发布。共用功能改在核心代码；已发布固定版本的缺陷改在对应维护分支。
 
 凭据：GitHub 用 git 凭据管理器里推送用的令牌（或环境变量 `GH_TOKEN`）；Gitee 用 `~/.gitee_token` 里的私人令牌（勾选 projects，或环境变量 `GITEE_TOKEN`），推送走 https，由工具回答 git 的用户名和密码提问，令牌不出现在命令行里。
 

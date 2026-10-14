@@ -50,6 +50,88 @@ func testAssets(version string) []asset {
 	return assets
 }
 
+func validParityDoc(version, pkg string) string {
+	return "# 与 Windows 桌面版的功能差异\n\n目标版本：" + version + "\nWindows 基准版本：" + version + "\n对应安装包：" + pkg + "\n检查日期：2026-10-15\n\n| 功能 | Windows 标准版 | Windows 兼容版 | 本版状态 | 原因 | 处理决定 | 验证依据 |\n| --- | --- | --- | --- | --- | --- | --- |\n| 软件渲染 | 不支持 | 支持 | 不适用 | 平台不同 | 不适用 | platform/windows.go |\n"
+}
+
+func TestParityNames(t *testing.T) {
+	version := "2.0.0"
+	want := []string{
+		"ModbusAIStudio-2.0.0-macOS-Intel.dmg-differences.md",
+		"ModbusAIStudio-2.0.0-macOS-AppleSilicon.dmg-differences.md",
+		"ModbusAIStudio-Web-2.0.0-Linux-x64.tar.gz-differences.md",
+		"ModbusAIStudio-Web-2.0.0-Linux-arm64.tar.gz-differences.md",
+	}
+	if got := parityDocs(version); !slices.Equal(got, want) {
+		t.Fatalf("parityDocs = %v, want %v", got, want)
+	}
+	if got := releaseAssets(version); !slices.Equal(got, append(packages(version), want...)) {
+		t.Fatalf("releaseAssets = %v", got)
+	}
+}
+
+func TestParityDocValidation(t *testing.T) {
+	pkg := "ModbusAIStudio-2.0.0-macOS-Intel.dmg"
+	path := filepath.Join(t.TempDir(), "parity.md")
+	for _, tc := range []struct {
+		name, body string
+		valid      bool
+	}{
+		{"valid", validParityDoc("2.0.0", pkg), true},
+		{"wrong version", validParityDoc("2.0.1", pkg), false},
+		{"wrong package", validParityDoc("2.0.0", "other.dmg"), false},
+		{"missing decision", strings.Replace(validParityDoc("2.0.0", pkg), "处理决定", "计划", 1), false},
+		{"placeholder", validParityDoc("2.0.0", pkg) + "\n{{TODO}}", false},
+		{"encrypted", "E-SafeNet encrypted content", false},
+		{"NUL", validParityDoc("2.0.0", pkg) + "\x00", false},
+		{"invalid UTF-8", validParityDoc("2.0.0", pkg) + "\xff", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := checkParityDoc(path, "2.0.0", pkg); (err == nil) != tc.valid {
+				t.Fatalf("checkParityDoc error = %v, valid = %v", err, tc.valid)
+			}
+		})
+	}
+}
+
+func TestParityExtractionRejectsMissingOrDuplicate(t *testing.T) {
+	ci, dst := t.TempDir(), t.TempDir()
+	name := parityDocs("2.0.0")[0]
+	writeZip(t, filepath.Join(ci, "one.zip"), map[string]string{name: "one"})
+	if err := extractInstallers(ci, dst, parityDocs("2.0.0")); err == nil {
+		t.Fatal("missing parity documents should fail")
+	}
+	writeZip(t, filepath.Join(ci, "two.zip"), map[string]string{name: "duplicate"})
+	if err := extractInstallers(ci, dst, []string{name}); err == nil {
+		t.Fatal("duplicate parity document should fail")
+	}
+}
+
+func TestParitySourceDocuments(t *testing.T) {
+	for _, name := range parityDocs("2.0.0") {
+		template := "macos.md"
+		if strings.Contains(name, "-Linux-") {
+			template = "linux-web.md"
+		}
+		b, err := os.ReadFile(filepath.Join("..", "..", "docs", "platform-parity", template))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pkg := strings.TrimSuffix(name, "-differences.md")
+		body := strings.ReplaceAll(strings.ReplaceAll(string(b), "{{VERSION}}", "2.0.0"), "{{PACKAGE}}", pkg)
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkParityDoc(path, "2.0.0", pkg); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 // 生成的说明要能被程序的检查更新代码认出三个平台的安装包和校验值（Linux Web 版的包不干扰），更新内容不含 SHA-256 段落。
 func TestNotesReadableByUpdater(t *testing.T) {
 	assets := testAssets("1.2.3")
@@ -98,14 +180,29 @@ func preparedRelease(t *testing.T) (*release, manifest, string) {
 		t.Fatal(err)
 	}
 	m := manifest{Version: "1.2.3", Commit: strings.Repeat("a", 40)}
-	for _, name := range packages("1.2.3") {
+	for _, name := range releaseAssets("1.2.3") {
 		body := []byte("installer " + name)
+		if strings.HasSuffix(name, "-differences.md") {
+			body = []byte(validParityDoc("1.2.3", strings.TrimSuffix(name, "-differences.md")))
+		}
 		if err := os.WriteFile(filepath.Join(r.dist, name), body, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		m.Assets = append(m.Assets, asset{name, int64(len(body)), sha256Hex(body)})
 	}
 	return r, m, withChecksums("# Modbus AI Studio 1.2.3\n\n- 初稿", m.Assets)
+}
+
+func TestLoadRejectsChangedParityDocument(t *testing.T) {
+	r, m, notes := preparedRelease(t)
+	writePreparedRecord(t, r, m, notes)
+	name := parityDocs("1.2.3")[0]
+	if err := os.WriteFile(filepath.Join(r.dist, name), []byte(validParityDoc("1.2.3", strings.TrimSuffix(name, "-differences.md"))+"\nchanged"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.load(); err == nil {
+		t.Fatal("changed parity document should fail checksum validation")
+	}
 }
 
 func writePreparedRecord(t *testing.T, r *release, m manifest, notes string) {

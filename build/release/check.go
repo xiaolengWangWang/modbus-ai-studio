@@ -66,6 +66,66 @@ func packages(version string) []string {
 	return slices.Concat(installers(version), webPackages(version), cliPackages(version))
 }
 
+// parityDocs 为每个非 Windows 应用包生成一份与 Windows 两版的功能差异说明。
+func parityDocs(version string) []string {
+	return []string{
+		installers(version)[1] + "-differences.md",
+		installers(version)[2] + "-differences.md",
+		webPackages(version)[0] + "-differences.md",
+		webPackages(version)[1] + "-differences.md",
+	}
+}
+
+func releaseAssets(version string) []string {
+	return slices.Concat(packages(version), parityDocs(version))
+}
+
+var parityDate = regexp.MustCompile(`(?m)^检查日期：[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
+
+func checkParityDoc(filename, version, packageName string) error {
+	b, err := readText(filename)
+	if err != nil {
+		return err
+	}
+	if !utf8.Valid(b) || bytes.ContainsRune(b, 0) || encrypted(b) {
+		return errors.New("差异说明不是明文 UTF-8")
+	}
+	s := strings.ReplaceAll(string(b), "\r\n", "\n")
+	for _, field := range []string{
+		"# 与 Windows 桌面版的功能差异\n",
+		"目标版本：" + version + "\n",
+		"Windows 基准版本：" + version + "\n",
+		"对应安装包：" + packageName + "\n",
+		"| 功能 | Windows 标准版 | Windows 兼容版 | 本版状态 | 原因 | 处理决定 | 验证依据 |",
+	} {
+		if !strings.Contains(s, field) {
+			return fmt.Errorf("差异说明缺少 %q", strings.TrimSpace(field))
+		}
+	}
+	if !strings.HasPrefix(s, "# 与 Windows 桌面版的功能差异\n") || !parityDate.MatchString(s) || strings.Contains(s, "{{") || strings.Contains(s, "}}") {
+		return errors.New("差异说明标题、检查日期或模板占位符无效")
+	}
+	rows := 0
+	for _, line := range strings.Split(s, "\n") {
+		if !strings.HasPrefix(line, "| ") || strings.HasPrefix(line, "| 功能 |") || strings.HasPrefix(line, "| ---") {
+			continue
+		}
+		cells := strings.Split(line, "|")
+		if len(cells) != 9 {
+			return fmt.Errorf("差异说明表格列数不对：%q", line)
+		}
+		decision := strings.TrimSpace(cells[6])
+		if decision != "补齐" && decision != "暂缓" && decision != "不适用" {
+			return fmt.Errorf("差异说明处理决定无效：%q", decision)
+		}
+		rows++
+	}
+	if rows == 0 {
+		return errors.New("差异说明没有功能对照行")
+	}
+	return nil
+}
+
 // summary 读发布说明正文，第一行必须是这个版本的标题，免得用错上一版的说明。
 func (r *release) summary() (string, error) {
 	path := r.file("-summary.md")
@@ -155,7 +215,7 @@ func (r *release) load() (manifest, string, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return m, "", err
 	}
-	names := packages(r.version)
+	names := releaseAssets(r.version)
 	if m.Version != r.version || !lowerHex(m.Commit, 40) || len(m.Assets) != len(names) {
 		return m, "", fmt.Errorf("%s 不是 %s 的完整记录，重新运行 prepare", r.file("-assets.json"), r.version)
 	}
@@ -183,7 +243,12 @@ func (r *release) load() (manifest, string, error) {
 	}
 	for _, a := range m.Assets {
 		if !fileMatches(filepath.Join(r.dist, a.Name), a.Size, a.SHA256) {
-			return m, "", fmt.Errorf("dist/%s 和 prepare 核对时不一样，重新运行 prepare", a.Name)
+			return m, "", fmt.Errorf("%s 和 prepare 核对时不一样，重新运行 prepare", filepath.Join(r.dist, a.Name))
+		}
+		if strings.HasSuffix(a.Name, "-differences.md") {
+			if err := checkParityDoc(filepath.Join(r.dist, a.Name), r.version, strings.TrimSuffix(a.Name, "-differences.md")); err != nil {
+				return m, "", fmt.Errorf("%s：%w", a.Name, err)
+			}
 		}
 	}
 	return m, string(notes), nil
@@ -191,7 +256,7 @@ func (r *release) load() (manifest, string, error) {
 
 // checkInstallers 从 CI 产物里取出全部安装包放到 dist/，逐个核对，返回大小和 SHA-256。
 func (r *release) checkInstallers(ci string) ([]asset, error) {
-	names := packages(r.version)
+	names := releaseAssets(r.version)
 	if err := extractInstallers(ci, r.dist, names); err != nil {
 		return nil, err
 	}
@@ -200,6 +265,8 @@ func (r *release) checkInstallers(ci string) ([]asset, error) {
 		pkg := filepath.Join(r.dist, name)
 		var err error
 		switch {
+		case strings.HasSuffix(name, "-differences.md"):
+			err = checkParityDoc(pkg, r.version, strings.TrimSuffix(name, "-differences.md"))
 		case strings.HasPrefix(name, "modbus-cli-"):
 			err = checkCLI(pkg, r.version)
 		case strings.HasSuffix(name, ".dmg"):

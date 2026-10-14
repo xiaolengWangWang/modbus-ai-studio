@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Target release version: `2.0.0`; Windows standard desktop is the comparison baseline.
+- Target release version: `2.0.0` for every build; compare both Windows standard desktop and Windows Compat, recording Compat-specific capabilities separately.
 - Parity assets exist only for macOS Intel, macOS Apple Silicon, Linux Web x64, and Linux Web ARM64. Windows and `modbus-cli` get none.
 - Keep `cmd/`, `internal/`, `platform/`, `assets/`, `tests/`, and `build/` in place. Keep build output ignored by Git.
 - Existing `dist/` 1.5.0 files must survive the migration; new releases never prune older versions.

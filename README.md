@@ -35,6 +35,8 @@
 
 Linux 桌面版没有安装包，可以 [从源码编译](docs/development.md#从源码编译)；网关、服务器上用 Web 版，见 [Linux Web 版](docs/guide.md#linux-web-版)。Windows 远程桌面、虚拟机里打不开时用兼容版；macOS 提示无法打开，见 [常见问题](docs/faq.md#安装与运行)。
 
+Windows 同一版本提供标准版和兼容版。每个 macOS、Linux Web 发布包旁有对应的 `-differences.md`，记录与这两个 Windows 包的功能差异、缺失原因和后续处理决定；维护源文件见 [macOS 差异](docs/platform-parity/macos.md)及 [Linux Web 差异](docs/platform-parity/linux-web.md)。
+
 ## 快速上手
 
 1. **先看示例**：打开程序，选菜单“读取 → 打开换热站示例”。会打开三个读取窗口并连接内置模拟器；窗口 3 故意应答慢，演示自动分析和一键处理。
@@ -62,6 +64,7 @@ Linux 桌面版没有安装包，可以 [从源码编译](docs/development.md#�
 | 平台代码 | `platform/`：Windows 专用代码，macOS / Windows 打包配置 |
 | 文档 | `README.md`、`docs/` |
 | 打包编译 | `build/`：macOS、Windows、Linux Web 版打包脚本，发版工具和图标生成器；`.github/workflows/`：持续集成 |
+| 各版本构建文件 | `dist/vX.Y.Z/`：该版本安装包、差异说明、SHA-256 和发布记录；不提交到 Git |
 
 ## 许可证
 

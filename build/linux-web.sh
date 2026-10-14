@@ -84,6 +84,12 @@ for ARCH in amd64 arm64; do
 	fi
 	gzip -9 "$STAGE.tar"
 	rm -rf "$STAGE"
+	parity="$TGZ-differences.md"
+	sed -e "s/{{VERSION}}/$VERSION/g" -e "s/{{PACKAGE}}/$(basename "$TGZ")/g" docs/platform-parity/linux-web.md >"$parity"
+	if grep -q E-Safe "$parity" || grep -F -q -e '{{' -e '}}' "$parity"; then
+		echo "$parity 不是完整的明文差异说明"; exit 1
+	fi
 	echo "  $TGZ"
+	echo "  $parity"
 	sha256 "$TGZ"
 done

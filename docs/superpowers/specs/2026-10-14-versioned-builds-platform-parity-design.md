@@ -2,7 +2,7 @@
 
 ## 目标与范围
 
-将共用源码、构建脚本和各版本构建产物明确分开。下一目标版本为 `2.0.0`。Windows 标准桌面版是功能比较基准；macOS 桌面版和 Linux Web 版的每个发布包旁都输出一份 Markdown 差异说明，作为该平台后续优化的依据。`modbus-cli` 不参加这项功能对照。
+将共用源码、构建脚本和各版本构建产物明确分开。下一目标版本统一为 `2.0.0`。Windows 同版构建标准桌面版与兼容版；两者都是功能对照基准，其中标准版代表共用桌面功能，兼容版另提供旧版 Windows 和 Mesa 软件渲染支持。macOS 桌面版和 Linux Web 版的每个发布包旁都输出一份 Markdown 差异说明，作为该平台后续优化的依据。`modbus-cli` 不参加这项功能对照。
 
 现有 `cmd/`、`internal/`、`platform/`、`assets/`、`tests/` 是共用源码和资源，`build/` 与 `.github/workflows/` 是共用构建流程。保持这些目录与 Go 包路径不变。构建产物不提交到 Git，按版本保存在 `dist/vX.Y.Z/`，并通过 GitHub/Gitee Releases 留存发布副本。
 
