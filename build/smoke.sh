@@ -9,8 +9,11 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-VERSION=${VERSION:-$(sed -n 's/^var version = "\([0-9.]*\)".*/\1/p' cmd/modbus-ai/main.go)}
-DIST=dist
+SOURCE_VERSION=$(sed -n 's/^var version = "\([0-9.]*\)".*/\1/p' cmd/modbus-ai/main.go)
+[ -n "$SOURCE_VERSION" ] || { echo "cmd/modbus-ai/main.go 里没找到版本号"; exit 1; }
+VERSION=${VERSION:-$SOURCE_VERSION}
+[ "$VERSION" = "$SOURCE_VERSION" ] || { echo "VERSION=$VERSION 与源码版本 $SOURCE_VERSION 不一致"; exit 1; }
+DIST=dist/v$VERSION
 WORK=$(mktemp -d)
 EXE=
 case "$(uname -s)" in

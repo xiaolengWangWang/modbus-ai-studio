@@ -5,9 +5,11 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-VERSION=${VERSION:-$(sed -n 's/^var version = "\([0-9.]*\)".*/\1/p' cmd/modbus-ai/main.go)}
-[ -n "$VERSION" ] || { echo "cmd/modbus-ai/main.go 里没找到版本号"; exit 1; }
-DIST=dist
+SOURCE_VERSION=$(sed -n 's/^var version = "\([0-9.]*\)".*/\1/p' cmd/modbus-ai/main.go)
+[ -n "$SOURCE_VERSION" ] || { echo "cmd/modbus-ai/main.go 里没找到版本号"; exit 1; }
+VERSION=${VERSION:-$SOURCE_VERSION}
+[ "$VERSION" = "$SOURCE_VERSION" ] || { echo "VERSION=$VERSION 与源码版本 $SOURCE_VERSION 不一致"; exit 1; }
+DIST=dist/v$VERSION
 mkdir -p "$DIST"
 
 sha256() { if command -v shasum >/dev/null; then shasum -a 256 "$1"; else sha256sum "$1"; fi; }
@@ -21,7 +23,7 @@ for ARCH in amd64 arm64; do
 	rm -rf "$STAGE" "$TGZ"
 	mkdir -p "$STAGE"
 
-	echo "编译 Linux $LABEL…"
+	echo "编译 Linux ${LABEL}…"
 	CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH go build -trimpath \
 		-ldflags "-s -w -X main.version=$VERSION" -o "$STAGE/modbus-web" ./cmd/modbus-web
 

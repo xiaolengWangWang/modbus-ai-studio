@@ -5,10 +5,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-VERSION=${VERSION:-$(sed -n 's/^var version = "\([0-9.]*\)".*/\1/p' cmd/modbus-ai/main.go)}
-[ -n "$VERSION" ] || { echo "cmd/modbus-ai/main.go 里没找到版本号"; exit 1; }
+SOURCE_VERSION=$(sed -n 's/^var version = "\([0-9.]*\)".*/\1/p' cmd/modbus-ai/main.go)
+[ -n "$SOURCE_VERSION" ] || { echo "cmd/modbus-ai/main.go 里没找到版本号"; exit 1; }
+VERSION=${VERSION:-$SOURCE_VERSION}
+[ "$VERSION" = "$SOURCE_VERSION" ] || { echo "VERSION=$VERSION 与源码版本 $SOURCE_VERSION 不一致"; exit 1; }
 APP="Modbus AI Studio"
-DIST=dist
+DIST=dist/v$VERSION
 export CGO_ENABLED=1 MACOSX_DEPLOYMENT_TARGET=12.0
 
 mkdir -p "$DIST"

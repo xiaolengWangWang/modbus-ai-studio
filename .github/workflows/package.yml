@@ -51,13 +51,13 @@ jobs:
         with:
           name: installers-${{ runner.os }}
           path: |
-            dist/ModbusAIStudio-*-Windows-x64.zip
-            dist/ModbusAIStudio-*-Windows-x64-Compat.zip
-            dist/ModbusAIStudio-*-macOS-Intel.dmg
-            dist/ModbusAIStudio-*-macOS-AppleSilicon.dmg
-            dist/ModbusAIStudio-Web-*-Linux-*.tar.gz
-            dist/modbus-cli-*.zip
-            dist/modbus-cli-*.tar.gz
+            dist/v${{ inputs.version }}/ModbusAIStudio-*-Windows-x64.zip
+            dist/v${{ inputs.version }}/ModbusAIStudio-*-Windows-x64-Compat.zip
+            dist/v${{ inputs.version }}/ModbusAIStudio-*-macOS-Intel.dmg
+            dist/v${{ inputs.version }}/ModbusAIStudio-*-macOS-AppleSilicon.dmg
+            dist/v${{ inputs.version }}/ModbusAIStudio-Web-*-Linux-*.tar.gz
+            dist/v${{ inputs.version }}/modbus-cli-*.zip
+            dist/v${{ inputs.version }}/modbus-cli-*.tar.gz
           if-no-files-found: error
           retention-days: 14
 
@@ -83,7 +83,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: installers-*
-          path: dist
+          path: dist/v${{ inputs.version }}
           merge-multiple: true
       - name: Run the packages built for this platform
         shell: bash

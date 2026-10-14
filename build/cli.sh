@@ -7,9 +7,11 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-VERSION=${VERSION:-$(sed -n 's/^var version = "\([0-9.]*\)".*/\1/p' cmd/modbus-ai/main.go)}
-[ -n "$VERSION" ] || { echo "cmd/modbus-ai/main.go 里没找到版本号"; exit 1; }
-DIST=dist
+SOURCE_VERSION=$(sed -n 's/^var version = "\([0-9.]*\)".*/\1/p' cmd/modbus-ai/main.go)
+[ -n "$SOURCE_VERSION" ] || { echo "cmd/modbus-ai/main.go 里没找到版本号"; exit 1; }
+VERSION=${VERSION:-$SOURCE_VERSION}
+[ "$VERSION" = "$SOURCE_VERSION" ] || { echo "VERSION=$VERSION 与源码版本 $SOURCE_VERSION 不一致"; exit 1; }
+DIST=dist/v$VERSION
 mkdir -p "$DIST"
 LDFLAGS="-s -w -X main.version=$VERSION"
 
@@ -33,7 +35,7 @@ for TARGET in windows/amd64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; d
 	rm -rf "$STAGE" "$STAGE.zip" "$STAGE.tar.gz"
 	mkdir -p "$STAGE"
 
-	echo "编译 $NAME…"
+	echo "编译 ${NAME}…"
 	EXE=modbus-cli
 	[ "$GOOS" = windows ] && EXE=modbus-cli.exe
 	CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -ldflags "$LDFLAGS" -o "$STAGE/$EXE" ./cmd/modbus-cli

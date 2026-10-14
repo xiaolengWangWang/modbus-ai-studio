@@ -10,9 +10,11 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-VERSION=${VERSION:-$(sed -n 's/^var version = "\([0-9.]*\)".*/\1/p' cmd/modbus-ai/main.go)}
-[ -n "$VERSION" ] || { echo "cmd/modbus-ai/main.go 里没找到版本号"; exit 1; }
-DIST=dist
+SOURCE_VERSION=$(sed -n 's/^var version = "\([0-9.]*\)".*/\1/p' cmd/modbus-ai/main.go)
+[ -n "$SOURCE_VERSION" ] || { echo "cmd/modbus-ai/main.go 里没找到版本号"; exit 1; }
+VERSION=${VERSION:-$SOURCE_VERSION}
+[ "$VERSION" = "$SOURCE_VERSION" ] || { echo "VERSION=$VERSION 与源码版本 $SOURCE_VERSION 不一致"; exit 1; }
+DIST=dist/v$VERSION
 STAGE="$DIST/ModbusAIStudio-$VERSION-Windows-x64"
 CSTAGE="$STAGE-Compat"
 CC_WIN=x86_64-w64-mingw32-gcc
@@ -31,7 +33,7 @@ mkdir -p "$STAGE" "$CSTAGE" "$CACHE"
 fetch() {
 	url=$1 sum=$2 out="$CACHE/$3"
 	if [ ! -f "$out" ] || [ "$(shasum -a 256 "$out" | cut -d' ' -f1)" != "$sum" ]; then
-		echo "下载 $url…"
+		echo "下载 ${url}…"
 		curl -fsSL --retry 3 -o "$out.part" "$url"
 		got=$(shasum -a 256 "$out.part" | cut -d' ' -f1)
 		[ "$got" = "$sum" ] || { echo "$3 的 SHA-256 是 $got，应为 $sum"; exit 1; }
