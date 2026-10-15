@@ -37,6 +37,7 @@ type release struct {
 	tag        string
 	branch     string
 	log        *log.Logger
+	logFile    *os.File
 }
 
 func main() {
@@ -59,6 +60,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	defer r.logFile.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	r.log.Printf("== %s %s ==", os.Args[1], r.version)
@@ -108,7 +110,7 @@ func open() (*release, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &release{root: root, dist: dist, version: v, tag: "v" + v, branch: branch, log: log.New(io.MultiWriter(os.Stdout, f), "", log.Ldate|log.Ltime)}, nil
+	return &release{root: root, dist: dist, version: v, tag: "v" + v, branch: branch, log: log.New(io.MultiWriter(os.Stdout, f), "", log.Ldate|log.Ltime), logFile: f}, nil
 }
 
 func releaseBranchForVersion(branch, version string) error {

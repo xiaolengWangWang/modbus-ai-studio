@@ -789,6 +789,7 @@ func TestReleaseDistUsesVersionDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { r.logFile.Close() })
 	if want := filepath.Join(r.root, "dist", "v2.0.0"); r.dist != want {
 		t.Fatalf("release.dist = %q, want %q", r.dist, want)
 	}
