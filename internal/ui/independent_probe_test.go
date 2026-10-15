@@ -105,6 +105,8 @@ func TestIndependentPointProbeKeepsMainSessionAndContinuesPastDisconnects(t *tes
 	}})
 	var mainWindow *readWindow
 	locked(func() {
+		// Race 检测下的 CI 机器可能让正常的本机 TCP 请求超过 100 ms。
+		ws.timeoutE.SetText("1000")
 		d := defaultDef()
 		d.Start, d.Qty, d.Scan = 20, 1, 50*time.Millisecond
 		mainWindow = ws.addWindow(d)
