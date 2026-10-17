@@ -120,6 +120,8 @@ Windows 启动阶段耗时和字体预扫描结果追加写入 `%AppData%\Modbus
    - 核对结果（也可单独运行 `verify`）：两边的说明都与本地一致；不带令牌从 Gitee 下载全部包，SHA-256 与 CI 产物一致；用程序自己的检查更新代码确认优先查到 Gitee 上的新版本，四个桌面版安装包和校验值都对，GitHub 可作备用下载源；
    - 清理当前版本目录的临时下载文件，保留各版本构建和发布记录。
 
+仅发布 Windows 标准版和兼容版时，在 `prepare` 命令前设置 `MODBUS_RELEASE_WINDOWS_ONLY=1`。发布记录会保存这个范围，后续 `publish`、`verify` 无需再设置；CI 仍构建并测试各平台，`prepare` 只下载包含 Windows 安装包的 Linux runner 产物，并从中提取、核对和发布两个 Windows 安装包。发布说明和首页下载表应明确其他平台保留的版本。
+
 安装包文件名不要改：程序检查更新时同时查 Gitee 和 GitHub，按结尾（`-Windows-x64.zip`、`-macOS-Intel.dmg`、`-macOS-AppleSilicon.dmg`）找本机的安装包；兼容版（`-tags compat`）只认 `-Windows-x64-Compat.zip`，免得更新成 Win7 上起不来的普通版，普通版按结尾也不会取到兼容版。Web 版的包（`ModbusAIStudio-Web-x.y.z-Linux-x64.tar.gz`、`-Linux-arm64.tar.gz`）只随发布上传，检查更新不认它们，Web 版没有自动更新，换新版本时替换程序后重启。modbus-cli 的包用小写的 `modbus-cli-x.y.z-windows-x64.zip` 这类名字，结尾和安装包不同：旧版本的检查更新只看结尾，同结尾就会把 CLI 的包当成更新下载；1.4.0 起检查更新还要求文件名以 `ModbusAIStudio-` 加版本号开头。
 
 macOS 与 Linux Web 的差异源文件在 `docs/platform-parity/`。每次优化对应平台时，核对 Windows 标准版与兼容版的功能，更新目标平台状态、缺失原因、`补齐` / `暂缓` / `不适用` 决定及验证依据。构建时为四个非 Windows 包各生成一份 `<包名>-differences.md`；发版工具检查明文、版本、包名、处理决定和 SHA-256，并随包一起发布。共用功能改在核心代码；已发布固定版本的缺陷改在对应维护分支。

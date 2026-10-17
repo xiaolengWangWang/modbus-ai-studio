@@ -351,7 +351,14 @@ func (r *release) dispatchPackage(ctx context.Context, gh *api) error {
 		map[string]any{"ref": r.branch, "inputs": map[string]string{"version": r.version}}, nil)
 }
 
-// downloadArtifacts 下载 package 工作流的两个产物，按 GitHub 记录的 SHA-256 摘要核对。
+func (r *release) artifactNames() []string {
+	if r.windowsOnly {
+		return []string{"installers-Linux"} // Windows 安装包由 Linux runner 交叉编译。
+	}
+	return []string{"installers-Linux", "installers-macOS"}
+}
+
+// downloadArtifacts 下载本次发布所需的 CI 产物，按 GitHub 记录的 SHA-256 摘要核对。
 func (r *release) downloadArtifacts(ctx context.Context, gh *api, x run, dir string) error {
 	var res struct {
 		Artifacts []struct {
@@ -370,7 +377,7 @@ func (r *release) downloadArtifacts(ctx context.Context, gh *api, x run, dir str
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	for _, name := range []string{"installers-Linux", "installers-macOS"} {
+	for _, name := range r.artifactNames() {
 		i := -1
 		for j, a := range res.Artifacts {
 			if a.Name == name {

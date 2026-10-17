@@ -6,6 +6,7 @@
 //	go run ./build/release publish  # 打 tag，发布到 GitHub 和 Gitee，核对下载和检查更新
 //	go run ./build/release verify   # 只核对已发布的结果
 //	go run ./build/release clean    # 删掉当前版本的临时下载目录
+//	MODBUS_RELEASE_WINDOWS_ONLY=1 go run ./build/release prepare  # 仅发布 Windows 标准版和兼容版
 //
 // 每一步先查已有状态再动手，网络出错自动重试；仍失败时重跑同一条命令，做完的步骤会跳过。
 // 过程同时记在 dist/v<版本>/release-<版本>.log。
@@ -32,12 +33,13 @@ import (
 )
 
 type release struct {
-	root, dist string
-	version    string
-	tag        string
-	branch     string
-	log        *log.Logger
-	logFile    *os.File
+	root, dist  string
+	version     string
+	tag         string
+	branch      string
+	windowsOnly bool
+	log         *log.Logger
+	logFile     *os.File
 }
 
 func main() {
@@ -110,7 +112,7 @@ func open() (*release, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &release{root: root, dist: dist, version: v, tag: "v" + v, branch: branch, log: log.New(io.MultiWriter(os.Stdout, f), "", log.Ldate|log.Ltime), logFile: f}, nil
+	return &release{root: root, dist: dist, version: v, tag: "v" + v, branch: branch, windowsOnly: os.Getenv("MODBUS_RELEASE_WINDOWS_ONLY") == "1", log: log.New(io.MultiWriter(os.Stdout, f), "", log.Ldate|log.Ltime), logFile: f}, nil
 }
 
 func releaseBranchForVersion(branch, version string) error {
@@ -182,12 +184,12 @@ func (r *release) prepare(ctx context.Context) error {
 	if err := r.downloadArtifacts(ctx, gh, run, ci); err != nil {
 		return err
 	}
-	m := manifest{Version: r.version, Commit: head, Run: run.HTMLURL}
+	m := manifest{Version: r.version, Commit: head, Run: run.HTMLURL, WindowsOnly: r.windowsOnly}
 	if m.Assets, err = r.checkInstallers(ci); err != nil {
 		return err
 	}
 	notes := withChecksums(summary, m.Assets)
-	if err := checkUpdaterView(localView(notes, m.Assets), m.Assets, false); err != nil {
+	if err := checkUpdaterView(localView(notes, m.Assets), m.Assets, false, m.WindowsOnly); err != nil {
 		return err
 	}
 	for _, a := range m.Assets {
@@ -329,11 +331,11 @@ func (r *release) verify(ctx context.Context) error {
 		if rel.Version() != r.version || rel.Source != update.Sources[0].Name {
 			return fmt.Errorf("检查更新查到 %s 上的 %s，应该是 %s 上的 %s", rel.Source, rel.Version(), update.Sources[0].Name, r.version)
 		}
-		return checkUpdaterView(rel, m.Assets, true)
+		return checkUpdaterView(rel, m.Assets, true, m.WindowsOnly)
 	}); err != nil {
 		return err
 	}
-	r.log.Printf("检查更新核对通过：从 %s 查到 %s，四个桌面版安装包和校验值一致，另一个下载源可备用", rel.Source, rel.Version())
+	r.log.Printf("检查更新核对通过：从 %s 查到 %s，本次桌面版安装包和校验值一致，另一个下载源可备用", rel.Source, rel.Version())
 	if err := writeJSON(r.file("-verification.json"), map[string]any{
 		"version":     r.version,
 		"commit":      m.Commit,
@@ -343,7 +345,7 @@ func (r *release) verify(ctx context.Context) error {
 		"checks": []string{
 			"GitHub 最新正式版是这个版本，说明一致，全部文件的 SHA-256 摘要与 CI 产物一致",
 			"Gitee 说明一致，全部安装包下载后的 SHA-256 与 CI 产物一致",
-			"检查更新优先查到 Gitee 上的这个版本，四个桌面版安装包和校验值一致，GitHub 可备用",
+			"检查更新优先查到 Gitee 上的这个版本，本次桌面版安装包和校验值一致，GitHub 可备用",
 		},
 		"assets": m.Assets,
 	}); err != nil {

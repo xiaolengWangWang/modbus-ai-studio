@@ -137,18 +137,45 @@ func TestNotesReadableByUpdater(t *testing.T) {
 	assets := testAssets("1.2.3")
 	summary := "# Modbus AI Studio 1.2.3\n\n- 修复"
 	rel := localView(withChecksums(summary, assets), assets)
-	if err := checkUpdaterView(rel, assets, false); err != nil {
+	if err := checkUpdaterView(rel, assets, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if rel.Notes() != summary {
 		t.Fatalf("更新内容 = %q", rel.Notes())
 	}
-	if err := checkUpdaterView(rel, assets, true); err == nil {
+	if err := checkUpdaterView(rel, assets, true, false); err == nil {
 		t.Fatal("没有备用下载源时应报错")
 	}
 	assets[0].SHA256 = strings.Repeat("f", 64)
-	if err := checkUpdaterView(rel, assets, false); err == nil {
+	if err := checkUpdaterView(rel, assets, false, false); err == nil {
 		t.Fatal("校验值对不上时应报错")
+	}
+}
+
+func TestWindowsOnlyNotesReadableByUpdater(t *testing.T) {
+	version := "2.1.0"
+	names := installers(version)
+	if got, want := releaseAssetsFor(version, true), []string{names[0], names[3]}; !slices.Equal(got, want) {
+		t.Fatalf("Windows-only assets = %v, want %v", got, want)
+	}
+	assets := []asset{
+		{names[0], 10, strings.Repeat("a", 64)},
+		{names[3], 20, strings.Repeat("b", 64)},
+	}
+	rel := localView(withChecksums("# Modbus AI Studio 2.1.0\n\n- Windows 报文刷新优化", assets), assets)
+	if err := checkUpdaterView(rel, assets, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := rel.Asset("darwin", "amd64"); ok {
+		t.Fatal("Windows-only 发布不应包含 macOS 安装包")
+	}
+}
+
+func TestWindowsOnlyArtifactNames(t *testing.T) {
+	r := testRelease(t, "2.1.0")
+	r.windowsOnly = true
+	if got, want := r.artifactNames(), []string{"installers-Linux"}; !slices.Equal(got, want) {
+		t.Fatalf("Windows-only CI artifacts = %v, want %v", got, want)
 	}
 }
 

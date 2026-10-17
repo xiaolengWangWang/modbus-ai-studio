@@ -29,10 +29,11 @@ import (
 
 // manifest 记录 prepare 核对过的安装包，publish 和 verify 只认这里的提交、大小和 SHA-256。
 type manifest struct {
-	Version string  `json:"version"`
-	Commit  string  `json:"commit"`
-	Run     string  `json:"package_run"`
-	Assets  []asset `json:"assets"`
+	Version     string  `json:"version"`
+	Commit      string  `json:"commit"`
+	Run         string  `json:"package_run"`
+	WindowsOnly bool    `json:"windows_only,omitempty"`
+	Assets      []asset `json:"assets"`
 }
 
 type asset struct {
@@ -78,6 +79,14 @@ func parityDocs(version string) []string {
 
 func releaseAssets(version string) []string {
 	return slices.Concat(packages(version), parityDocs(version))
+}
+
+func releaseAssetsFor(version string, windowsOnly bool) []string {
+	if windowsOnly {
+		names := installers(version)
+		return []string{names[0], names[3]}
+	}
+	return releaseAssets(version)
 }
 
 var parityDate = regexp.MustCompile(`(?m)^检查日期：[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
@@ -163,10 +172,10 @@ func localView(notes string, assets []asset) update.Release {
 	return rel
 }
 
-// checkUpdaterView 用检查更新的代码在发布里找桌面版四个安装包和校验值，与核对过的安装包比较。
+// checkUpdaterView 用检查更新的代码核对本次发布的桌面安装包及校验值。
 // mirrors 为 true 时还要求另一个下载源上也有同一个文件。
-func checkUpdaterView(rel update.Release, assets []asset, mirrors bool) error {
-	for _, p := range []struct {
+func checkUpdaterView(rel update.Release, assets []asset, mirrors, windowsOnly bool) error {
+	platforms := []struct {
 		what string
 		find func() (update.Asset, bool)
 	}{
@@ -174,7 +183,11 @@ func checkUpdaterView(rel update.Release, assets []asset, mirrors bool) error {
 		{"Windows 兼容版", func() (update.Asset, bool) { return rel.Find(update.CompatSuffix) }},
 		{"macOS Intel", func() (update.Asset, bool) { return rel.Asset("darwin", "amd64") }},
 		{"macOS Apple Silicon", func() (update.Asset, bool) { return rel.Asset("darwin", "arm64") }},
-	} {
+	}
+	if windowsOnly {
+		platforms = platforms[:2]
+	}
+	for _, p := range platforms {
 		a, ok := p.find()
 		if !ok || a.URL == "" {
 			return fmt.Errorf("检查更新找不到 %s 的安装包", p.what)
@@ -215,7 +228,7 @@ func (r *release) load() (manifest, string, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return m, "", err
 	}
-	names := releaseAssets(r.version)
+	names := releaseAssetsFor(r.version, m.WindowsOnly)
 	if m.Version != r.version || !lowerHex(m.Commit, 40) || len(m.Assets) != len(names) {
 		return m, "", fmt.Errorf("%s 不是 %s 的完整记录，重新运行 prepare", r.file("-assets.json"), r.version)
 	}
@@ -238,7 +251,7 @@ func (r *release) load() (manifest, string, error) {
 	if want := "# Modbus AI Studio " + r.version; title != want {
 		return m, "", fmt.Errorf("%s 第一行应该是“%s”", r.file(".md"), want)
 	}
-	if err := checkUpdaterView(localView(string(notes), m.Assets), m.Assets, false); err != nil {
+	if err := checkUpdaterView(localView(string(notes), m.Assets), m.Assets, false, m.WindowsOnly); err != nil {
 		return m, "", fmt.Errorf("%s 的安装包校验段无效：%w", r.file(".md"), err)
 	}
 	for _, a := range m.Assets {
@@ -256,7 +269,7 @@ func (r *release) load() (manifest, string, error) {
 
 // checkInstallers 从 CI 产物里取出全部安装包放到 dist/，逐个核对，返回大小和 SHA-256。
 func (r *release) checkInstallers(ci string) ([]asset, error) {
-	names := releaseAssets(r.version)
+	names := releaseAssetsFor(r.version, r.windowsOnly)
 	if err := extractInstallers(ci, r.dist, names); err != nil {
 		return nil, err
 	}

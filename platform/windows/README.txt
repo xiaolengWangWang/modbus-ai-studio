@@ -52,6 +52,11 @@ Windows 使用当前用户 DPAPI 加密保存密钥。默认不发送寄存器�
 项目主页：https://github.com/xiaolengWangWang/modbus-ai-studio
 
 
+### 2.1.0 通信报文刷新优化（仅 Windows）
+
+- 报文列表达到 5000 条后复用缓冲区，持续收发时刷新更顺畅、内存分配更少。
+- 本版只发布 Windows 标准版和兼容版；其他平台继续使用 2.0.0。
+
 ### 2.0.0 构建文件按版本保存，非 Windows 包附功能差异说明
 
 - Windows 同版继续提供标准版和兼容版；兼容版保留旧版 Windows 与 Mesa 软件渲染支持。

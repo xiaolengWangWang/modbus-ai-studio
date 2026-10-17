@@ -21,12 +21,12 @@
 
 ## 下载
 
-[GitHub Releases](https://github.com/xiaolengWangWang/modbus-ai-studio/releases) 提供 2.0.0 的以下版本（国内访问慢时用 [Gitee 镜像](https://gitee.com/sun_xuanqi/modbus_ai_studio/releases)）：
+[GitHub Releases](https://github.com/xiaolengWangWang/modbus-ai-studio/releases) 提供 Windows 2.1.0；其他平台仍使用 2.0.0（国内访问慢时用 [Gitee 镜像](https://gitee.com/sun_xuanqi/modbus_ai_studio/releases)）：
 
 | 文件 | 适用 |
 | --- | --- |
-| `ModbusAIStudio-2.0.0-Windows-x64.zip` | Windows 10 / 11 64 位。绿色版，解压后双击 `ModbusAIStudio.exe` |
-| `ModbusAIStudio-2.0.0-Windows-x64-Compat.zip` | Windows 兼容版：远程桌面、虚拟机、老工控机、显卡驱动有问题，或 Windows 7 / 8 / 8.1 64 位。自带软件渲染，不依赖显卡；数据放在程序目录的 `data` 文件夹 |
+| `ModbusAIStudio-2.1.0-Windows-x64.zip` | Windows 10 / 11 64 位。绿色版，解压后双击 `ModbusAIStudio.exe` |
+| `ModbusAIStudio-2.1.0-Windows-x64-Compat.zip` | Windows 兼容版：远程桌面、虚拟机、老工控机、显卡驱动有问题，或 Windows 7 / 8 / 8.1 64 位。自带软件渲染，不依赖显卡；数据放在程序目录的 `data` 文件夹 |
 | `ModbusAIStudio-2.0.0-macOS-AppleSilicon.dmg` | M 系列芯片的 Mac，macOS 12 及以上 |
 | `ModbusAIStudio-2.0.0-macOS-Intel.dmg` | Intel 芯片的 Mac，macOS 12 及以上 |
 | `ModbusAIStudio-Web-2.0.0-Linux-x64.tar.gz` | Linux x86-64 网关、服务器上的 Web 版。解压后运行 `./modbus-web`，用浏览器打开终端打印的地址 |
