@@ -197,11 +197,16 @@ func (t *trafficPanel) hasPending() bool {
 	return len(t.pending) > 0
 }
 
-func trim(ps []modbus.Packet) []modbus.Packet {
-	if len(ps) > maxTraffic {
-		return append([]modbus.Packet(nil), ps[len(ps)-maxTraffic:]...)
+func retainNewest(dst, incoming []modbus.Packet) []modbus.Packet {
+	if len(incoming) >= maxTraffic {
+		dst = dst[:0]
+		incoming = incoming[len(incoming)-maxTraffic:]
+	} else if drop := len(dst) + len(incoming) - maxTraffic; drop > 0 {
+		copy(dst, dst[drop:])
+		clear(dst[len(dst)-drop:])
+		dst = dst[:len(dst)-drop]
 	}
-	return ps
+	return append(dst, incoming...)
 }
 
 // flush 把 pending 并入列表，只在 UI 线程调用。
@@ -217,11 +222,11 @@ func (t *trafficPanel) flush() {
 	}
 	t.total += total
 	if t.paused {
-		t.held = trim(append(t.held, batch...))
+		t.held = retainNewest(t.held, batch)
 		t.updateCount()
 		return
 	}
-	t.all = trim(append(t.all, batch...))
+	t.all = retainNewest(t.all, batch)
 	t.rebuild()
 	t.list.ScrollToBottom()
 }
@@ -309,7 +314,7 @@ func (t *trafficPanel) setPaused(p bool) {
 	t.pauseBtn.Importance = widget.LowImportance
 	t.pauseBtn.SetText("暂停")
 	t.pauseBtn.SetIcon(theme.MediaPauseIcon())
-	t.all = trim(append(t.all, t.held...))
+	t.all = retainNewest(t.all, t.held)
 	t.held = nil
 	t.list.UnselectAll()
 	t.rebuild()
@@ -319,7 +324,7 @@ func (t *trafficPanel) setPaused(p bool) {
 // setPackets 显示一批已有的记录（历史报文），替换原来的内容。
 func (t *trafficPanel) setPackets(ps []modbus.Packet) {
 	t.list.UnselectAll()
-	t.all, t.held, t.total = trim(ps), nil, len(ps)
+	t.all, t.held, t.total = append([]modbus.Packet(nil), ps[max(0, len(ps)-maxTraffic):]...), nil, len(ps)
 	t.rebuild()
 	t.list.ScrollToBottom()
 }

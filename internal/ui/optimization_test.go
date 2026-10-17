@@ -250,3 +250,42 @@ func TestTrafficCountReflowsWhenPaused(t *testing.T) {
 		}
 	})
 }
+
+func BenchmarkTrafficFlushAtCapacity(b *testing.B) {
+	test.NewTempApp(b)
+	p := newTrafficPanel(&Workspace{})
+	packet := modbus.Packet{Dir: modbus.DirRX, Raw: []byte{1, 3, 2, 0, 42}}
+	p.all = make([]modbus.Packet, maxTraffic)
+	for i := range p.all {
+		p.all[i] = packet
+	}
+	p.rebuild()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		p.push(packet)
+		p.flush()
+	}
+}
+
+func TestTrafficFlushAtCapacityMemoryBudget(t *testing.T) {
+	test.NewTempApp(t)
+	p := newTrafficPanel(&Workspace{})
+	packet := modbus.Packet{Dir: modbus.DirRX, Raw: []byte{1, 3, 2, 0, 42}}
+	p.all = make([]modbus.Packet, maxTraffic)
+	for i := range p.all {
+		p.all[i] = packet
+	}
+	p.rebuild()
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for b.Loop() {
+			p.push(packet)
+			p.flush()
+		}
+	})
+	if got := result.AllocedBytesPerOp(); got > 100_000 {
+		t.Fatalf("refreshing a full packet list allocated %d bytes/op, want at most 100000", got)
+	}
+}
